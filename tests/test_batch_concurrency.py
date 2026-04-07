@@ -277,3 +277,51 @@ def test_batch_runner_plan_driven_fleet_launches_profile_specific_workers(
         ("premium",),
     }
     assert all(str(call["note"]).startswith("planned_fleet:") for call in launched)
+
+
+def test_batch_runner_plan_driven_fleet_launches_generic_workers_for_unconstrained_jobs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "generic-a.toml"},
+        project_id="generic-a",
+    )
+    queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "generic-b.toml"},
+        project_id="generic-b",
+    )
+
+    runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(tmp_path / "control"),
+        artifact_root=tmp_path / "batch-artifacts",
+        slot_limit=1,
+    )
+
+    launched: list[dict[str, object]] = []
+
+    def fake_run_worker(**kwargs) -> BatchRunReport:
+        launched.append(kwargs)
+        return BatchRunReport(worker_ids=[f"worker-{len(launched)}"])
+
+    monkeypatch.setattr(runner, "run_worker", fake_run_worker)
+
+    report = runner.run_fleet(
+        plan_driven=True,
+        target_jobs_per_worker=2,
+        idle_timeout_seconds=0.1,
+        poll_seconds=0.01,
+        stale_after_seconds=60,
+    )
+
+    assert report.worker_ids == ["worker-1"]
+    assert len(launched) == 1
+    assert launched[0]["executor_kinds"] is None
+    assert launched[0]["provider_kinds"] is None
+    assert launched[0]["models"] is None
+    assert launched[0]["cost_tiers"] is None
+    assert launched[0]["endpoint_classes"] is None
+    assert str(launched[0]["note"]).startswith("planned_fleet:generic:")

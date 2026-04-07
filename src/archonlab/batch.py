@@ -486,30 +486,42 @@ class BatchRunner:
             stale_after_seconds=stale_after_seconds,
         )
         launch_specs: list[dict[str, Any]] = []
+        generic_workers_needed = 0
         for profile in plan.profiles:
-            if (
-                profile.recommended_additional_workers < 1
-                or self._profile_is_generic(profile)
-            ):
+            if profile.recommended_additional_workers < 1:
+                continue
+            if self._profile_is_generic(profile):
+                generic_workers_needed += profile.recommended_additional_workers
                 continue
             for launch_index in range(1, profile.recommended_additional_workers + 1):
                 launch_specs.append(
-                    {
-                        "slot_index": None,
-                        "max_jobs": max_jobs_per_worker,
-                        "poll_seconds": poll_seconds,
-                        "idle_timeout_seconds": idle_timeout_seconds,
-                        "note": f"planned_fleet:{profile.profile_id}:{launch_index}",
-                        "stale_after_seconds": stale_after_seconds,
-                        "executor_kinds": profile.required_executor_kinds,
-                        "provider_kinds": profile.required_provider_kinds,
-                        "models": profile.required_models,
-                        "cost_tiers": profile.required_cost_tiers,
-                        "endpoint_classes": profile.required_endpoint_classes,
-                    }
+                    self._fleet_launch_spec(
+                        max_jobs=max_jobs_per_worker,
+                        poll_seconds=poll_seconds,
+                        idle_timeout_seconds=idle_timeout_seconds,
+                        note=f"planned_fleet:{profile.profile_id}:{launch_index}",
+                        stale_after_seconds=stale_after_seconds,
+                        executor_kinds=profile.required_executor_kinds or None,
+                        provider_kinds=profile.required_provider_kinds or None,
+                        models=profile.required_models or None,
+                        cost_tiers=profile.required_cost_tiers or None,
+                        endpoint_classes=profile.required_endpoint_classes or None,
+                    )
                 )
                 if worker_count is not None and len(launch_specs) >= worker_count:
                     return launch_specs
+        for launch_index in range(1, generic_workers_needed + 1):
+            launch_specs.append(
+                self._fleet_launch_spec(
+                    max_jobs=max_jobs_per_worker,
+                    poll_seconds=poll_seconds,
+                    idle_timeout_seconds=idle_timeout_seconds,
+                    note=f"planned_fleet:generic:{launch_index}",
+                    stale_after_seconds=stale_after_seconds,
+                )
+            )
+            if worker_count is not None and len(launch_specs) >= worker_count:
+                return launch_specs
         return launch_specs
 
     @staticmethod
@@ -521,6 +533,34 @@ class BatchRunner:
             or profile.required_cost_tiers
             or profile.required_endpoint_classes
         )
+
+    @staticmethod
+    def _fleet_launch_spec(
+        *,
+        max_jobs: int | None,
+        poll_seconds: float,
+        idle_timeout_seconds: float,
+        note: str,
+        stale_after_seconds: float | None,
+        executor_kinds: list[ExecutorKind] | None = None,
+        provider_kinds: list[ProviderKind] | None = None,
+        models: list[str] | None = None,
+        cost_tiers: list[str] | None = None,
+        endpoint_classes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "slot_index": None,
+            "max_jobs": max_jobs,
+            "poll_seconds": poll_seconds,
+            "idle_timeout_seconds": idle_timeout_seconds,
+            "note": note,
+            "stale_after_seconds": stale_after_seconds,
+            "executor_kinds": executor_kinds,
+            "provider_kinds": provider_kinds,
+            "models": models,
+            "cost_tiers": cost_tiers,
+            "endpoint_classes": endpoint_classes,
+        }
 
     @staticmethod
     def _job_finish_applied(
