@@ -141,11 +141,16 @@ class WorkspaceLoopController:
                     priority=priority,
                     note=note,
                 )
+                scheduled_job_ids = [job.id for job in jobs]
+                scheduled_session_ids = [
+                    job.session_id for job in jobs if job.session_id is not None
+                ]
                 plan = self.queue_store.plan_fleet(
                     target_jobs_per_worker=target_jobs_per_worker,
                     stale_after_seconds=stale_after_seconds,
                     provider_pools=batch_runner.provider_pools or None,
                     provider_health_db_path=batch_runner.provider_health_db_path,
+                    allowed_session_ids=scheduled_session_ids,
                 )
                 fleet_result = None
                 if plan.active_jobs > 0:
@@ -165,16 +170,13 @@ class WorkspaceLoopController:
                         poll_seconds=queue_poll_seconds,
                         idle_timeout_seconds=queue_idle_timeout_seconds,
                         stale_after_seconds=stale_after_seconds,
+                        allowed_session_ids=scheduled_session_ids,
                     )
                     total_processed_jobs += fleet_result.total_processed_jobs
                     total_paused_jobs += fleet_result.total_paused_jobs
                     total_failed_jobs += fleet_result.total_failed_jobs
                     total_workers_launched += fleet_result.total_workers_launched
 
-                scheduled_job_ids = [job.id for job in jobs]
-                scheduled_session_ids = [
-                    job.session_id for job in jobs if job.session_id is not None
-                ]
                 total_scheduled_jobs += len(scheduled_job_ids)
                 cycle = WorkspaceLoopCycle(
                     cycle_index=cycle_index,

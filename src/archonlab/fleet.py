@@ -32,6 +32,7 @@ class WorkerLaunchRequest:
     poll_seconds: float = 2.0
     idle_timeout_seconds: float = 30.0
     stale_after_seconds: float | None = 120.0
+    allowed_session_ids: list[str] | None = None
 
 
 class WorkerLauncher(Protocol):
@@ -63,6 +64,7 @@ class InProcessWorkerLauncher:
             models=None,
             cost_tiers=None,
             endpoint_classes=None,
+            allowed_session_ids=request.allowed_session_ids,
         )
 
 
@@ -97,6 +99,7 @@ class SubprocessWorkerLauncher:
                     poll_seconds=request.poll_seconds,
                     idle_timeout_seconds=request.idle_timeout_seconds,
                     stale_after_seconds=request.stale_after_seconds,
+                    allowed_session_ids=request.allowed_session_ids,
                 )
             ]
         else:
@@ -113,6 +116,7 @@ class SubprocessWorkerLauncher:
                     "models": None,
                     "cost_tiers": None,
                     "endpoint_classes": None,
+                    "allowed_session_ids": request.allowed_session_ids,
                 }
                 for index in range(1, max(1, request.worker_count or batch_runner.slot_limit) + 1)
             ]
@@ -164,6 +168,11 @@ class SubprocessWorkerLauncher:
         self._append_csv_arg(command, "--models", spec.get("models"))
         self._append_csv_arg(command, "--cost-tiers", spec.get("cost_tiers"))
         self._append_csv_arg(command, "--endpoint-classes", spec.get("endpoint_classes"))
+        self._append_repeated_arg(
+            command,
+            "--allowed-session-id",
+            spec.get("allowed_session_ids"),
+        )
 
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH")
@@ -200,6 +209,13 @@ class SubprocessWorkerLauncher:
             return
         command.extend([flag, ",".join(str(item) for item in value)])
 
+    @staticmethod
+    def _append_repeated_arg(command: list[str], flag: str, value: object) -> None:
+        if not isinstance(value, list) or not value:
+            return
+        for item in value:
+            command.extend([flag, str(item)])
+
 
 def create_worker_launcher(kind: str, config_path: Path) -> WorkerLauncher:
     if kind == "in_process":
@@ -216,12 +232,14 @@ def _plan_fleet(
     stale_after_seconds: float | None,
     provider_pools: dict[str, ProviderPoolConfig] | None = None,
     provider_health_db_path: Path | None = None,
+    allowed_session_ids: list[str] | None = None,
 ) -> QueueFleetPlan:
     return queue_store.plan_fleet(
         target_jobs_per_worker=target_jobs_per_worker,
         stale_after_seconds=stale_after_seconds,
         provider_pools=provider_pools,
         provider_health_db_path=provider_health_db_path,
+        allowed_session_ids=allowed_session_ids,
     )
 
 
@@ -348,6 +366,7 @@ class FleetController:
         poll_seconds: float = 2.0,
         idle_timeout_seconds: float = 30.0,
         stale_after_seconds: float | None = 120.0,
+        allowed_session_ids: list[str] | None = None,
     ) -> FleetControllerResult:
         started_at = datetime.now(UTC)
         fleet_run_id = self._new_fleet_run_id()
@@ -371,6 +390,7 @@ class FleetController:
                 "poll_seconds": poll_seconds,
                 "idle_timeout_seconds": idle_timeout_seconds,
                 "stale_after_seconds": stale_after_seconds,
+                "allowed_session_ids": allowed_session_ids or [],
             },
         )
         cycles: list[FleetControllerCycle] = []
@@ -402,6 +422,7 @@ class FleetController:
                     stale_after_seconds=stale_after_seconds,
                     provider_pools=self.batch_runner.provider_pools or None,
                     provider_health_db_path=self.batch_runner.provider_health_db_path,
+                    allowed_session_ids=allowed_session_ids,
                 )
                 if plan.active_jobs == 0:
                     stop_reason = "queue_drained"
@@ -440,6 +461,7 @@ class FleetController:
                         poll_seconds=poll_seconds,
                         idle_timeout_seconds=idle_timeout_seconds,
                         stale_after_seconds=stale_after_seconds,
+                        allowed_session_ids=allowed_session_ids,
                     ),
                 )
                 cycle = FleetControllerCycle(
@@ -485,6 +507,7 @@ class FleetController:
                 stale_after_seconds=stale_after_seconds,
                 provider_pools=self.batch_runner.provider_pools or None,
                 provider_health_db_path=self.batch_runner.provider_health_db_path,
+                allowed_session_ids=allowed_session_ids,
             )
             self._write_json(
                 artifact_dir / "error.json",
@@ -504,6 +527,7 @@ class FleetController:
             stale_after_seconds=stale_after_seconds,
             provider_pools=self.batch_runner.provider_pools or None,
             provider_health_db_path=self.batch_runner.provider_health_db_path,
+            allowed_session_ids=allowed_session_ids,
         )
         self._persist_result(event_store, artifact_dir, result)
         return result

@@ -633,17 +633,18 @@ class QueueStore:
                 return None
             return self._row_to_job(row)
 
-    def claim_next_job(self, *, worker_id: str | None = None) -> QueueJob | None:
+    def _claim_next_job(
+        self,
+        *,
+        worker_id: str | None = None,
+        allowed_session_ids: list[str] | None = None,
+    ) -> QueueJob | None:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
-            rows = self._conn.execute(
-                """
-                SELECT * FROM queue_jobs
-                WHERE status IN (?, ?)
-                ORDER BY priority DESC, created_at ASC
-                """,
-                (QueueJobStatus.QUEUED.value, QueueJobStatus.PENDING.value),
-            ).fetchall()
+            rows = self._queue_rows_for_statuses(
+                statuses=[QueueJobStatus.QUEUED, QueueJobStatus.PENDING],
+                allowed_session_ids=allowed_session_ids,
+            )
             worker_row = self._get_worker_locked(worker_id) if worker_id is not None else None
             worker = self._row_to_worker(worker_row) if worker_row is not None else None
             row = next(
@@ -683,6 +684,17 @@ class QueueStore:
             if claimed is None:
                 raise KeyError(f"Unknown queue job: {row['job_id']}")
             return self._row_to_job(claimed)
+
+    def claim_next_job(
+        self,
+        *,
+        worker_id: str | None = None,
+        allowed_session_ids: list[str] | None = None,
+    ) -> QueueJob | None:
+        return self._claim_next_job(
+            worker_id=worker_id,
+            allowed_session_ids=allowed_session_ids,
+        )
 
     def update_status(self, job_id: str, status: QueueJobStatus) -> QueueJob:
         if status in {QueueJobStatus.COMPLETED, QueueJobStatus.FAILED, QueueJobStatus.CANCELED}:
@@ -1064,23 +1076,20 @@ class QueueStore:
         stale_after_seconds: float | None = 120.0,
         provider_pools: dict[str, ProviderPoolConfig] | None = None,
         provider_health_db_path: Path | None = None,
+        allowed_session_ids: list[str] | None = None,
     ) -> QueueFleetPlan:
         if target_jobs_per_worker < 1:
             raise ValueError("target_jobs_per_worker must be >= 1")
 
         with self._lock:
-            job_rows = self._conn.execute(
-                """
-                SELECT * FROM queue_jobs
-                WHERE status IN (?, ?, ?)
-                ORDER BY priority DESC, created_at ASC
-                """,
-                (
-                    QueueJobStatus.QUEUED.value,
-                    QueueJobStatus.PENDING.value,
-                    QueueJobStatus.RUNNING.value,
-                ),
-            ).fetchall()
+            job_rows = self._queue_rows_for_statuses(
+                statuses=[
+                    QueueJobStatus.QUEUED,
+                    QueueJobStatus.PENDING,
+                    QueueJobStatus.RUNNING,
+                ],
+                allowed_session_ids=allowed_session_ids,
+            )
             worker_rows = self._conn.execute(
                 """
                 SELECT * FROM queue_workers
@@ -1252,6 +1261,29 @@ class QueueStore:
             ),
             profiles=profiles,
         )
+
+    def _queue_rows_for_statuses(
+        self,
+        *,
+        statuses: list[QueueJobStatus],
+        allowed_session_ids: list[str] | None = None,
+    ) -> list[sqlite3.Row]:
+        normalized_session_ids = self._normalize_allowed_session_ids(allowed_session_ids)
+        if normalized_session_ids == ():
+            return []
+        query = "SELECT * FROM queue_jobs"
+        clauses = [
+            "status IN (" + ", ".join("?" for _ in statuses) + ")",
+        ]
+        params: list[str] = [status.value for status in statuses]
+        if normalized_session_ids is not None:
+            clauses.append(
+                "session_id IN (" + ", ".join("?" for _ in normalized_session_ids) + ")"
+            )
+            params.extend(normalized_session_ids)
+        query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY priority DESC, created_at ASC"
+        return cast(list[sqlite3.Row], self._conn.execute(query, params).fetchall())
 
     def _reap_stale_workers_locked(
         self,
@@ -1660,6 +1692,21 @@ class QueueStore:
             cost_tiers=worker.cost_tiers,
             endpoint_classes=worker.endpoint_classes,
         )
+
+    @staticmethod
+    def _normalize_allowed_session_ids(
+        allowed_session_ids: list[str] | None,
+    ) -> tuple[str, ...] | None:
+        if allowed_session_ids is None:
+            return None
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for session_id in allowed_session_ids:
+            if not session_id or session_id in seen:
+                continue
+            seen.add(session_id)
+            normalized.append(session_id)
+        return tuple(normalized)
 
     @staticmethod
     def _worker_matches_profile_exact(worker: QueueWorkerLease, job: QueueJob) -> bool:

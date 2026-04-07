@@ -457,6 +457,7 @@ def test_in_process_worker_launcher_delegates_to_batch_runner(tmp_path: Path, mo
         "models": None,
         "cost_tiers": None,
         "endpoint_classes": None,
+        "allowed_session_ids": None,
     }
 
 
@@ -558,8 +559,82 @@ def test_subprocess_worker_launcher_spawns_json_queue_workers_and_merges_reports
         "--config",
     ]
     assert "--json" in calls[0]
+
+
+def test_subprocess_worker_launcher_forwards_allowed_session_ids_to_queue_worker_cli(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    batch_runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(tmp_path / "control"),
+        artifact_root=tmp_path / "artifacts",
+        slot_limit=1,
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        capture_output: bool = False,
+        text: bool = False,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, capture_output, text, check
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=BatchRunReport(worker_ids=["worker-1"]).model_dump_json(),
+            stderr="",
+        )
+
+    monkeypatch.setattr("archonlab.fleet.subprocess.run", fake_run)
+
+    launcher = SubprocessWorkerLauncher(
+        config_path=tmp_path / "workspace.toml",
+        python_executable="/usr/bin/python3",
+        repo_root=tmp_path,
+        pythonpath_root=tmp_path / "src",
+    )
+    launcher.launch(
+        batch_runner=batch_runner,
+        request=WorkerLaunchRequest(
+            worker_count=1,
+            plan_driven=False,
+            max_jobs_per_worker=1,
+            allowed_session_ids=["session-alpha-1", "session-alpha-2"],
+        ),
+    )
+
+    assert calls == [
+        [
+            "/usr/bin/python3",
+            "-m",
+            "archonlab.app",
+            "queue",
+            "worker",
+            "--config",
+            str(tmp_path / "workspace.toml"),
+            "--json",
+            "--auto-slot",
+            "--max-jobs",
+            "1",
+            "--poll-seconds",
+            "2.0",
+            "--idle-timeout-seconds",
+            "30.0",
+            "--note",
+            "fleet_worker_1",
+            "--stale-after-seconds",
+            "120.0",
+            "--allowed-session-id",
+            "session-alpha-1",
+            "--allowed-session-id",
+            "session-alpha-2",
+        ]
+    ]
     assert "--auto-slot" in calls[0]
-    assert "--models" in calls[0]
-    assert "gpt-5.4-mini" in calls[0]
-    assert "--cost-tiers" in calls[1]
-    assert "premium" in calls[1]

@@ -23,6 +23,7 @@ from archonlab.models import (
     ProviderPoolMemberHealth,
     ProviderPoolMemberHealthStatus,
     QueueJobPreview,
+    QueueJobStatus,
     RunLoopResult,
     RunStatus,
     RunSummary,
@@ -1021,6 +1022,66 @@ def test_workspace_run_command_filters_projects_by_tags(
     jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
     assert len(jobs) == 1
     assert jobs[0].project_id == "beta"
+
+
+def test_workspace_run_command_project_filter_executes_only_target_project_sessions(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+        project_ids=("alpha", "beta"),
+    )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    alpha_job = queue_store.enqueue_workspace_sessions(config_path, project_ids=["alpha"])[0]
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "run",
+            "--config",
+            str(config_path),
+            "--project-id",
+            "beta",
+            "--max-cycles",
+            "1",
+            "--workers",
+            "1",
+            "--target-jobs-per-worker",
+            "1",
+            "--max-jobs-per-worker",
+            "1",
+            "--poll-seconds",
+            "0.1",
+            "--idle-timeout-seconds",
+            "0.1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    store = EventStore(artifact_root / "archonlab.db")
+    alpha_session = store.list_sessions(
+        workspace_id="demo-workspace",
+        project_id="alpha",
+        limit=1,
+    )[0]
+    beta_session = store.list_sessions(
+        workspace_id="demo-workspace",
+        project_id="beta",
+        limit=1,
+    )[0]
+    alpha_current = queue_store.get_job(alpha_job.id)
+
+    assert alpha_session.completed_iterations == 0
+    assert beta_session.completed_iterations == 1
+    assert alpha_current is not None
+    assert alpha_current.status is QueueJobStatus.QUEUED
 
 
 def test_run_start_creates_artifacts(

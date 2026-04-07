@@ -172,6 +172,7 @@ class BatchRunner:
         models: list[str] | None = None,
         cost_tiers: list[str] | None = None,
         endpoint_classes: list[str] | None = None,
+        allowed_session_ids: list[str] | None = None,
     ) -> BatchRunReport:
         report = BatchRunReport()
         report_lock = threading.Lock()
@@ -205,7 +206,10 @@ class BatchRunner:
                     status=WorkerStatus.IDLE,
                     note=note,
                 )
-                job = self.queue_store.claim_next_job(worker_id=worker.worker_id)
+                job = self.queue_store.claim_next_job(
+                    worker_id=worker.worker_id,
+                    allowed_session_ids=allowed_session_ids,
+                )
                 if job is None:
                     if time.monotonic() - idle_started >= idle_timeout_seconds:
                         break
@@ -253,6 +257,7 @@ class BatchRunner:
         models: list[str] | None = None,
         cost_tiers: list[str] | None = None,
         endpoint_classes: list[str] | None = None,
+        allowed_session_ids: list[str] | None = None,
     ) -> BatchRunReport:
         aggregate = BatchRunReport()
         aggregate_lock = threading.Lock()
@@ -264,6 +269,7 @@ class BatchRunner:
                 poll_seconds=poll_seconds,
                 idle_timeout_seconds=idle_timeout_seconds,
                 stale_after_seconds=stale_after_seconds,
+                allowed_session_ids=allowed_session_ids,
             )
             if plan_driven
             else [
@@ -279,6 +285,7 @@ class BatchRunner:
                     "models": models,
                     "cost_tiers": cost_tiers,
                     "endpoint_classes": endpoint_classes,
+                    "allowed_session_ids": allowed_session_ids,
                 }
                 for index in range(1, max(1, worker_count or self.slot_limit) + 1)
             ]
@@ -305,6 +312,7 @@ class BatchRunner:
         poll_seconds: float,
         idle_timeout_seconds: float,
         stale_after_seconds: float | None,
+        allowed_session_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         return self._planned_fleet_launch_specs(
             worker_count=worker_count,
@@ -313,6 +321,7 @@ class BatchRunner:
             poll_seconds=poll_seconds,
             idle_timeout_seconds=idle_timeout_seconds,
             stale_after_seconds=stale_after_seconds,
+            allowed_session_ids=allowed_session_ids,
         )
 
     def _run_job(
@@ -492,12 +501,14 @@ class BatchRunner:
         poll_seconds: float,
         idle_timeout_seconds: float,
         stale_after_seconds: float | None,
+        allowed_session_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         plan = self.queue_store.plan_fleet(
             target_jobs_per_worker=target_jobs_per_worker,
             stale_after_seconds=stale_after_seconds,
             provider_pools=self.provider_pools or None,
             provider_health_db_path=self.provider_health_db_path,
+            allowed_session_ids=allowed_session_ids,
         )
         launch_specs: list[dict[str, Any]] = []
         generic_workers_needed = 0
@@ -520,6 +531,7 @@ class BatchRunner:
                         models=profile.required_models or None,
                         cost_tiers=profile.required_cost_tiers or None,
                         endpoint_classes=profile.required_endpoint_classes or None,
+                        allowed_session_ids=allowed_session_ids,
                     )
                 )
                 if worker_count is not None and len(launch_specs) >= worker_count:
@@ -532,6 +544,7 @@ class BatchRunner:
                     idle_timeout_seconds=idle_timeout_seconds,
                     note=f"planned_fleet:generic:{launch_index}",
                     stale_after_seconds=stale_after_seconds,
+                    allowed_session_ids=allowed_session_ids,
                 )
             )
             if worker_count is not None and len(launch_specs) >= worker_count:
@@ -561,6 +574,7 @@ class BatchRunner:
         models: list[str] | None = None,
         cost_tiers: list[str] | None = None,
         endpoint_classes: list[str] | None = None,
+        allowed_session_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         return {
             "slot_index": None,
@@ -574,6 +588,7 @@ class BatchRunner:
             "models": models,
             "cost_tiers": cost_tiers,
             "endpoint_classes": endpoint_classes,
+            "allowed_session_ids": allowed_session_ids,
         }
 
     @staticmethod

@@ -22,8 +22,9 @@ def _write_workspace_config(
     artifact_root: Path,
     project_path: Path,
     archon_path: Path,
+    project_ids: tuple[str, ...] = ("alpha",),
 ) -> Path:
-    path.write_text(
+    content = (
         "[workspace]\n"
         'name = "demo-workspace"\n\n'
         "[run]\n"
@@ -32,12 +33,15 @@ def _write_workspace_config(
         "dry_run = true\n"
         "max_iterations = 2\n"
         "max_parallel = 2\n\n"
-        "[[projects]]\n"
-        'id = "alpha"\n'
-        f'project_path = "{project_path}"\n'
-        f'archon_path = "{archon_path}"\n',
-        encoding="utf-8",
     )
+    for project_id in project_ids:
+        content += (
+            "[[projects]]\n"
+            f'id = "{project_id}"\n'
+            f'project_path = "{project_path}"\n'
+            f'archon_path = "{archon_path}"\n\n'
+        )
+    path.write_text(content, encoding="utf-8")
     return path
 
 
@@ -274,6 +278,58 @@ def test_workspace_loop_controller_filters_projects_by_tags(
     assert result.total_processed_jobs == 1
     assert len(sessions) == 1
     assert sessions[0].project_id == "beta"
+
+
+def test_workspace_loop_controller_project_filter_does_not_process_unrelated_project_jobs(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+        project_ids=("alpha", "beta"),
+    )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    beta_job = queue_store.enqueue_workspace_sessions(config_path, project_ids=["beta"])[0]
+
+    controller = WorkspaceLoopController(config_path)
+    result = controller.run(
+        project_id="alpha",
+        max_cycles=1,
+        idle_cycles=1,
+        sleep_seconds=0.0,
+        fleet_max_cycles=1,
+        fleet_idle_cycles=1,
+        workers=1,
+        target_jobs_per_worker=1,
+        max_jobs_per_worker=1,
+        queue_poll_seconds=0.01,
+        queue_idle_timeout_seconds=0.01,
+    )
+
+    event_store = EventStore(artifact_root / "archonlab.db")
+    alpha_session = event_store.list_sessions(
+        workspace_id="demo-workspace",
+        project_id="alpha",
+        limit=1,
+    )[0]
+    beta_session = event_store.list_sessions(
+        workspace_id="demo-workspace",
+        project_id="beta",
+        limit=1,
+    )[0]
+    beta_current = queue_store.get_job(beta_job.id)
+
+    assert result.total_processed_jobs == 1
+    assert result.cycles[0].scheduled_session_ids == [alpha_session.session_id]
+    assert alpha_session.completed_iterations == 1
+    assert beta_session.completed_iterations == 0
+    assert beta_current is not None
+    assert beta_current.status is QueueJobStatus.QUEUED
 
 
 def test_workspace_loop_controller_stops_after_operator_request(

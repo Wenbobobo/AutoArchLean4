@@ -983,6 +983,7 @@ def workspace_run(
         typer.echo("Failed: 0")
         typer.echo("Workers launched: 0")
         return
+    allowed_session_ids = [job.session_id for job in jobs if job.session_id is not None]
 
     batch_runner = BatchRunner(
         queue_store=queue_store,
@@ -1015,6 +1016,7 @@ def workspace_run(
         poll_seconds=poll_seconds,
         idle_timeout_seconds=idle_timeout_seconds,
         stale_after_seconds=stale_after_seconds,
+        allowed_session_ids=allowed_session_ids,
     )
     typer.echo(f"Fleet: {result.fleet_run_id}")
     if result.artifact_dir is not None:
@@ -2694,6 +2696,14 @@ def queue_worker(
             help="Comma-separated endpoint classes this worker can run.",
         ),
     ] = None,
+    allowed_session_ids: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allowed-session-id",
+            hidden=True,
+            help="Internal scope guard for worker job claims.",
+        ),
+    ] = None,
     json_output: Annotated[
         bool,
         typer.Option("--json", help="Print machine-readable worker report JSON."),
@@ -2719,6 +2729,7 @@ def queue_worker(
         models=_parse_csv_strings(models),
         cost_tiers=_parse_csv_strings(cost_tiers),
         endpoint_classes=_parse_csv_strings(endpoint_classes),
+        allowed_session_ids=allowed_session_ids,
     )
     if json_output:
         typer.echo(report.model_dump_json(indent=2))

@@ -211,6 +211,88 @@ def test_batch_runner_session_quanta_are_fair_across_projects(
     assert {job.session_id for job in queued_jobs} == {session.session_id for session in sessions}
 
 
+def test_queue_store_plan_fleet_can_scope_to_target_session_ids(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    project_b = _clone_project(fake_archon_project, tmp_path / "DemoProjectB")
+    artifact_root = tmp_path / "artifacts"
+    workspace_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        archon_path=fake_archon_root,
+        projects=[
+            ("alpha", fake_archon_project),
+            ("beta", project_b),
+        ],
+    )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    jobs = queue_store.enqueue_workspace_sessions(workspace_path)
+    beta_job = next(job for job in jobs if job.project_id == "beta")
+
+    scoped_plan = queue_store.plan_fleet(
+        target_jobs_per_worker=1,
+        allowed_session_ids=[beta_job.session_id or ""],
+    )
+
+    assert scoped_plan.active_jobs == 1
+    assert scoped_plan.queued_jobs == 1
+    assert len(scoped_plan.profiles) == 1
+    assert scoped_plan.profiles[0].project_ids == ["beta"]
+
+
+def test_batch_runner_run_worker_claims_only_target_session_ids(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    project_b = _clone_project(fake_archon_project, tmp_path / "DemoProjectB")
+    artifact_root = tmp_path / "artifacts"
+    workspace_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        archon_path=fake_archon_root,
+        projects=[
+            ("alpha", fake_archon_project),
+            ("beta", project_b),
+        ],
+    )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    jobs = queue_store.enqueue_workspace_sessions(workspace_path)
+    alpha_job = next(job for job in jobs if job.project_id == "alpha")
+    beta_job = next(job for job in jobs if job.project_id == "beta")
+    runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(artifact_root),
+        artifact_root=artifact_root,
+        slot_limit=1,
+    )
+
+    report = runner.run_worker(
+        slot_index=1,
+        max_jobs=1,
+        poll_seconds=0.01,
+        idle_timeout_seconds=0.1,
+        allowed_session_ids=[beta_job.session_id or ""],
+        executor_kinds=[ExecutorKind.DRY_RUN],
+        provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+    )
+
+    assert report.processed_job_ids == [beta_job.id]
+    alpha_current = queue_store.get_job(alpha_job.id)
+    assert alpha_current is not None
+    assert alpha_current.status is QueueJobStatus.QUEUED
+
+    event_store = EventStore(artifact_root / "archonlab.db")
+    alpha_session = event_store.get_session(alpha_job.session_id or "")
+    beta_session = event_store.get_session(beta_job.session_id or "")
+    assert alpha_session is not None
+    assert beta_session is not None
+    assert alpha_session.completed_iterations == 0
+    assert beta_session.completed_iterations == 1
+
+
 def test_queue_store_reaps_stale_worker_and_recovers_running_session_claim(
     tmp_path: Path,
     fake_archon_project: Path,
