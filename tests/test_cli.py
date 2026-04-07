@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from archonlab.app import app
+from archonlab.queue import QueueStore
 
 runner = CliRunner()
 
@@ -304,3 +306,60 @@ def test_queue_worker_command_can_auto_assign_slot(
     assert enqueue_result.exit_code == 0
     assert worker_result.exit_code == 0
     assert "Worker slot: 1" in worker_result.output
+
+
+def test_queue_sweep_workers_command_reaps_stale_worker(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    queue_store.register_worker(slot_index=1, worker_id="worker-stale")
+    queue_store._conn.execute(
+        "UPDATE queue_workers SET heartbeat_at = ? WHERE worker_id = ?",
+        (
+            (datetime.now(UTC) - timedelta(seconds=300)).isoformat(),
+            "worker-stale",
+        ),
+    )
+    queue_store._conn.commit()
+
+    sweep_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "sweep-workers",
+            "--config",
+            str(config_path),
+            "--stale-after-seconds",
+            "60",
+        ],
+    )
+    workers_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "workers",
+            "--config",
+            str(config_path),
+            "--stale-after-seconds",
+            "60",
+        ],
+    )
+
+    assert sweep_result.exit_code == 0
+    assert "Reaped: 1" in sweep_result.output
+    assert workers_result.exit_code == 0
+    assert "worker-stale | slot=1 | failed" in workers_result.output

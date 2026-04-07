@@ -142,10 +142,15 @@ def build_task_matcher(name: str, raw_matcher: object) -> ExecutionTaskMatcher:
     if not isinstance(raw_matcher, dict):
         raw_matcher = {}
     task_sources = raw_matcher.get("task_sources", [])
+    blockers = raw_matcher.get("blockers", [])
     if "task_source" in raw_matcher:
         task_sources = [raw_matcher["task_source"]]
     elif not isinstance(task_sources, list):
         task_sources = [task_sources]
+    if "blocker" in raw_matcher:
+        blockers = [raw_matcher["blocker"]]
+    elif not isinstance(blockers, list):
+        blockers = [blockers]
     return ExecutionTaskMatcher(
         name=name,
         phase=(
@@ -163,6 +168,23 @@ def build_task_matcher(name: str, raw_matcher: object) -> ExecutionTaskMatcher:
             else None
         ),
         task_sources=[TaskSource(str(source)) for source in task_sources],
+        min_priority=(
+            int(raw_matcher["min_priority"])
+            if "min_priority" in raw_matcher
+            else None
+        ),
+        max_priority=(
+            int(raw_matcher["max_priority"])
+            if "max_priority" in raw_matcher
+            else None
+        ),
+        blockers=[str(blocker) for blocker in blockers],
+        blocker_pattern=raw_matcher.get("blocker_pattern"),
+        objective_relevant=(
+            bool(raw_matcher["objective_relevant"])
+            if "objective_relevant" in raw_matcher
+            else None
+        ),
         task_id_pattern=raw_matcher.get("task_id_pattern"),
         task_title_pattern=raw_matcher.get("task_title_pattern"),
         theorem_pattern=raw_matcher.get("theorem_pattern"),
@@ -206,6 +228,26 @@ def matches_task_rule(
         return False
     if matcher.task_sources and not set(matcher.task_sources).issubset(set(action.task_sources)):
         return False
+    if matcher.min_priority is not None and (
+        action.task_priority is None or action.task_priority < matcher.min_priority
+    ):
+        return False
+    if matcher.max_priority is not None and (
+        action.task_priority is None or action.task_priority > matcher.max_priority
+    ):
+        return False
+    if matcher.blockers and not set(matcher.blockers).issubset(set(action.task_blockers)):
+        return False
+    if matcher.blocker_pattern is not None and not any(
+        re.search(matcher.blocker_pattern, blocker) is not None
+        for blocker in action.task_blockers
+    ):
+        return False
+    if (
+        matcher.objective_relevant is not None
+        and matcher.objective_relevant is not action.objective_relevant
+    ):
+        return False
     if not _matches_pattern(matcher.task_id_pattern, action.task_id):
         return False
     if not _matches_pattern(matcher.task_title_pattern, action.task_title):
@@ -240,6 +282,11 @@ def _matcher_has_no_task_constraints(matcher: ExecutionTaskMatcher) -> bool:
             matcher.file_path,
             matcher.task_status,
             matcher.task_sources,
+            matcher.min_priority,
+            matcher.max_priority,
+            matcher.blockers,
+            matcher.blocker_pattern,
+            matcher.objective_relevant,
             matcher.task_id_pattern,
             matcher.task_title_pattern,
             matcher.theorem_pattern,

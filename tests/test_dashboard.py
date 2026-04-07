@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -129,7 +129,23 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
 
     queue_store = QueueStore(artifact_root / "archonlab.db")
     queue_store.register_worker(slot_index=1, worker_id="worker-test")
+    stale_heartbeat = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
+    queue_store._conn.execute(
+        "UPDATE queue_workers SET heartbeat_at = ? WHERE worker_id = ?",
+        (stale_heartbeat, "worker-test"),
+    )
+    queue_store._conn.commit()
     workers_response = client.get("/api/queue/workers")
     assert workers_response.status_code == 200
     workers = workers_response.json()
     assert workers[0]["worker_id"] == "worker-test"
+    assert workers[0]["stale"] is True
+
+    sweep_response = client.post(
+        "/api/queue/workers/sweep",
+        json={"stale_after_seconds": 60, "requeue_running_jobs": True},
+    )
+    assert sweep_response.status_code == 200
+    swept = sweep_response.json()
+    assert swept[0]["worker_id"] == "worker-test"
+    assert swept[0]["status"] == "failed"

@@ -211,6 +211,9 @@ class AdapterAction(BaseModel):
     file_path: Path | None = None
     task_status: TaskStatus | None = None
     task_sources: list[TaskSource] = Field(default_factory=list)
+    task_priority: int | None = None
+    task_blockers: list[str] = Field(default_factory=list)
+    objective_relevant: bool | None = None
     supervisor_action: SupervisorAction | None = None
     supervisor_reason: SupervisorReason | None = None
 
@@ -501,6 +504,8 @@ class QueueWorkerLease(BaseModel):
     finished_at: datetime | None = None
     processed_jobs: int = 0
     failed_jobs: int = 0
+    heartbeat_age_seconds: float | None = None
+    stale: bool = False
 
     @property
     def heartbeat(self) -> datetime:
@@ -538,6 +543,11 @@ class ExecutionTaskMatcher(BaseModel):
     file_path: Path | None = None
     task_status: TaskStatus | None = None
     task_sources: list[TaskSource] = Field(default_factory=list)
+    min_priority: int | None = None
+    max_priority: int | None = None
+    blockers: list[str] = Field(default_factory=list)
+    blocker_pattern: str | None = None
+    objective_relevant: bool | None = None
     task_id_pattern: str | None = None
     task_title_pattern: str | None = None
     theorem_pattern: str | None = None

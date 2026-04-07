@@ -123,6 +123,9 @@ def test_select_next_action_targets_blocked_theorem_for_prover(tmp_path: Path) -
     assert action.reason == "task_graph_focus"
     assert action.task_title == "foo"
     assert action.file_path == Path("Core.lean")
+    assert action.task_priority == 2
+    assert action.task_blockers == ["contains_sorry"]
+    assert action.objective_relevant is True
     assert "Focus task:" in (action.prompt_preview or "")
     assert "theorem: foo" in (action.prompt_preview or "")
 
@@ -200,3 +203,4 @@ def test_select_next_action_prefers_dependency_that_unblocks_objective(tmp_path:
 
     assert action.phase == "prover"
     assert action.task_title == "helper"
+    assert action.objective_relevant is True

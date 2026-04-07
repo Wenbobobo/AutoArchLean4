@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,8 +11,10 @@ from archonlab.batch import BatchRunner
 from archonlab.control import ControlService
 from archonlab.models import (
     BenchmarkProjectResult,
+    QueueJobStatus,
     RunStatus,
     SnapshotDelta,
+    WorkerStatus,
     WorkflowMode,
 )
 from archonlab.project_state import collect_project_snapshot, score_project_snapshot
@@ -278,3 +281,36 @@ def test_queue_store_auto_assigns_next_available_worker_slot(tmp_path: Path) -> 
     assert first.slot_index == 1
     assert second.slot_index == 2
     assert third.slot_index == 1
+
+
+def test_queue_store_reaps_stale_worker_and_requeues_running_job(tmp_path: Path) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    job = queue_store.enqueue("benchmark_project", {"manifest_path": "demo.toml"})
+    worker = queue_store.register_worker(slot_index=1, worker_id="worker-stale")
+    claimed = queue_store.claim_next_job(worker_id=worker.worker_id)
+    assert claimed is not None
+    queue_store.assign_job_to_worker(worker.worker_id, claimed.id)
+
+    stale_heartbeat = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
+    queue_store._conn.execute(
+        "UPDATE queue_workers SET heartbeat_at = ? WHERE worker_id = ?",
+        (stale_heartbeat, worker.worker_id),
+    )
+    queue_store._conn.commit()
+
+    listed = queue_store.list_workers(stale_after_seconds=60)
+    assert listed[0].stale is True
+
+    reaped = queue_store.reap_stale_workers(stale_after_seconds=60)
+
+    assert [lease.worker_id for lease in reaped] == [worker.worker_id]
+    updated_worker = queue_store.get_worker(worker.worker_id)
+    assert updated_worker is not None
+    assert updated_worker.status is WorkerStatus.FAILED
+    assert updated_worker.current_job_id is None
+
+    updated_job = queue_store.get_job(job.id)
+    assert updated_job is not None
+    assert updated_job.status is QueueJobStatus.QUEUED
+    assert updated_job.worker_id is None
+    assert updated_job.error_message == f"Recovered from stale worker {worker.worker_id}"

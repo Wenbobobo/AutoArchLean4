@@ -311,10 +311,16 @@ class QueueStore:
         note: str | None = None,
         worktree_root: Path | None = None,
         worktree_root_factory: Callable[[str, int], Path] | None = None,
+        stale_after_seconds: float | None = None,
     ) -> QueueWorkerLease:
         resolved_worker_id = worker_id or self._new_worker_id()
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
+            if stale_after_seconds is not None:
+                self._reap_stale_workers_locked(
+                    stale_after_seconds=stale_after_seconds,
+                    requeue_running_jobs=True,
+                )
             resolved_slot_index = slot_index or self._next_available_slot_locked()
             active_row = self._conn.execute(
                 """
@@ -375,6 +381,29 @@ class QueueStore:
             self._conn.commit()
         return lease
 
+    def reap_stale_workers(
+        self,
+        *,
+        stale_after_seconds: float,
+        requeue_running_jobs: bool = True,
+    ) -> list[QueueWorkerLease]:
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            reaped_ids = self._reap_stale_workers_locked(
+                stale_after_seconds=stale_after_seconds,
+                requeue_running_jobs=requeue_running_jobs,
+            )
+            self._conn.commit()
+        workers = [
+            worker
+            for worker in (self.get_worker(worker_id) for worker_id in reaped_ids)
+            if worker is not None
+        ]
+        return self._annotate_workers(
+            workers,
+            stale_after_seconds=stale_after_seconds,
+        )
+
     def _next_available_slot_locked(self, *, start_at: int = 1) -> int:
         rows = self._conn.execute(
             """
@@ -393,7 +422,12 @@ class QueueStore:
             candidate += 1
         return candidate
 
-    def list_workers(self, *, include_stopped: bool = True) -> list[QueueWorkerLease]:
+    def list_workers(
+        self,
+        *,
+        include_stopped: bool = True,
+        stale_after_seconds: float | None = None,
+    ) -> list[QueueWorkerLease]:
         with self._lock:
             query = "SELECT * FROM queue_workers"
             params: list[str] = []
@@ -402,10 +436,96 @@ class QueueStore:
                 params.append(WorkerStatus.STOPPED.value)
             query += " ORDER BY slot_index ASC, started_at ASC"
             rows = self._conn.execute(query, params).fetchall()
-            return [self._row_to_worker(row) for row in rows]
+            workers = [self._row_to_worker(row) for row in rows]
+        return self._annotate_workers(workers, stale_after_seconds=stale_after_seconds)
 
     def list_worker_leases(self) -> list[QueueWorkerLease]:
         return self.list_workers()
+
+    def _reap_stale_workers_locked(
+        self,
+        *,
+        stale_after_seconds: float,
+        requeue_running_jobs: bool,
+    ) -> list[str]:
+        cutoff = datetime.now(UTC).timestamp() - stale_after_seconds
+        rows = self._conn.execute(
+            """
+            SELECT worker_id, current_job_id, heartbeat_at FROM queue_workers
+            WHERE status IN (?, ?)
+            """,
+            (
+                WorkerStatus.IDLE.value,
+                WorkerStatus.RUNNING.value,
+            ),
+        ).fetchall()
+        reaped_ids: list[str] = []
+        now_iso = datetime.now(UTC).isoformat()
+        for row in rows:
+            heartbeat_ts = datetime.fromisoformat(row["heartbeat_at"]).timestamp()
+            if heartbeat_ts >= cutoff:
+                continue
+            worker_id = str(row["worker_id"])
+            current_job_id = row["current_job_id"]
+            if requeue_running_jobs and current_job_id is not None:
+                self._conn.execute(
+                    """
+                    UPDATE queue_jobs
+                    SET status = ?, updated_at = ?, started_at = NULL, worker_id = NULL,
+                        error_message = ?
+                    WHERE job_id = ? AND status = ?
+                    """,
+                    (
+                        QueueJobStatus.QUEUED.value,
+                        now_iso,
+                        f"Recovered from stale worker {worker_id}",
+                        current_job_id,
+                        QueueJobStatus.RUNNING.value,
+                    ),
+                )
+            self._conn.execute(
+                """
+                UPDATE queue_workers
+                SET status = ?, current_job_id = NULL, last_job_id = COALESCE(?, last_job_id),
+                    note = ?, heartbeat_at = ?, finished_at = ?
+                WHERE worker_id = ?
+                """,
+                (
+                    WorkerStatus.FAILED.value,
+                    current_job_id,
+                    f"stale_worker_reaped_after_{stale_after_seconds:.1f}s",
+                    now_iso,
+                    now_iso,
+                    worker_id,
+                ),
+            )
+            reaped_ids.append(worker_id)
+        return reaped_ids
+
+    @staticmethod
+    def _annotate_workers(
+        workers: list[QueueWorkerLease],
+        *,
+        stale_after_seconds: float | None,
+    ) -> list[QueueWorkerLease]:
+        now = datetime.now(UTC)
+        annotated: list[QueueWorkerLease] = []
+        for worker in workers:
+            heartbeat_age_seconds = max(0.0, (now - worker.heartbeat_at).total_seconds())
+            stale = (
+                stale_after_seconds is not None
+                and worker.status in {WorkerStatus.IDLE, WorkerStatus.RUNNING}
+                and heartbeat_age_seconds >= stale_after_seconds
+            )
+            annotated.append(
+                worker.model_copy(
+                    update={
+                        "heartbeat_age_seconds": heartbeat_age_seconds,
+                        "stale": stale,
+                    }
+                )
+            )
+        return annotated
 
     def heartbeat_worker(
         self,

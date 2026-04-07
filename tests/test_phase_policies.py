@@ -196,6 +196,9 @@ def test_run_service_can_route_task_specific_executor_and_provider(
         'theorem_pattern = "^foo$"\n'
         'task_status = "blocked"\n'
         'task_sources = ["lean_declaration"]\n'
+        "min_priority = 1\n"
+        'blocker_pattern = "contains_sorry"\n'
+        "objective_relevant = true\n"
         "\n"
         "[task_executor.core_focus]\n"
         'kind = "codex_exec"\n'
@@ -252,6 +255,9 @@ def test_run_service_can_route_task_specific_executor_and_provider(
             file_path=Path("Core.lean"),
             task_status=TaskStatus.BLOCKED,
             task_sources=[TaskSource.LEAN_DECLARATION],
+            task_priority=2,
+            task_blockers=["contains_sorry"],
+            objective_relevant=True,
         ),
     )
     first_result = service.start(dry_run=False)
@@ -269,6 +275,9 @@ def test_run_service_can_route_task_specific_executor_and_provider(
             file_path=Path("Aux.lean"),
             task_status=TaskStatus.BLOCKED,
             task_sources=[TaskSource.LEAN_DECLARATION],
+            task_priority=0,
+            task_blockers=["contains_sorry"],
+            objective_relevant=False,
         ),
     )
     second_result = service.start(dry_run=False)

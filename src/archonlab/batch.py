@@ -141,6 +141,7 @@ class BatchRunner:
         idle_timeout_seconds: float = 30.0,
         worker_id: str | None = None,
         note: str | None = "external_worker",
+        stale_after_seconds: float | None = None,
     ) -> BatchRunReport:
         report = BatchRunReport()
         report_lock = threading.Lock()
@@ -156,6 +157,7 @@ class BatchRunner:
                     slot_index=assigned_slot_index,
                 )
             ),
+            stale_after_seconds=stale_after_seconds,
         )
         report.worker_ids.append(worker.worker_id)
         processed_count = 0

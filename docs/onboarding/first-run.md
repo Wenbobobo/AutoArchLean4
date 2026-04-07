@@ -44,6 +44,9 @@ uv run archonlab queue worker --config archonlab.toml --slot-index 1 --max-jobs 
 # 9b. 如果你不想手工分配 worker slot
 uv run archonlab queue worker --config archonlab.toml --auto-slot --max-jobs 1
 
+# 9c. 如果 worker 异常退出，清理 stale lease
+uv run archonlab queue sweep-workers --config archonlab.toml --stale-after-seconds 120
+
 # 10. 启动控制面 dashboard
 uv run archonlab dashboard serve --config archonlab.toml --port 8000
 
@@ -63,6 +66,7 @@ uv run archonlab dashboard serve --config archonlab.toml --port 8000
 - `queue workers` 能不能看到 slot / current job / processed 统计
 - 独立 `queue worker` 跑完后，worker 是否进入 `stopped`
 - `--auto-slot` 启动的 worker 能不能自动拿到空闲 slot
+- stale worker sweep 之后，遗留 job 是否重新进入队列
 - 日志里是正常推进还是反复 stuck
 
 ## 你第一次不用做什么

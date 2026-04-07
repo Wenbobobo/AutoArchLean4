@@ -198,6 +198,9 @@ class RunService:
                         action.task_status.value if action.task_status is not None else None
                     ),
                     "task_sources": [source.value for source in action.task_sources],
+                    "task_priority": action.task_priority,
+                    "task_blockers": action.task_blockers,
+                    "objective_relevant": action.objective_relevant,
                     "supervisor_action": (
                         action.supervisor_action.value
                         if action.supervisor_action is not None

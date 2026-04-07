@@ -518,17 +518,28 @@ def queue_workers(
         Path,
         typer.Option("--config", exists=True, help="Config file."),
     ] = Path("archonlab.toml"),
+    stale_after_seconds: Annotated[
+        float | None,
+        typer.Option(
+            "--stale-after-seconds",
+            min=0.1,
+            help="Flag active workers as stale when heartbeat age exceeds this threshold.",
+        ),
+    ] = 120.0,
 ) -> None:
     app_config = load_config(config)
-    workers = QueueStore(app_config.run.artifact_root / "archonlab.db").list_workers()
+    workers = QueueStore(app_config.run.artifact_root / "archonlab.db").list_workers(
+        stale_after_seconds=stale_after_seconds
+    )
     if not workers:
         typer.echo("No queue workers.")
         return
     for worker in workers:
         current_job = worker.current_job_id or "-"
+        stale = " stale" if worker.stale else ""
         typer.echo(
             f"{worker.worker_id} | slot={worker.slot_index} | {worker.status.value} | "
-            f"current={current_job} | processed={worker.processed_jobs}"
+            f"current={current_job} | processed={worker.processed_jobs}{stale}"
         )
 
 
@@ -573,6 +584,14 @@ def queue_worker(
         str | None,
         typer.Option("--note", help="Optional worker note."),
     ] = "external_worker",
+    stale_after_seconds: Annotated[
+        float | None,
+        typer.Option(
+            "--stale-after-seconds",
+            min=0.1,
+            help="Reap stale active workers before claiming a slot.",
+        ),
+    ] = 120.0,
 ) -> None:
     app_config = load_config(config)
     runner = BatchRunner(
@@ -588,6 +607,7 @@ def queue_worker(
         idle_timeout_seconds=idle_timeout_seconds,
         worker_id=worker_id,
         note=note,
+        stale_after_seconds=stale_after_seconds,
     )
     if report.worker_ids:
         lease = runner.queue_store.get_worker(report.worker_ids[0])
@@ -598,6 +618,38 @@ def queue_worker(
     typer.echo(f"Paused: {len(report.paused_job_ids)}")
     typer.echo(f"Failed: {len(report.failed_job_ids)}")
     typer.echo(f"Workers: {len(report.worker_ids)}")
+
+
+@queue_app.command("sweep-workers")
+def queue_sweep_workers(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    stale_after_seconds: Annotated[
+        float,
+        typer.Option(
+            "--stale-after-seconds",
+            min=0.1,
+            help="Treat active workers older than this heartbeat age as stale.",
+        ),
+    ] = 120.0,
+    requeue_running_jobs: Annotated[
+        bool,
+        typer.Option(
+            "--requeue-running-jobs/--leave-running-jobs",
+            help="Requeue running jobs owned by stale workers.",
+        ),
+    ] = True,
+) -> None:
+    app_config = load_config(config)
+    workers = QueueStore(app_config.run.artifact_root / "archonlab.db").reap_stale_workers(
+        stale_after_seconds=stale_after_seconds,
+        requeue_running_jobs=requeue_running_jobs,
+    )
+    typer.echo(f"Reaped: {len(workers)}")
+    for worker in workers:
+        typer.echo(f"{worker.worker_id} | slot={worker.slot_index} | {worker.status.value}")
 
 
 @queue_app.command("cancel")

@@ -39,6 +39,9 @@ file_path_pattern = "Core\\.lean$"
 theorem_pattern = "^main_theorem$"
 task_status = "blocked"
 task_sources = ["lean_declaration"]
+min_priority = 2
+blocker_pattern = "contains_sorry"
+objective_relevant = true
 
 [task_executor.core_focus]
 kind = "codex_exec"

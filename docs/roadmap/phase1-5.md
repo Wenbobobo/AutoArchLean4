@@ -65,6 +65,7 @@
 - queue worker lease / heartbeat telemetry 已落地
 - 独立 `queue worker` 进程模式已落地，可跨进程共享队列
 - 独立 `queue worker` 现已支持 auto-slot，可自动认领空闲 slot
+- stale worker recovery 已落地，可回收失联 worker 并重排遗留 job
 - Phase 4 的最小契约测试已经覆盖 task graph、supervisor、worktree
 
 ## Phase 5: workflow 与最小 UI
@@ -89,6 +90,7 @@
 - `run start --execute` 已接通 executor
 - phase-aware execution policy 已接通，可按 `plan / prover / review` 选不同 executor/provider
 - task/theorem-aware execution policy 已接通，可按 file/theorem/status/source 单独改 executor/provider
+- task policy 现已支持 priority / blocker / objective relevance 等 DAG 语义匹配
 - benchmark queue / batch runner 已支持 slot-aware 并发
 
 ## 优先级原则

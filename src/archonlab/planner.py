@@ -30,6 +30,7 @@ def select_next_action(
 ) -> AdapterAction:
     progress = snapshot.progress
     focus_task = choose_focus_task(task_graph)
+    focus_context = describe_focus_task(task_graph, focus_task)
 
     if control_state is not None and control_state.paused:
         phase = ActionPhase.STOP
@@ -95,6 +96,9 @@ def select_next_action(
         file_path=focus_task.file_path if focus_task is not None else None,
         task_status=focus_task.status if focus_task is not None else None,
         task_sources=focus_task.sources if focus_task is not None else [],
+        task_priority=focus_task.priority if focus_task is not None else None,
+        task_blockers=focus_task.blockers if focus_task is not None else [],
+        objective_relevant=focus_context["objective_relevant"] if focus_task is not None else None,
         supervisor_action=supervisor.action,
         supervisor_reason=supervisor.reason,
     )
@@ -102,10 +106,14 @@ def select_next_action(
 
 def choose_focus_task(task_graph: TaskGraph) -> TaskNode | None:
     dependency_map = build_dependency_map(task_graph)
-    objective_targets = {
-        edge.target_id for edge in task_graph.edges if edge.kind == "objective_targets_theorem"
-    }
-    relevant_targets = collect_relevant_targets(objective_targets, dependency_map)
+    relevant_targets = collect_relevant_targets(
+        {
+            edge.target_id
+            for edge in task_graph.edges
+            if edge.kind == "objective_targets_theorem"
+        },
+        dependency_map,
+    )
     declaration_candidates = [
         node
         for node in task_graph.nodes
@@ -137,6 +145,21 @@ def choose_focus_task(task_graph: TaskGraph) -> TaskNode | None:
     if objective_candidates:
         return objective_candidates[0]
     return None
+
+
+def describe_focus_task(task_graph: TaskGraph, focus_task: TaskNode | None) -> dict[str, bool]:
+    if focus_task is None:
+        return {"objective_relevant": False}
+    dependency_map = build_dependency_map(task_graph)
+    relevant_targets = collect_relevant_targets(
+        {
+            edge.target_id
+            for edge in task_graph.edges
+            if edge.kind == "objective_targets_theorem"
+        },
+        dependency_map,
+    )
+    return {"objective_relevant": focus_task.id in relevant_targets}
 
 
 def build_targeted_prompt(

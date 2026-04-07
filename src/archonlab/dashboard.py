@@ -34,6 +34,11 @@ class QueueCancelRequest(BaseModel):
     reason: str | None = None
 
 
+class QueueSweepWorkersRequest(BaseModel):
+    stale_after_seconds: float = 120.0
+    requeue_running_jobs: bool = True
+
+
 def create_dashboard_app(config_path: Path) -> FastAPI:
     config = load_config(config_path)
     store = EventStore(config.run.artifact_root / "archonlab.db")
@@ -95,8 +100,11 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
         return [job.model_dump(mode="json") for job in queue.list_jobs(limit=limit)]
 
     @app.get("/api/queue/workers")
-    def list_queue_workers() -> list[dict[str, Any]]:
-        return [worker.model_dump(mode="json") for worker in queue.list_workers()]
+    def list_queue_workers(stale_after_seconds: float | None = 120.0) -> list[dict[str, Any]]:
+        return [
+            worker.model_dump(mode="json")
+            for worker in queue.list_workers(stale_after_seconds=stale_after_seconds)
+        ]
 
     @app.post("/api/queue/enqueue")
     def enqueue_queue_job(body: QueueEnqueueRequest) -> list[dict[str, Any]]:
@@ -121,6 +129,14 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
     def cancel_queue_job(job_id: str, body: QueueCancelRequest) -> dict[str, Any]:
         job = queue.cancel(job_id, reason=body.reason)
         return job.model_dump(mode="json")
+
+    @app.post("/api/queue/workers/sweep")
+    def sweep_queue_workers(body: QueueSweepWorkersRequest) -> list[dict[str, Any]]:
+        workers = queue.reap_stale_workers(
+            stale_after_seconds=body.stale_after_seconds,
+            requeue_running_jobs=body.requeue_running_jobs,
+        )
+        return [worker.model_dump(mode="json") for worker in workers]
 
     return app
 
@@ -335,6 +351,7 @@ def render_dashboard_html(project_id: str) -> str:
           <h2>Queue</h2>
           <div class="controls">
             <button class="secondary" id="queue-run-button">Run Pending Queue</button>
+            <button class="secondary" id="worker-sweep-button">Sweep Stale Workers</button>
           </div>
           <div style="height: 12px"></div>
           <div class="list" id="queue-list"></div>
@@ -425,12 +442,17 @@ def render_dashboard_html(project_id: str) -> str:
           const item = document.createElement("div");
           item.className = "run";
           const currentJob = worker.current_job_id || "-";
+          const heartbeatAge = worker.heartbeat_age_seconds == null
+            ? "-"
+            : `${{worker.heartbeat_age_seconds.toFixed(1)}}s`;
+          const stale = worker.stale ? " · stale" : "";
           item.innerHTML = `
             <strong>${{worker.worker_id}}</strong>
-            <div class="meta">slot=${{worker.slot_index}} · ${{worker.status}}</div>
+            <div class="meta">slot=${{worker.slot_index}} · ${{worker.status}}${{stale}}</div>
             <div class="meta">current=${{currentJob}}</div>
             <div class="meta">processed=${{worker.processed_jobs}}</div>
             <div class="meta">failed=${{worker.failed_jobs}}</div>
+            <div class="meta">heartbeat_age=${{heartbeatAge}}</div>
           `;
           workersList.appendChild(item);
         }}
@@ -486,6 +508,15 @@ def render_dashboard_html(project_id: str) -> str:
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify({{}}),
+        }});
+        await refresh();
+      }});
+
+      document.getElementById("worker-sweep-button").addEventListener("click", async () => {{
+        await fetchJson(`/api/queue/workers/sweep`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{ stale_after_seconds: 120, requeue_running_jobs: true }}),
         }});
         await refresh();
       }});

@@ -47,6 +47,7 @@ uv run archonlab queue enqueue-benchmark --config archonlab.toml --manifest benc
 uv run archonlab queue run --config archonlab.toml --slots 4
 uv run archonlab queue worker --config archonlab.toml --slot-index 1 --max-jobs 10
 uv run archonlab queue worker --config archonlab.toml --auto-slot --max-jobs 10
+uv run archonlab queue sweep-workers --config archonlab.toml --stale-after-seconds 120
 uv run archonlab queue status --config archonlab.toml
 uv run archonlab queue workers --config archonlab.toml
 uv run archonlab control pause --config archonlab.toml --reason "manual_hold"
@@ -75,6 +76,7 @@ queue/batch 层已经支持 benchmark 作业排队、slot-aware 并发处理、p
 queue worker 现在会留下可查询的 lease / heartbeat / 当前 job telemetry。
 你现在还可以单独启动 `queue worker` 进程，让多个外部 worker 共享同一个 sqlite 队列。
 独立 worker 现在支持 `--auto-slot`，可以自动抢占当前空闲 slot，而不必人工分配编号。
+stale worker 现在也可以被显式 sweep，并把遗留的运行中 job 重新入队。
 
 ## 执行器配置
 
@@ -137,6 +139,9 @@ file_path_pattern = "Core\\.lean$"
 theorem_pattern = "^foo$"
 task_status = "blocked"
 task_sources = ["lean_declaration"]
+min_priority = 2
+blocker_pattern = "contains_sorry"
+objective_relevant = true
 
 [task_executor.core_focus]
 kind = "codex_exec"
@@ -149,6 +154,7 @@ model = "gpt-5.4"
 - 只让关键 theorem 走更强模型
 - 对某个文件或 theorem family 单独切换 provider
 - 保持 `plan/review` 便宜，把预算集中到最难的 prover task
+- 对 objective 关键路径、带特定 blocker 的 theorem 单独升级 executor
 
 ## Worker Pool
 
@@ -160,6 +166,8 @@ model = "gpt-5.4"
   适合起多个独立 worker 进程，共享同一个队列数据库。
 - `queue worker --auto-slot`
   适合 worker 数量不固定时自动认领空闲 slot。
+- `queue sweep-workers --stale-after-seconds 120`
+  适合清理崩溃或失联 worker，并把它们占住的运行中 job 重新入队。
 
 `queue worker` 模式下，每个 worker 都会：
 - 注册自己的 lease
