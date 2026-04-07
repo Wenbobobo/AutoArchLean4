@@ -8,6 +8,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .execution_policy import build_execution_policy
+from .experiment_ledger import (
+    build_experiment_ledger,
+    build_failure_taxonomy,
+    build_theorem_outcome_ledger,
+)
+from .lean_analyzer import collect_lean_analysis
 from .models import (
     AppConfig,
     BenchmarkConfig,
@@ -177,6 +183,16 @@ class BenchmarkRunService:
 
         finished_at = datetime.now(UTC)
         status = self._benchmark_status(project_results)
+        ledger = build_experiment_ledger(
+            benchmark_name=self.manifest.benchmark.name,
+            benchmark_run_id=run_id,
+            project_results=project_results,
+        )
+        ledger_path = artifact_dir / "experiment-ledger.json"
+        ledger_path.write_text(
+            json.dumps(ledger.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         summary_path = artifact_dir / "summary.json"
         result = BenchmarkResult(
             benchmark=self.manifest.benchmark,
@@ -189,6 +205,8 @@ class BenchmarkRunService:
             artifact_dir=artifact_dir,
             manifest_copy_path=manifest_copy_path,
             summary_path=summary_path,
+            ledger_path=ledger_path,
+            ledger_summary=ledger.summary,
             projects=project_results,
         )
         summary_path.write_text(
@@ -231,6 +249,10 @@ def run_benchmark_project(
         project_path=benchmark_project.project_path,
         archon_path=benchmark_project.archon_path,
     )
+    baseline_analysis = collect_lean_analysis(
+        project_path=benchmark_project.project_path,
+        archon_path=benchmark_project.archon_path,
+    )
     effective_project_path = benchmark_project.project_path
     lease = None
     lease_path: Path | None = None
@@ -241,6 +263,7 @@ def run_benchmark_project(
     run_artifact_dir: Path | None = None
     error_message: str | None = None
     final_snapshot = baseline_snapshot
+    final_analysis = baseline_analysis
 
     try:
         if manager is not None:
@@ -282,11 +305,23 @@ def run_benchmark_project(
             project_path=effective_project_path,
             archon_path=benchmark_project.archon_path,
         )
+        final_analysis = collect_lean_analysis(
+            project_path=effective_project_path,
+            archon_path=benchmark_project.archon_path,
+        )
     except Exception as exc:
         error_message = str(exc)
     finally:
         if lease is not None and manager is not None and cleanup_worktrees:
             manager.release(lease, force=True)
+    theorem_outcomes = build_theorem_outcome_ledger(
+        baseline_analysis,
+        final_analysis,
+    )
+    failure_taxonomy = build_failure_taxonomy(
+        theorem_outcomes,
+        error_message=error_message,
+    )
     return BenchmarkProjectResult(
         id=benchmark_project.id,
         workflow=benchmark_project.workflow,
@@ -300,4 +335,6 @@ def run_benchmark_project(
         worktree_path=worktree_path,
         lease_path=lease_path,
         error_message=error_message,
+        theorem_outcomes=theorem_outcomes,
+        failure_taxonomy=failure_taxonomy,
     )
