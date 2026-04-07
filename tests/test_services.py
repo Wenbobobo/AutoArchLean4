@@ -209,6 +209,127 @@ def test_run_service_loop_records_project_session_iterations(
     assert all(iteration.run_id is not None for iteration in iterations)
 
 
+def test_run_service_loop_persists_summary_and_iteration_artifacts(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n",
+        encoding="utf-8",
+    )
+
+    service = RunService(load_config(config_path))
+    result = service.run_loop(
+        dry_run=True,
+        max_iterations=2,
+        workspace_id="standalone",
+        note="persist-me",
+        config_path=config_path,
+    )
+
+    assert result.loop_run_id.startswith("run-loop-")
+    assert result.config_path == config_path.resolve()
+    assert result.artifact_dir is not None
+    assert result.artifact_dir.exists()
+
+    summary_path = result.artifact_dir / "summary.json"
+    request_path = result.artifact_dir / "request.json"
+    config_snapshot_path = result.artifact_dir / "archonlab.toml"
+    iteration_paths = sorted(result.artifact_dir.glob("iteration-*.json"))
+
+    assert summary_path.exists()
+    assert request_path.exists()
+    assert config_snapshot_path.exists()
+    assert len(iteration_paths) == 2
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    request_payload = json.loads(request_path.read_text(encoding="utf-8"))
+    first_iteration = json.loads(iteration_paths[0].read_text(encoding="utf-8"))
+    persisted = service.event_store.get_run_loop_run(result.loop_run_id)
+
+    assert summary["loop_run_id"] == result.loop_run_id
+    assert summary["artifact_dir"] == str(result.artifact_dir)
+    assert summary["completed_iterations"] == 2
+    assert request_payload["workspace_id"] == "standalone"
+    assert request_payload["note"] == "persist-me"
+    assert first_iteration["iteration_index"] == 1
+    assert first_iteration["run_id"] is not None
+    assert persisted is not None
+    assert persisted.project_id == "demo"
+    assert persisted.run_ids == result.run_ids
+
+
+def test_run_service_loop_persists_failure_artifacts_before_reraising(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n",
+        encoding="utf-8",
+    )
+
+    service = RunService(load_config(config_path))
+
+    def fail_start(*, dry_run: bool | None = None) -> object:
+        del dry_run
+        raise RuntimeError("loop exploded")
+
+    monkeypatch.setattr(service, "start", fail_start)
+
+    try:
+        service.run_loop(
+            dry_run=True,
+            max_iterations=2,
+            workspace_id="standalone",
+            config_path=config_path,
+        )
+    except RuntimeError as error:
+        assert str(error) == "loop exploded"
+    else:
+        raise AssertionError("RunService.run_loop should re-raise loop failures")
+
+    loop_runs = service.event_store.list_run_loop_runs(project_id="demo", limit=10)
+    assert len(loop_runs) == 1
+    failed_run = loop_runs[0]
+    assert failed_run.stop_reason == "run_failed"
+    assert failed_run.error_message == "loop exploded"
+    assert failed_run.artifact_dir is not None
+
+    summary_path = failed_run.artifact_dir / "summary.json"
+    error_path = failed_run.artifact_dir / "error.json"
+    assert summary_path.exists()
+    assert error_path.exists()
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    error_payload = json.loads(error_path.read_text(encoding="utf-8"))
+    assert summary["stop_reason"] == "run_failed"
+    assert summary["error_message"] == "loop exploded"
+    assert error_payload["error"] == "loop exploded"
+
+
 def test_run_service_session_quantum_advances_one_iteration_at_a_time(
     tmp_path: Path,
     fake_archon_project: Path,

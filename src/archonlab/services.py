@@ -367,6 +367,7 @@ class RunService:
         workspace_id: str = "standalone",
         session_id: str | None = None,
         note: str | None = None,
+        config_path: Path | None = None,
     ) -> RunLoopResult:
         actual_dry_run = self.config.run.dry_run if dry_run is None else dry_run
         session = self.event_store.get_session(session_id) if session_id is not None else None
@@ -382,16 +383,57 @@ class RunService:
             )
             self.event_store.register_session(session)
         limit = max_iterations or session.max_iterations
+        loop_run_id = self._new_run_loop_id()
+        resolved_config_path = config_path.resolve() if config_path is not None else None
+        artifact_dir = self.config.run.artifact_root / "run-loops" / loop_run_id
+        artifact_dir.mkdir(parents=True, exist_ok=False)
+        self._write_json(
+            artifact_dir / "request.json",
+            {
+                "loop_run_id": loop_run_id,
+                "workspace_id": workspace_id,
+                "session_id": session.session_id,
+                "project_id": self.config.project.name,
+                "config_path": (
+                    str(resolved_config_path) if resolved_config_path is not None else None
+                ),
+                "dry_run": actual_dry_run,
+                "max_iterations": limit,
+                "note": note,
+            },
+        )
+        if resolved_config_path is not None and resolved_config_path.exists():
+            (artifact_dir / resolved_config_path.name).write_text(
+                resolved_config_path.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
         session = self.event_store.update_session(
             session.session_id,
             status=SessionStatus.RUNNING,
             resume_reason="run_loop",
             clear_stop_reason=True,
+            max_iterations=limit,
             note=note,
         )
         run_ids: list[str] = []
         stop_reason = "max_iterations_reached"
         iteration_index = session.completed_iterations
+        loop_result = RunLoopResult(
+            loop_run_id=loop_run_id,
+            session_id=session.session_id,
+            workspace_id=session.workspace_id,
+            project_id=session.project_id,
+            status=session.status,
+            dry_run=session.dry_run,
+            max_iterations=limit,
+            completed_iterations=session.completed_iterations,
+            config_path=resolved_config_path,
+            artifact_dir=artifact_dir,
+            note=note,
+            started_at=datetime.now(UTC),
+            stop_reason="running",
+        )
+        self._persist_run_loop_result(loop_result)
         try:
             while iteration_index < limit:
                 result = self.start(dry_run=actual_dry_run)
@@ -402,18 +444,21 @@ class RunService:
                     else ActionPhase(str(result.action.phase))
                 )
                 if self._consumes_iteration_budget(action_phase):
+                    iteration = SessionIteration(
+                        session_id=session.session_id,
+                        iteration_index=iteration_index + 1,
+                        project_id=self.config.project.name,
+                        run_id=result.run_id,
+                        status=result.status,
+                        action_phase=action_phase,
+                        action_reason=result.action.reason,
+                        finished_at=datetime.now(UTC),
+                    )
                     iteration_index += 1
-                    self.event_store.append_session_iteration(
-                        SessionIteration(
-                            session_id=session.session_id,
-                            iteration_index=iteration_index,
-                            project_id=self.config.project.name,
-                            run_id=result.run_id,
-                            status=result.status,
-                            action_phase=action_phase,
-                            action_reason=result.action.reason,
-                            finished_at=datetime.now(UTC),
-                        )
+                    self.event_store.append_session_iteration(iteration)
+                    self._write_json(
+                        artifact_dir / f"iteration-{iteration_index:03d}.json",
+                        iteration.model_dump(mode="json"),
                     )
                 terminal_status = self._session_status_after_run(
                     action_phase=action_phase,
@@ -434,6 +479,12 @@ class RunService:
                     stop_reason=stop_reason,
                     note=note,
                 )
+                loop_result.status = session.status
+                loop_result.completed_iterations = session.completed_iterations
+                loop_result.run_ids = list(run_ids)
+                loop_result.stop_reason = stop_reason
+                loop_result.error_message = None
+                self._persist_run_loop_result(loop_result)
                 if terminal_status is not SessionStatus.RUNNING:
                     break
         except Exception as exc:
@@ -446,18 +497,25 @@ class RunService:
                 note=note,
             )
             stop_reason = "run_failed"
+            loop_result.status = session.status
+            loop_result.completed_iterations = session.completed_iterations
+            loop_result.run_ids = list(run_ids)
+            loop_result.stop_reason = stop_reason
+            loop_result.error_message = str(exc)
+            loop_result.finished_at = datetime.now(UTC)
+            self._write_json(
+                artifact_dir / "error.json",
+                {"loop_run_id": loop_run_id, "error": str(exc)},
+            )
+            self._persist_run_loop_result(loop_result)
             raise
-        return RunLoopResult(
-            session_id=session.session_id,
-            workspace_id=session.workspace_id,
-            project_id=session.project_id,
-            status=session.status,
-            dry_run=session.dry_run,
-            max_iterations=limit,
-            completed_iterations=session.completed_iterations,
-            run_ids=run_ids,
-            stop_reason=stop_reason,
-        )
+        loop_result.status = session.status
+        loop_result.completed_iterations = session.completed_iterations
+        loop_result.run_ids = list(run_ids)
+        loop_result.stop_reason = stop_reason
+        loop_result.finished_at = datetime.now(UTC)
+        self._persist_run_loop_result(loop_result)
+        return loop_result
 
     def run_session_quantum(
         self,
@@ -732,6 +790,26 @@ class RunService:
         return f"run-{timestamp}-{uuid.uuid4().hex[:8]}"
 
     @staticmethod
+    def _new_run_loop_id() -> str:
+        return f"run-loop-{uuid.uuid4().hex[:10]}"
+
+    @staticmethod
     def _new_session_id() -> str:
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         return f"session-{timestamp}-{uuid.uuid4().hex[:8]}"
+
+    @staticmethod
+    def _write_json(path: Path, payload: object) -> None:
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _persist_run_loop_result(self, result: RunLoopResult) -> None:
+        if result.artifact_dir is None:
+            return
+        self._write_json(
+            result.artifact_dir / "summary.json",
+            result.model_dump(mode="json"),
+        )
+        self.event_store.upsert_run_loop_run(result)

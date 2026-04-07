@@ -12,6 +12,7 @@ from archonlab.models import (
     FleetControllerCycle,
     FleetControllerResult,
     ProjectSession,
+    RunLoopResult,
     RunStatus,
     RunSummary,
     SessionIteration,
@@ -338,3 +339,35 @@ def test_event_store_round_trips_fleet_runs(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.workspace_id == "demo-workspace"
     assert loaded.stop_reason == "queue_drained"
+
+
+def test_event_store_round_trips_run_loop_runs(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "artifacts" / "archonlab.db")
+    record = RunLoopResult(
+        loop_run_id="run-loop-demo-1",
+        session_id="session-demo-1",
+        workspace_id="standalone",
+        project_id="demo",
+        status=SessionStatus.PAUSED,
+        dry_run=True,
+        max_iterations=2,
+        completed_iterations=2,
+        run_ids=["run-1", "run-2"],
+        stop_reason="max_iterations_reached",
+        config_path=tmp_path / "archonlab.toml",
+        artifact_dir=tmp_path / "artifacts" / "run-loops" / "run-loop-demo-1",
+        note="persist-me",
+    )
+
+    store.upsert_run_loop_run(record)
+
+    listed = store.list_run_loop_runs(project_id="demo", limit=10)
+    loaded = store.get_run_loop_run("run-loop-demo-1")
+
+    assert len(listed) == 1
+    assert listed[0].loop_run_id == "run-loop-demo-1"
+    assert listed[0].run_ids == ["run-1", "run-2"]
+    assert listed[0].note == "persist-me"
+    assert loaded is not None
+    assert loaded.workspace_id == "standalone"
+    assert loaded.project_id == "demo"

@@ -602,6 +602,7 @@ class RunResult(BaseModel):
 class RunLoopResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    loop_run_id: str = ""
     session_id: str
     workspace_id: str
     project_id: str
@@ -609,6 +610,12 @@ class RunLoopResult(BaseModel):
     dry_run: bool
     max_iterations: int
     completed_iterations: int
+    config_path: Path | None = None
+    artifact_dir: Path | None = None
+    note: str | None = None
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    finished_at: datetime | None = None
+    error_message: str | None = None
     run_ids: list[str] = Field(default_factory=list)
     stop_reason: str
 

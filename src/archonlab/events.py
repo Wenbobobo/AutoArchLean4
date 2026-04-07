@@ -12,6 +12,7 @@ from .models import (
     ProjectSession,
     ProviderMemberRuntimeSummary,
     ProviderPoolRuntimeSummary,
+    RunLoopResult,
     RunStatus,
     RunSummary,
     SessionIteration,
@@ -117,6 +118,15 @@ class EventStore:
             CREATE TABLE IF NOT EXISTS fleet_runs (
                 fleet_run_id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS run_loop_runs (
+                loop_run_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
                 started_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 payload_json TEXT NOT NULL
@@ -595,6 +605,33 @@ class EventStore:
         )
         self._conn.commit()
 
+    def upsert_run_loop_run(self, result: RunLoopResult) -> None:
+        if not result.loop_run_id:
+            raise ValueError("Run loop result requires loop_run_id.")
+        updated_at = datetime.now(UTC).isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO run_loop_runs (
+                loop_run_id, workspace_id, project_id, started_at, updated_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(loop_run_id) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                project_id = excluded.project_id,
+                started_at = excluded.started_at,
+                updated_at = excluded.updated_at,
+                payload_json = excluded.payload_json
+            """,
+            (
+                result.loop_run_id,
+                result.workspace_id,
+                result.project_id,
+                result.started_at.isoformat(),
+                updated_at,
+                result.model_dump_json(),
+            ),
+        )
+        self._conn.commit()
+
     def list_workspace_loop_runs(
         self,
         *,
@@ -629,6 +666,48 @@ class EventStore:
         if row is None:
             return None
         return WorkspaceLoopResult.model_validate_json(str(row["payload_json"]))
+
+    def list_run_loop_runs(
+        self,
+        *,
+        workspace_id: str | None = None,
+        project_id: str | None = None,
+        limit: int = 20,
+    ) -> list[RunLoopResult]:
+        query = """
+            SELECT payload_json
+            FROM run_loop_runs
+        """
+        clauses: list[str] = []
+        params: list[str | int] = []
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            params.append(workspace_id)
+        if project_id is not None:
+            clauses.append("project_id = ?")
+            params.append(project_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY started_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
+        return [
+            RunLoopResult.model_validate_json(str(row["payload_json"]))
+            for row in rows
+        ]
+
+    def get_run_loop_run(self, loop_run_id: str) -> RunLoopResult | None:
+        row = self._conn.execute(
+            """
+            SELECT payload_json
+            FROM run_loop_runs
+            WHERE loop_run_id = ?
+            """,
+            (loop_run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return RunLoopResult.model_validate_json(str(row["payload_json"]))
 
     def list_fleet_runs(
         self,
