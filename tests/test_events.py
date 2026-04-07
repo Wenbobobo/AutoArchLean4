@@ -15,6 +15,8 @@ from archonlab.models import (
     SessionIteration,
     SessionStatus,
     WorkflowMode,
+    WorkspaceLoopCycle,
+    WorkspaceLoopResult,
 )
 
 
@@ -264,3 +266,40 @@ def test_event_store_summarizes_provider_runtime_telemetry(tmp_path: Path) -> No
     backup = next(member for member in pool.members if member.member_name == "backup")
     assert backup.success_count == 1
     assert backup.retry_count == 1
+
+
+def test_event_store_round_trips_workspace_loop_runs(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "artifacts" / "archonlab.db")
+    record = WorkspaceLoopResult(
+        loop_run_id="loop-demo-1",
+        workspace_id="demo-workspace",
+        project_id="alpha",
+        project_tags=["core", "batch"],
+        launcher="subprocess",
+        stop_reason="max_cycles_reached",
+        cycles_completed=1,
+        total_scheduled_jobs=1,
+        total_processed_jobs=1,
+        total_workers_launched=1,
+        cycles=[
+            WorkspaceLoopCycle(
+                cycle_index=1,
+                scheduled_job_ids=["job-1"],
+                scheduled_session_ids=["session-alpha-1"],
+            )
+        ],
+    )
+
+    store.upsert_workspace_loop_run(record)
+
+    listed = store.list_workspace_loop_runs(workspace_id="demo-workspace", limit=10)
+    loaded = store.get_workspace_loop_run("loop-demo-1")
+
+    assert len(listed) == 1
+    assert listed[0].loop_run_id == "loop-demo-1"
+    assert listed[0].project_tags == ["core", "batch"]
+    assert listed[0].launcher == "subprocess"
+    assert listed[0].cycles[0].scheduled_job_ids == ["job-1"]
+    assert loaded is not None
+    assert loaded.workspace_id == "demo-workspace"
+    assert loaded.project_id == "alpha"

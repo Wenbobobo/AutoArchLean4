@@ -28,6 +28,7 @@ from archonlab.models import (
     SupervisorAction,
     SupervisorReason,
     WorkflowMode,
+    WorkspaceLoopResult,
 )
 from archonlab.queue import QueueStore
 
@@ -205,10 +206,25 @@ def test_workspace_status_and_start_session_commands(
             max_iterations=10,
         )
     )
+    store.upsert_workspace_loop_run(
+        WorkspaceLoopResult(
+            loop_run_id="loop-demo-1",
+            workspace_id="demo-workspace",
+            project_id="demo-project",
+            stop_reason="idle_cycles_exhausted",
+            cycles_completed=3,
+            total_scheduled_jobs=2,
+            total_processed_jobs=2,
+        )
+    )
 
     status_result = runner.invoke(
         app,
         ["workspace", "status", "--config", str(config_path)],
+    )
+    status_json_result = runner.invoke(
+        app,
+        ["workspace", "status", "--config", str(config_path), "--json"],
     )
     start_result = runner.invoke(
         app,
@@ -228,8 +244,61 @@ def test_workspace_status_and_start_session_commands(
     assert "Workspace: demo-workspace" in status_result.output
     assert "demo-project | enabled=True" in status_result.output
     assert "sessions=1 | running=1" in status_result.output
+    assert "Latest loop: loop-demo-1 | stop=idle_cycles_exhausted | cycles=3 | processed=2" in (
+        status_result.output
+    )
+    assert status_json_result.exit_code == 0
+    status_payload = json.loads(status_json_result.output)
+    assert status_payload["latest_loop"]["loop_run_id"] == "loop-demo-1"
+    assert status_payload["latest_loop"]["stop_reason"] == "idle_cycles_exhausted"
     assert start_result.exit_code == 0
     assert "Session: session-demo-project-" in start_result.output
+
+
+def test_workspace_loops_command_lists_recent_runs(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 10\n\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    store.upsert_workspace_loop_run(
+        WorkspaceLoopResult(
+            loop_run_id="loop-demo-2",
+            workspace_id="demo-workspace",
+            project_id="demo-project",
+            stop_reason="max_cycles_reached",
+            cycles_completed=2,
+            total_scheduled_jobs=2,
+            total_processed_jobs=1,
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        ["workspace", "loops", "--config", str(config_path), "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert len(payload["loops"]) == 1
+    assert payload["loops"][0]["loop_run_id"] == "loop-demo-2"
+    assert payload["loops"][0]["cycles_completed"] == 2
 
 
 def test_workspace_run_project_command_executes_loop(
@@ -550,6 +619,9 @@ def test_workspace_loop_command_selects_subprocess_launcher(
         captured["launcher_type"] = type(self.worker_launcher).__name__
         captured.update(kwargs)
         return self.result_model(
+            workspace_id="demo-workspace",
+            loop_id="workspace-loop-test",
+            artifact_dir=artifact_root / "workspace-loops" / "workspace-loop-test",
             cycles_completed=1,
             stop_reason="max_cycles_reached",
             total_processed_jobs=2,
@@ -583,6 +655,9 @@ def test_workspace_loop_command_selects_subprocess_launcher(
     assert captured["launcher_type"] == "FakeLauncher"
     assert captured["max_cycles"] == 2
     assert captured["fleet_max_cycles"] == 3
+    assert "Loop: workspace-loop-test" in result.output
+    expected_artifacts = artifact_root / "workspace-loops" / "workspace-loop-test"
+    assert f"Artifacts: {expected_artifacts}" in result.output
     assert "Stop reason: max_cycles_reached" in result.output
     assert "Processed: 2" in result.output
 
@@ -622,6 +697,9 @@ def test_workspace_loop_command_passes_tag_filters(
     def fake_run(self, **kwargs) -> object:
         captured.update(kwargs)
         return self.result_model(
+            workspace_id="demo-workspace",
+            loop_id="workspace-loop-tagged",
+            artifact_dir=artifact_root / "workspace-loops" / "workspace-loop-tagged",
             cycles_completed=1,
             stop_reason="idle_cycles_exhausted",
             total_scheduled_jobs=1,

@@ -16,6 +16,7 @@ from .models import (
     SessionIteration,
     SessionStatus,
     WorkflowMode,
+    WorkspaceLoopResult,
 )
 
 
@@ -102,6 +103,14 @@ class EventStore:
                 finished_at TEXT,
                 error_message TEXT,
                 PRIMARY KEY (session_id, iteration_index)
+            );
+
+            CREATE TABLE IF NOT EXISTS workspace_loop_runs (
+                loop_run_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
             );
             """
         )
@@ -519,6 +528,73 @@ class EventStore:
             (limit,),
         ).fetchall()
         return [self._row_to_run_summary(row) for row in rows]
+
+    def upsert_workspace_loop_run(self, result: WorkspaceLoopResult) -> None:
+        loop_run_id = result.loop_run_id or result.loop_id
+        if not loop_run_id:
+            raise ValueError("Workspace loop result requires loop_run_id or loop_id.")
+        payload = result.model_copy(
+            update={
+                "loop_run_id": loop_run_id,
+                "loop_id": result.loop_id or loop_run_id,
+            }
+        )
+        updated_at = datetime.now(UTC).isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO workspace_loop_runs (
+                loop_run_id, workspace_id, started_at, updated_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(loop_run_id) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                started_at = excluded.started_at,
+                updated_at = excluded.updated_at,
+                payload_json = excluded.payload_json
+            """,
+            (
+                loop_run_id,
+                payload.workspace_id,
+                payload.started_at.isoformat(),
+                updated_at,
+                payload.model_dump_json(),
+            ),
+        )
+        self._conn.commit()
+
+    def list_workspace_loop_runs(
+        self,
+        *,
+        workspace_id: str | None = None,
+        limit: int = 20,
+    ) -> list[WorkspaceLoopResult]:
+        query = """
+            SELECT payload_json
+            FROM workspace_loop_runs
+        """
+        params: list[str | int] = []
+        if workspace_id is not None:
+            query += " WHERE workspace_id = ?"
+            params.append(workspace_id)
+        query += " ORDER BY started_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
+        return [
+            WorkspaceLoopResult.model_validate_json(str(row["payload_json"]))
+            for row in rows
+        ]
+
+    def get_workspace_loop_run(self, loop_run_id: str) -> WorkspaceLoopResult | None:
+        row = self._conn.execute(
+            """
+            SELECT payload_json
+            FROM workspace_loop_runs
+            WHERE loop_run_id = ?
+            """,
+            (loop_run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return WorkspaceLoopResult.model_validate_json(str(row["payload_json"]))
 
     def get_run(self, run_id: str) -> RunSummary | None:
         row = self._conn.execute(

@@ -27,6 +27,7 @@ from archonlab.models import (  # noqa: E402
     SupervisorAction,
     SupervisorReason,
     WorkflowMode,
+    WorkspaceLoopResult,
 )
 from archonlab.queue import QueueStore  # noqa: E402
 
@@ -127,6 +128,7 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert 'id="workspace-runtime-summary"' in index_response.text
     assert 'id="workspace-provider-runtime"' in index_response.text
     assert 'id="workspace-provider-health"' in index_response.text
+    assert 'id="workspace-latest-loop"' in index_response.text
     assert 'id="workspace-enqueue-button"' in index_response.text
     assert 'id="workspace-resume-button"' in index_response.text
     assert 'id="workspace-tag-input"' in index_response.text
@@ -499,6 +501,17 @@ def test_dashboard_workspace_overview_and_project_switching(
             },
         )
     )
+    store.upsert_workspace_loop_run(
+        WorkspaceLoopResult(
+            loop_run_id="loop-dashboard-1",
+            workspace_id="demo-workspace",
+            stop_reason="idle_cycles_exhausted",
+            cycles_completed=2,
+            total_scheduled_jobs=2,
+            total_processed_jobs=1,
+            total_workers_launched=1,
+        )
+    )
 
     monkeypatch.setattr(
         "archonlab.dashboard.snapshot_provider_pool_health",
@@ -557,6 +570,8 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert overview["budget"]["max_iterations"] == 10
     assert overview["budget"]["completed_iterations"] == 3
     assert overview["budget"]["remaining_iterations"] == 7
+    assert overview["latest_loop"]["loop_run_id"] == "loop-dashboard-1"
+    assert overview["latest_loop"]["stop_reason"] == "idle_cycles_exhausted"
     assert {item["project_id"] for item in overview["projects"]} == {"alpha", "beta"}
     beta_summary = next(item for item in overview["projects"] if item["project_id"] == "beta")
     assert beta_summary["workflow"] == "fixed_loop"

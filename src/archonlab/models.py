@@ -1384,6 +1384,8 @@ class WorkspaceLoopCycle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     cycle_index: int
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     plan: QueueFleetPlan = Field(default_factory=QueueFleetPlan)
     scheduled_job_ids: list[str] = Field(default_factory=list)
     scheduled_session_ids: list[str] = Field(default_factory=list)
@@ -1393,6 +1395,15 @@ class WorkspaceLoopCycle(BaseModel):
 class WorkspaceLoopResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    workspace_id: str = ""
+    config_path: Path | None = None
+    loop_run_id: str = ""
+    loop_id: str = ""
+    artifact_dir: Path | None = None
+    project_id: str | None = None
+    project_tags: list[str] = Field(default_factory=list)
+    note: str | None = None
+    launcher: str | None = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
     cycles_completed: int = 0

@@ -361,6 +361,10 @@ def workspace_status(
     workspace_config = load_workspace_config(config)
     store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
     sessions = store.list_sessions(workspace_id=workspace_config.name, limit=500)
+    latest_loop = next(
+        iter(store.list_workspace_loop_runs(workspace_id=workspace_config.name, limit=1)),
+        None,
+    )
     project_rows = []
     for project in workspace_config.projects:
         project_sessions = [item for item in sessions if item.project_id == project.id]
@@ -389,6 +393,9 @@ def workspace_status(
         "project_count": len(workspace_config.projects),
         "session_count": len(sessions),
         "projects": project_rows,
+        "latest_loop": (
+            latest_loop.model_dump(mode="json") if latest_loop is not None else None
+        ),
     }
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -398,11 +405,54 @@ def workspace_status(
     typer.echo(f"Artifact root: {workspace_config.run.artifact_root}")
     typer.echo(f"Projects: {len(workspace_config.projects)}")
     typer.echo(f"Sessions: {len(sessions)}")
+    if latest_loop is not None:
+        loop_id = latest_loop.loop_run_id or latest_loop.loop_id
+        typer.echo(
+            f"Latest loop: {loop_id} | stop={latest_loop.stop_reason} | "
+            f"cycles={latest_loop.cycles_completed} | "
+            f"processed={latest_loop.total_processed_jobs}"
+        )
     for row in project_rows:
         typer.echo(
             f"{row['project_id']} | enabled={row['enabled']} | workflow={row['workflow']} | "
             f"dry_run={row['dry_run']} | sessions={row['session_count']} | "
             f"running={row['running_sessions']}"
+        )
+
+
+@workspace_app.command("loops")
+def workspace_loops(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, max=200, help="Number of loop runs to show."),
+    ] = 20,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable JSON."),
+    ] = False,
+) -> None:
+    workspace_config = load_workspace_config(config)
+    store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+    loops = store.list_workspace_loop_runs(workspace_id=workspace_config.name, limit=limit)
+    payload = {
+        "workspace": workspace_config.name,
+        "loops": [loop.model_dump(mode="json") for loop in loops],
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    if not loops:
+        typer.echo("No workspace loops.")
+        return
+    for loop in loops:
+        loop_id = loop.loop_run_id or loop.loop_id
+        typer.echo(
+            f"{loop_id} | project={loop.project_id or '-'} | stop={loop.stop_reason} | "
+            f"cycles={loop.cycles_completed} | processed={loop.total_processed_jobs}"
         )
 
 
@@ -803,6 +853,11 @@ def workspace_loop(
         queue_idle_timeout_seconds=idle_timeout_seconds,
         stale_after_seconds=stale_after_seconds,
     )
+    loop_id = result.loop_id or result.loop_run_id
+    if loop_id:
+        typer.echo(f"Loop: {loop_id}")
+    if result.artifact_dir is not None:
+        typer.echo(f"Artifacts: {result.artifact_dir}")
     typer.echo(f"Cycles: {result.cycles_completed}")
     typer.echo(f"Stop reason: {result.stop_reason}")
     typer.echo(f"Scheduled jobs: {result.total_scheduled_jobs}")
