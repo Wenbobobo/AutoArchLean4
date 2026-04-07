@@ -43,7 +43,11 @@ from .models import (
 )
 from .queue import QueueStore
 from .services import RunService
-from .workspace_daemon import WorkspaceDaemonRunner
+from .workspace_daemon import (
+    WorkspaceDaemonRunner,
+    load_workspace_daemon_state,
+    workspace_daemon_state_path,
+)
 from .workspace_loop import WorkspaceLoopController, request_workspace_loop_stop
 from .worktree import WorktreeManager
 
@@ -380,6 +384,13 @@ def workspace_status(
         iter(store.list_fleet_runs(workspace_id=workspace_config.name, limit=1)),
         None,
     )
+    daemon_state = None
+    if workspace_daemon_state_path(workspace_config.run.artifact_root).exists():
+        daemon_state = load_workspace_daemon_state(
+            workspace_config.run.artifact_root,
+            workspace_id=workspace_config.name,
+            config_path=config,
+        )
     project_rows = []
     for project in workspace_config.projects:
         project_sessions = [item for item in sessions if item.project_id == project.id]
@@ -414,6 +425,9 @@ def workspace_status(
         "latest_fleet": (
             latest_fleet.model_dump(mode="json") if latest_fleet is not None else None
         ),
+        "daemon": (
+            daemon_state.model_dump(mode="json") if daemon_state is not None else None
+        ),
     }
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -435,6 +449,12 @@ def workspace_status(
             f"Latest fleet: {latest_fleet.fleet_run_id} | stop={latest_fleet.stop_reason} | "
             f"cycles={latest_fleet.cycles_completed} | "
             f"processed={latest_fleet.total_processed_jobs}"
+        )
+    if daemon_state is not None:
+        typer.echo(
+            f"Daemon: {daemon_state.status} | ticks={daemon_state.tick_count} | "
+            f"last_loop={daemon_state.last_loop_run_id or '-'} | "
+            f"reason={daemon_state.exit_reason or daemon_state.request_reason or '-'}"
         )
     for row in project_rows:
         typer.echo(

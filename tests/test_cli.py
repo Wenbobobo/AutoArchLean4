@@ -33,6 +33,7 @@ from archonlab.models import (
     WorkspaceLoopResult,
 )
 from archonlab.queue import QueueStore
+from archonlab.workspace_daemon import WorkspaceDaemonState, write_workspace_daemon_state
 
 runner = CliRunner()
 
@@ -230,6 +231,17 @@ def test_workspace_status_and_start_session_commands(
             total_workers_launched=1,
         )
     )
+    write_workspace_daemon_state(
+        artifact_root,
+        WorkspaceDaemonState(
+            workspace_id="demo-workspace",
+            daemon_run_id="workspace-daemon-1",
+            status="idle",
+            tick_count=3,
+            last_loop_run_id="loop-demo-1",
+            exit_reason="max_ticks_reached",
+        ),
+    )
 
     status_result = runner.invoke(
         app,
@@ -263,12 +275,17 @@ def test_workspace_status_and_start_session_commands(
     assert "Latest fleet: fleet-demo-1 | stop=queue_drained | cycles=2 | processed=2" in (
         status_result.output
     )
+    assert "Daemon: idle | ticks=3 | last_loop=loop-demo-1 | reason=max_ticks_reached" in (
+        status_result.output
+    )
     assert status_json_result.exit_code == 0
     status_payload = json.loads(status_json_result.output)
     assert status_payload["latest_loop"]["loop_run_id"] == "loop-demo-1"
     assert status_payload["latest_loop"]["stop_reason"] == "idle_cycles_exhausted"
     assert status_payload["latest_fleet"]["fleet_run_id"] == "fleet-demo-1"
     assert status_payload["latest_fleet"]["launcher"] == "subprocess"
+    assert status_payload["daemon"]["daemon_run_id"] == "workspace-daemon-1"
+    assert status_payload["daemon"]["status"] == "idle"
     assert start_result.exit_code == 0
     assert "Session: session-demo-project-" in start_result.output
 

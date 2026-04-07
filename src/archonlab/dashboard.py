@@ -34,6 +34,7 @@ from .models import (
 )
 from .queue import QueueStore
 from .services import RunService
+from .workspace_daemon import load_workspace_daemon_state, workspace_daemon_state_path
 
 
 class PauseRequest(BaseModel):
@@ -534,6 +535,12 @@ def _build_workspace_overview(
         iter(store.list_fleet_runs(workspace_id=workspace_name, limit=1)),
         None,
     )
+    daemon_state = None
+    if workspace_daemon_state_path(config.run.artifact_root).exists():
+        daemon_state = load_workspace_daemon_state(
+            config.run.artifact_root,
+            workspace_id=workspace_name,
+        )
     loop_history = [
         item.model_dump(mode="json")
         for item in store.list_workspace_loop_runs(workspace_id=workspace_name, limit=20)
@@ -624,6 +631,9 @@ def _build_workspace_overview(
         ),
         "latest_fleet": (
             latest_fleet.model_dump(mode="json") if latest_fleet is not None else None
+        ),
+        "daemon": (
+            daemon_state.model_dump(mode="json") if daemon_state is not None else None
         ),
         "loop_history": loop_history,
         "fleet_history": fleet_history,
@@ -1239,6 +1249,10 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
             <div class="rule-list" id="workspace-fleet-history"></div>
           </section>
           <section class="preview-card">
+            <h3>Daemon</h3>
+            <div class="fact-grid" id="workspace-daemon-state"></div>
+          </section>
+          <section class="preview-card">
             <h3>Sessions</h3>
             <div class="rule-list" id="workspace-session-table"></div>
           </section>
@@ -1333,6 +1347,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       const workspaceLatestLoop = document.getElementById("workspace-latest-loop");
       const workspaceLoopHistory = document.getElementById("workspace-loop-history");
       const workspaceFleetHistory = document.getElementById("workspace-fleet-history");
+      const workspaceDaemonState = document.getElementById("workspace-daemon-state");
       const workspaceSessionTable = document.getElementById("workspace-session-table");
       const workspaceProviderRuntime = document.getElementById("workspace-provider-runtime");
       const workspaceProviderHealth = document.getElementById("workspace-provider-health");
@@ -1814,6 +1829,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         const budget = payload.budget || {{}};
         const latestLoop = payload.latest_loop || null;
         const latestFleet = payload.latest_fleet || null;
+        const daemon = payload.daemon || null;
         const sessions = payload.sessions || [];
         const workers = payload.workers || [];
         const projects = payload.projects || [];
@@ -1900,6 +1916,18 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
               </div>
             `).join("")
           : '<div class="meta">No fleet history yet.</div>';
+        workspaceDaemonState.innerHTML = daemon
+          ? renderFacts([
+              ["status", daemon.status || "-"],
+              ["ticks", `${{daemon.tick_count || 0}}`],
+              ["last_loop", daemon.last_loop_run_id || "-"],
+              [
+                "reason",
+                daemon.exit_reason || daemon.request_reason || "-",
+              ],
+              ["stop_requested", daemon.stop_requested ? "yes" : "no"],
+            ])
+          : '<div class="meta">No workspace daemon state yet.</div>';
         workspaceSessionTable.innerHTML = sessions.length
           ? sessions.slice(0, 8).map((session) => `
               <div class="rule">
@@ -2001,6 +2029,8 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         workspaceOverviewSummary.innerHTML =
           '<div class="meta">Workspace overview unavailable.</div>';
         workspaceRuntimeSummary.innerHTML =
+          '<div class="meta">Workspace overview unavailable.</div>';
+        workspaceDaemonState.innerHTML =
           '<div class="meta">Workspace overview unavailable.</div>';
         workspaceSessionTable.innerHTML = `<div class="meta">${{message}}</div>`;
         workspaceProviderRuntime.innerHTML =

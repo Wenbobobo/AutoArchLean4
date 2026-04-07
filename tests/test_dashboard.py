@@ -31,6 +31,7 @@ from archonlab.models import (  # noqa: E402
     WorkspaceLoopResult,
 )
 from archonlab.queue import QueueStore  # noqa: E402
+from archonlab.workspace_daemon import WorkspaceDaemonState, write_workspace_daemon_state
 
 
 def _make_project(tmp_path: Path, name: str = "DemoProject") -> Path:
@@ -531,6 +532,16 @@ def test_dashboard_workspace_overview_and_project_switching(
             total_workers_launched=1,
         )
     )
+    write_workspace_daemon_state(
+        artifact_root,
+        WorkspaceDaemonState(
+            workspace_id="demo-workspace",
+            daemon_run_id="workspace-daemon-1",
+            status="running",
+            tick_count=2,
+            last_loop_run_id="loop-dashboard-1",
+        ),
+    )
 
     monkeypatch.setattr(
         "archonlab.dashboard.snapshot_provider_pool_health",
@@ -573,6 +584,7 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert 'id="workspace-provider-health"' in index_response.text
     assert 'id="workspace-loop-history"' in index_response.text
     assert 'id="workspace-fleet-history"' in index_response.text
+    assert 'id="workspace-daemon-state"' in index_response.text
     assert 'id="workspace-enqueue-button"' in index_response.text
     assert 'id="workspace-resume-button"' in index_response.text
 
@@ -595,6 +607,8 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert overview["latest_loop"]["stop_reason"] == "idle_cycles_exhausted"
     assert overview["latest_fleet"]["fleet_run_id"] == "fleet-dashboard-1"
     assert overview["latest_fleet"]["launcher"] == "subprocess"
+    assert overview["daemon"]["daemon_run_id"] == "workspace-daemon-1"
+    assert overview["daemon"]["status"] == "running"
 
     loops_response = client.get("/api/workspace/loops")
     assert loops_response.status_code == 200
