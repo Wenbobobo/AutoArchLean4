@@ -144,6 +144,8 @@ class WorkspaceLoopController:
                 plan = self.queue_store.plan_fleet(
                     target_jobs_per_worker=target_jobs_per_worker,
                     stale_after_seconds=stale_after_seconds,
+                    provider_pools=batch_runner.provider_pools or None,
+                    provider_health_db_path=batch_runner.provider_health_db_path,
                 )
                 fleet_result = None
                 if plan.active_jobs > 0:
@@ -200,6 +202,12 @@ class WorkspaceLoopController:
                 control_state = load_workspace_loop_control_state(artifact_dir)
                 if control_state.stop_requested:
                     stop_reason = control_state.reason or "operator_stop_requested"
+                    break
+                if (
+                    fleet_result is not None
+                    and fleet_result.stop_reason == "capacity_unavailable"
+                ):
+                    stop_reason = fleet_result.stop_reason
                     break
 
                 made_progress = (

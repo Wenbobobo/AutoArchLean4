@@ -83,6 +83,29 @@ def _healthy_provider_report() -> list[ProviderPoolHealthReport]:
     ]
 
 
+def _quarantined_provider_report() -> list[ProviderPoolHealthReport]:
+    return [
+        ProviderPoolHealthReport(
+            pool_name="lab",
+            status=ProviderPoolHealthStatus.ALL_QUARANTINED,
+            strategy="ordered_failover",
+            total_members=1,
+            available_members=0,
+            quarantined_members=1,
+            members=[
+                ProviderPoolMemberHealth(
+                    pool_name="lab",
+                    member_name="premium-a",
+                    status=ProviderPoolMemberHealthStatus.QUARANTINED,
+                    model="gpt-5.4",
+                    cost_tier="premium",
+                    endpoint_class="lab",
+                )
+            ],
+        )
+    ]
+
+
 def test_fleet_controller_runs_plan_driven_waves_until_queue_drains(tmp_path: Path) -> None:
     queue_store = QueueStore(tmp_path / "queue.db")
     queue_store.enqueue("benchmark", {"manifest_path": "bench-a.toml"})
@@ -317,6 +340,77 @@ def test_persist_batch_fleet_run_uses_provider_aware_final_plan(
 
     assert result.final_plan.profiles[0].provider_capacity_status == "healthy"
     assert result.final_plan.profiles[0].available_provider_members == 1
+
+
+def test_fleet_controller_stops_when_provider_capacity_is_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "premium.toml"},
+        project_id="premium-project",
+        required_executor_kinds=[ExecutorKind.DRY_RUN],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4"],
+        required_cost_tiers=["premium"],
+        required_endpoint_classes=["lab"],
+    )
+    monkeypatch.setattr(
+        "archonlab.queue.snapshot_provider_pool_health",
+        lambda provider_pools, *, db_path=None: _quarantined_provider_report(),
+    )
+
+    class FailLauncher:
+        def launch(
+            self,
+            *,
+            batch_runner: BatchRunner,
+            request: WorkerLaunchRequest,
+        ) -> BatchRunReport:
+            del batch_runner, request
+            raise AssertionError("launch should not be called when provider capacity is blocked")
+
+    batch_runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(tmp_path / "control"),
+        artifact_root=tmp_path / "artifacts",
+        slot_limit=1,
+        provider_pools={
+            "lab": ProviderPoolConfig(
+                name="lab",
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="premium-a",
+                        model="gpt-5.4",
+                        cost_tier="premium",
+                        endpoint_class="lab",
+                    )
+                ],
+            )
+        },
+    )
+    controller = FleetController(
+        queue_store=queue_store,
+        batch_runner=batch_runner,
+        worker_launcher=FailLauncher(),
+    )
+
+    result = controller.run(
+        max_cycles=3,
+        idle_cycles=2,
+        poll_seconds=0.01,
+        idle_timeout_seconds=0.01,
+    )
+
+    assert result.stop_reason == "capacity_unavailable"
+    assert result.cycles_completed == 1
+    assert result.total_processed_jobs == 0
+    assert result.total_workers_launched == 0
+    assert len(result.cycles) == 1
+    assert result.cycles[0].plan.profiles[0].provider_capacity_status == "unavailable"
+    assert result.final_plan.profiles[0].provider_capacity_status == "unavailable"
 
 
 def test_in_process_worker_launcher_delegates_to_batch_runner(tmp_path: Path, monkeypatch) -> None:

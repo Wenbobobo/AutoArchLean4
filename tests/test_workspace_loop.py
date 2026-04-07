@@ -4,7 +4,14 @@ import json
 from pathlib import Path
 
 from archonlab.events import EventStore
-from archonlab.models import QueueJobStatus, SessionStatus
+from archonlab.models import (
+    ProviderPoolHealthReport,
+    ProviderPoolHealthStatus,
+    ProviderPoolMemberHealth,
+    ProviderPoolMemberHealthStatus,
+    QueueJobStatus,
+    SessionStatus,
+)
 from archonlab.queue import QueueStore
 from archonlab.workspace_loop import WorkspaceLoopController
 
@@ -25,6 +32,41 @@ def _write_workspace_config(
         "dry_run = true\n"
         "max_iterations = 2\n"
         "max_parallel = 2\n\n"
+        "[[projects]]\n"
+        'id = "alpha"\n'
+        f'project_path = "{project_path}"\n'
+        f'archon_path = "{archon_path}"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_workspace_provider_config(
+    path: Path,
+    *,
+    artifact_root: Path,
+    project_path: Path,
+    archon_path: Path,
+) -> Path:
+    path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n"
+        "max_parallel = 2\n\n"
+        "[provider]\n"
+        'pool = "lab"\n\n'
+        "[provider_pool.lab]\n"
+        "max_consecutive_failures = 1\n"
+        "quarantine_seconds = 60\n\n"
+        "[[provider_pool.lab.members]]\n"
+        'name = "premium-a"\n'
+        'model = "gpt-5.4"\n'
+        'cost_tier = "premium"\n'
+        'endpoint_class = "lab"\n\n'
         "[[projects]]\n"
         'id = "alpha"\n'
         f'project_path = "{project_path}"\n'
@@ -451,3 +493,68 @@ def test_workspace_loop_controller_persists_failure_artifacts_before_reraising(
     assert summary["stop_reason"] == "loop_failed"
     assert summary["error_message"] == "fleet exploded"
     assert error_payload["error"] == "fleet exploded"
+
+
+def test_workspace_loop_controller_surfaces_provider_capacity_unavailable(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_provider_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+
+    monkeypatch.setattr(
+        "archonlab.queue.snapshot_provider_pool_health",
+        lambda provider_pools, *, db_path=None: [
+            ProviderPoolHealthReport(
+                pool_name="lab",
+                status=ProviderPoolHealthStatus.ALL_QUARANTINED,
+                strategy="ordered_failover",
+                total_members=1,
+                available_members=0,
+                quarantined_members=1,
+                members=[
+                    ProviderPoolMemberHealth(
+                        pool_name="lab",
+                        member_name="premium-a",
+                        status=ProviderPoolMemberHealthStatus.QUARANTINED,
+                        model="gpt-5.4",
+                        cost_tier="premium",
+                        endpoint_class="lab",
+                    )
+                ],
+            )
+        ],
+    )
+
+    class FailLauncher:
+        def launch(self, *, batch_runner, request):
+            del batch_runner, request
+            raise AssertionError(
+                "workspace loop should not launch workers when capacity is blocked"
+            )
+
+    controller = WorkspaceLoopController(config_path, worker_launcher=FailLauncher())
+    result = controller.run(
+        project_id="alpha",
+        max_cycles=3,
+        idle_cycles=2,
+        sleep_seconds=0.0,
+        fleet_max_cycles=3,
+        fleet_idle_cycles=2,
+        queue_poll_seconds=0.01,
+        queue_idle_timeout_seconds=0.01,
+        stale_after_seconds=60.0,
+    )
+
+    assert result.stop_reason == "capacity_unavailable"
+    assert result.cycles_completed == 1
+    assert result.total_processed_jobs == 0
+    assert len(result.cycles) == 1
+    assert result.cycles[0].plan.profiles[0].provider_capacity_status == "unavailable"

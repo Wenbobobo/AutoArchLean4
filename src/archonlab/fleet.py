@@ -225,6 +225,20 @@ def _plan_fleet(
     )
 
 
+def _plan_is_capacity_unavailable(plan: QueueFleetPlan) -> bool:
+    profiles_with_demand = [profile for profile in plan.profiles if profile.active_jobs > 0]
+    if not profiles_with_demand or plan.active_jobs == 0:
+        return False
+    if plan.active_workers > 0 or plan.running_jobs > 0:
+        return False
+    if plan.recommended_additional_workers > 0:
+        return False
+    return all(
+        profile.provider_capacity_status == "unavailable"
+        for profile in profiles_with_demand
+    )
+
+
 def persist_batch_fleet_run(
     *,
     queue_store: QueueStore,
@@ -391,6 +405,29 @@ class FleetController:
                 )
                 if plan.active_jobs == 0:
                     stop_reason = "queue_drained"
+                    break
+                if _plan_is_capacity_unavailable(plan):
+                    report = BatchRunReport()
+                    cycle = FleetControllerCycle(
+                        cycle_index=cycle_index,
+                        started_at=cycle_started_at,
+                        finished_at=datetime.now(UTC),
+                        plan=plan,
+                        report=report,
+                    )
+                    cycles.append(cycle)
+                    self._write_json(
+                        artifact_dir / f"cycle-{cycle_index:03d}.json",
+                        cycle.model_dump(mode="json"),
+                    )
+                    result.cycles = list(cycles)
+                    result.cycles_completed = len(cycles)
+                    result.total_processed_jobs = total_processed
+                    result.total_paused_jobs = total_paused
+                    result.total_failed_jobs = total_failed
+                    result.total_workers_launched = total_workers
+                    self._persist_result(event_store, artifact_dir, result)
+                    stop_reason = "capacity_unavailable"
                     break
 
                 report = self.worker_launcher.launch(
