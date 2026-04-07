@@ -263,6 +263,18 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             limit_sessions=limit_sessions,
         )
 
+    @app.get("/api/workspace/loops")
+    def get_workspace_loops(limit: int = 20) -> dict[str, Any]:
+        workspace_name = workspace_config.name if workspace_config is not None else "standalone"
+        loops = store.list_workspace_loop_runs(
+            workspace_id=workspace_name,
+            limit=limit,
+        )
+        return {
+            "workspace": workspace_name,
+            "loops": [item.model_dump(mode="json") for item in loops],
+        }
+
     @app.post("/api/workspace/enqueue")
     def enqueue_workspace(body: WorkspaceEnqueueRequest) -> list[dict[str, Any]]:
         resolved_workspace = _require_workspace_mode(workspace_config)
@@ -475,6 +487,10 @@ def _build_workspace_overview(
         iter(store.list_workspace_loop_runs(workspace_id=workspace_name, limit=1)),
         None,
     )
+    loop_history = [
+        item.model_dump(mode="json")
+        for item in store.list_workspace_loop_runs(workspace_id=workspace_name, limit=20)
+    ]
 
     project_ids = {project.id for project in project_rows}
     project_tags = {project.id: list(project.tags) for project in project_rows}
@@ -555,6 +571,7 @@ def _build_workspace_overview(
         "latest_loop": (
             latest_loop.model_dump(mode="json") if latest_loop is not None else None
         ),
+        "loop_history": loop_history,
         "projects": project_summaries,
         "provider_runtime": [
             item.model_dump(mode="json")
@@ -1159,6 +1176,10 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
             <div class="fact-grid" id="workspace-latest-loop"></div>
           </section>
           <section class="preview-card">
+            <h3>Loop History</h3>
+            <div class="rule-list" id="workspace-loop-history"></div>
+          </section>
+          <section class="preview-card">
             <h3>Sessions</h3>
             <div class="rule-list" id="workspace-session-table"></div>
           </section>
@@ -1251,6 +1272,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       const workspaceOverviewSummary = document.getElementById("workspace-overview-summary");
       const workspaceRuntimeSummary = document.getElementById("workspace-runtime-summary");
       const workspaceLatestLoop = document.getElementById("workspace-latest-loop");
+      const workspaceLoopHistory = document.getElementById("workspace-loop-history");
       const workspaceSessionTable = document.getElementById("workspace-session-table");
       const workspaceProviderRuntime = document.getElementById("workspace-provider-runtime");
       const workspaceProviderHealth = document.getElementById("workspace-provider-health");
@@ -1779,6 +1801,21 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
               ["cycles", `${{latestLoop.cycles_completed || 0}}`],
               ["processed", `${{latestLoop.total_processed_jobs || 0}}`],
             ])
+          : '<div class="meta">No workspace loop history yet.</div>';
+        const loopHistory = payload.loop_history || [];
+        workspaceLoopHistory.innerHTML = loopHistory.length
+          ? loopHistory.slice(0, 8).map((loop) => `
+              <div class="rule">
+                <strong>${{loop.loop_id || loop.loop_run_id || "-"}}</strong>
+                <div class="meta">
+                  project=${{loop.project_id || "-"}} · stop=${{loop.stop_reason || "-"}}
+                </div>
+                <div class="meta">
+                  cycles=${{loop.cycles_completed || 0}}
+                  · processed=${{loop.total_processed_jobs || 0}}
+                </div>
+              </div>
+            `).join("")
           : '<div class="meta">No workspace loop history yet.</div>';
         workspaceSessionTable.innerHTML = sessions.length
           ? sessions.slice(0, 8).map((session) => `

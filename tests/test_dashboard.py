@@ -552,6 +552,7 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert 'id="workspace-runtime-summary"' in index_response.text
     assert 'id="workspace-provider-runtime"' in index_response.text
     assert 'id="workspace-provider-health"' in index_response.text
+    assert 'id="workspace-loop-history"' in index_response.text
     assert 'id="workspace-enqueue-button"' in index_response.text
     assert 'id="workspace-resume-button"' in index_response.text
 
@@ -572,6 +573,14 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert overview["budget"]["remaining_iterations"] == 7
     assert overview["latest_loop"]["loop_run_id"] == "loop-dashboard-1"
     assert overview["latest_loop"]["stop_reason"] == "idle_cycles_exhausted"
+
+    loops_response = client.get("/api/workspace/loops")
+    assert loops_response.status_code == 200
+    loops_payload = loops_response.json()
+    assert loops_payload["workspace"] == "demo-workspace"
+    assert len(loops_payload["loops"]) == 1
+    assert loops_payload["loops"][0]["loop_run_id"] == "loop-dashboard-1"
+
     assert {item["project_id"] for item in overview["projects"]} == {"alpha", "beta"}
     beta_summary = next(item for item in overview["projects"] if item["project_id"] == "beta")
     assert beta_summary["workflow"] == "fixed_loop"
