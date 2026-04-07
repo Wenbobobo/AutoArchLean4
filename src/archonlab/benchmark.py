@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .execution_policy import build_execution_policy
 from .models import (
     AppConfig,
     BenchmarkConfig,
@@ -15,6 +16,7 @@ from .models import (
     BenchmarkProjectResult,
     BenchmarkResult,
     BenchmarkRunStatus,
+    ExecutionPolicy,
     ExecutorConfig,
     ProjectConfig,
     ProviderConfig,
@@ -40,6 +42,8 @@ def load_benchmark_manifest(manifest_path: Path) -> BenchmarkManifest:
     projects_raw = raw["projects"]
     executor_raw = raw.get("executor", {})
     provider_raw = raw.get("provider", {})
+    phase_executor_raw = raw.get("phase_executor", {})
+    phase_provider_raw = raw.get("phase_provider", {})
 
     projects = [
         BenchmarkProjectConfig(
@@ -56,6 +60,29 @@ def load_benchmark_manifest(manifest_path: Path) -> BenchmarkManifest:
     if not projects:
         raise ValueError("Benchmark manifest must define at least one [[projects]] entry.")
 
+    executor = ExecutorConfig(
+        kind=executor_raw.get("kind", "dry_run"),
+        command=executor_raw.get("command", "codex"),
+        profile=executor_raw.get("profile"),
+        auto_approve=executor_raw.get("auto_approve", False),
+        skip_git_repo_check=executor_raw.get("skip_git_repo_check", True),
+        sandbox=executor_raw.get("sandbox"),
+        color=executor_raw.get("color", "never"),
+        extra_args=executor_raw.get("extra_args", []),
+        timeout_seconds=executor_raw.get("timeout_seconds", 600),
+    )
+    provider = ProviderConfig(
+        kind=provider_raw.get("kind", "openai_compatible"),
+        model=provider_raw.get("model"),
+        base_url=provider_raw.get("base_url"),
+        api_key_env=provider_raw.get("api_key_env", "OPENAI_API_KEY"),
+        endpoint_path=provider_raw.get(
+            "endpoint_path",
+            provider_raw.get("chat_completions_path", "/v1/responses"),
+        ),
+        headers=provider_raw.get("headers", {}),
+    )
+
     return BenchmarkManifest(
         benchmark=BenchmarkConfig(
             name=benchmark_raw["name"],
@@ -66,27 +93,13 @@ def load_benchmark_manifest(manifest_path: Path) -> BenchmarkManifest:
             worker_slots=benchmark_raw.get("worker_slots", 1),
         ),
         projects=projects,
-        executor=ExecutorConfig(
-            kind=executor_raw.get("kind", "dry_run"),
-            command=executor_raw.get("command", "codex"),
-            profile=executor_raw.get("profile"),
-            auto_approve=executor_raw.get("auto_approve", False),
-            skip_git_repo_check=executor_raw.get("skip_git_repo_check", True),
-            sandbox=executor_raw.get("sandbox"),
-            color=executor_raw.get("color", "never"),
-            extra_args=executor_raw.get("extra_args", []),
-            timeout_seconds=executor_raw.get("timeout_seconds", 600),
-        ),
-        provider=ProviderConfig(
-            kind=provider_raw.get("kind", "openai_compatible"),
-            model=provider_raw.get("model"),
-            base_url=provider_raw.get("base_url"),
-            api_key_env=provider_raw.get("api_key_env", "OPENAI_API_KEY"),
-            endpoint_path=provider_raw.get(
-                "endpoint_path",
-                provider_raw.get("chat_completions_path", "/v1/responses"),
-            ),
-            headers=provider_raw.get("headers", {}),
+        executor=executor,
+        provider=provider,
+        execution_policy=build_execution_policy(
+            base_executor=executor,
+            base_provider=provider,
+            phase_executor_raw=phase_executor_raw if isinstance(phase_executor_raw, dict) else {},
+            phase_provider_raw=phase_provider_raw if isinstance(phase_provider_raw, dict) else {},
         ),
     )
 
@@ -132,6 +145,7 @@ class BenchmarkRunService:
                     cleanup_worktrees=cleanup_worktrees,
                     executor=self.manifest.executor,
                     provider=self.manifest.provider,
+                    execution_policy=self.manifest.execution_policy,
                 )
                 for project in self.manifest.projects
             ]
@@ -147,6 +161,7 @@ class BenchmarkRunService:
                         cleanup_worktrees=cleanup_worktrees,
                         executor=self.manifest.executor,
                         provider=self.manifest.provider,
+                        execution_policy=self.manifest.execution_policy,
                     )
                     for project in self.manifest.projects
                 ]
@@ -202,6 +217,7 @@ def run_benchmark_project(
     cleanup_worktrees: bool,
     executor: ExecutorConfig,
     provider: ProviderConfig,
+    execution_policy: ExecutionPolicy,
 ) -> BenchmarkProjectResult:
     baseline_snapshot = collect_project_snapshot(
         project_path=benchmark_project.project_path,
@@ -247,6 +263,7 @@ def run_benchmark_project(
                 ),
                 executor=executor,
                 provider=provider,
+                execution_policy=execution_policy,
             )
         )
         run_result = service.start(dry_run=dry_run)

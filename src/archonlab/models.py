@@ -88,6 +88,13 @@ class QueueJobStatus(StrEnum):
     CANCELED = "canceled"
 
 
+class WorkerStatus(StrEnum):
+    IDLE = "idle"
+    RUNNING = "running"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
 class ChecklistItem(BaseModel):
     label: str
     done: bool
@@ -153,6 +160,7 @@ class AppConfig(BaseModel):
     run: RunConfig
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
+    execution_policy: ExecutionPolicy = Field(default_factory=lambda: ExecutionPolicy())
 
 
 class ExecutionRequest(BaseModel):
@@ -268,6 +276,7 @@ class BenchmarkManifest(BaseModel):
     projects: list[BenchmarkProjectConfig]
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
+    execution_policy: ExecutionPolicy = Field(default_factory=lambda: ExecutionPolicy())
 
 
 class ProjectSnapshot(BaseModel):
@@ -466,10 +475,36 @@ class QueueJob(BaseModel):
     error_message: str | None = None
     pause_reason: str | None = None
     cancel_reason: str | None = None
+    worker_id: str | None = None
 
     @property
     def id(self) -> str:
         return self.job_id
+
+
+class QueueWorkerLease(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    worker_id: str
+    slot_index: int
+    status: WorkerStatus
+    current_job_id: str | None = None
+    last_job_id: str | None = None
+    thread_name: str | None = None
+    note: str | None = None
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    heartbeat_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    finished_at: datetime | None = None
+    processed_jobs: int = 0
+    failed_jobs: int = 0
+
+    @property
+    def heartbeat(self) -> datetime:
+        return self.heartbeat_at
+
+    @property
+    def updated_at(self) -> datetime:
+        return self.heartbeat_at
 
 
 class BatchRunReport(BaseModel):
@@ -477,3 +512,18 @@ class BatchRunReport(BaseModel):
 
     processed_job_ids: list[str] = Field(default_factory=list)
     paused_job_ids: list[str] = Field(default_factory=list)
+    failed_job_ids: list[str] = Field(default_factory=list)
+    worker_ids: list[str] = Field(default_factory=list)
+
+
+class ExecutionPhaseOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    executor: ExecutorConfig | None = None
+    provider: ProviderConfig | None = None
+
+
+class ExecutionPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phases: dict[ActionPhase, ExecutionPhaseOverride] = Field(default_factory=dict)

@@ -481,6 +481,8 @@ def queue_run(
     report = runner.run_pending(max_jobs=max_jobs)
     typer.echo(f"Processed: {len(report.processed_job_ids)}")
     typer.echo(f"Paused: {len(report.paused_job_ids)}")
+    typer.echo(f"Failed: {len(report.failed_job_ids)}")
+    typer.echo(f"Workers: {len(report.worker_ids)}")
 
 
 @queue_app.command("status")
@@ -506,7 +508,28 @@ def queue_status(
         typer.echo("No queue jobs.")
         return
     for job in jobs:
-        typer.echo(f"{job.id} | {job.status.value} | {job.project_id}")
+        worker = job.worker_id or "-"
+        typer.echo(f"{job.id} | {job.status.value} | {job.project_id} | worker={worker}")
+
+
+@queue_app.command("workers")
+def queue_workers(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+) -> None:
+    app_config = load_config(config)
+    workers = QueueStore(app_config.run.artifact_root / "archonlab.db").list_workers()
+    if not workers:
+        typer.echo("No queue workers.")
+        return
+    for worker in workers:
+        current_job = worker.current_job_id or "-"
+        typer.echo(
+            f"{worker.worker_id} | slot={worker.slot_index} | {worker.status.value} | "
+            f"current={current_job} | processed={worker.processed_jobs}"
+        )
 
 
 @queue_app.command("cancel")

@@ -46,6 +46,7 @@ uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --use-wo
 uv run archonlab queue enqueue-benchmark --config archonlab.toml --manifest benchmarks/smoke.example.toml
 uv run archonlab queue run --config archonlab.toml --slots 4
 uv run archonlab queue status --config archonlab.toml
+uv run archonlab queue workers --config archonlab.toml
 uv run archonlab control pause --config archonlab.toml --reason "manual_hold"
 uv run archonlab control hint --config archonlab.toml --text "Try `rw` before `simp`."
 uv run archonlab dashboard serve --config archonlab.toml --port 8000
@@ -69,6 +70,7 @@ uv run archonlab worktree create --repo-path /path/to/repo --name phase4-run
 supervisor 也会读取同一项目的近期历史事件，识别重复无进展的 loop。
 benchmark 则已经支持在隔离 `git worktree` 中运行。
 queue/batch 层已经支持 benchmark 作业排队、slot-aware 并发处理、pause-aware 跳过和 job 级 artifacts。
+queue worker 现在会留下可查询的 lease / heartbeat / 当前 job telemetry。
 
 ## 执行器配置
 
@@ -90,6 +92,35 @@ endpoint_path = "/v1/responses"
 
 如果你想走 OpenAI-compatible HTTP，通常把 `kind = "openai_compatible"` 并填好 `[provider]` 即可。
 如果你想让本地 agent 真正接管工作树，优先用 `codex_exec`。
+
+## Phase Policy
+
+你现在还可以按 `plan / prover / review` 分别选 executor 或 model。
+
+```toml
+[phase_executor.plan]
+kind = "dry_run"
+
+[phase_provider.plan]
+model = "gpt-5.4-mini"
+
+[phase_executor.prover]
+kind = "openai_compatible"
+
+[phase_provider.prover]
+model = "gpt-5.4"
+
+[phase_executor.review]
+kind = "codex_exec"
+
+[phase_provider.review]
+model = "gpt-5.4-mini"
+```
+
+常见用法是：
+- `plan` 走便宜模型
+- `prover` 走更强模型或 OpenAI-compatible endpoint
+- `review` 走 `codex_exec`
 
 ## Workflow DSL
 

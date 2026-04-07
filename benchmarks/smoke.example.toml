@@ -15,6 +15,24 @@ base_url = "http://127.0.0.1:8000/v1"
 api_key_env = "OPENAI_API_KEY"
 endpoint_path = "/v1/responses"
 
+[phase_executor.plan]
+kind = "dry_run"
+
+[phase_provider.plan]
+model = "gpt-5.4-mini"
+
+[phase_executor.prover]
+kind = "openai_compatible"
+
+[phase_provider.prover]
+model = "gpt-5.4"
+
+[phase_executor.review]
+kind = "codex_exec"
+
+[phase_provider.review]
+model = "gpt-5.4-mini"
+
 [[projects]]
 id = "example-project"
 path = "../path/to/lean-project"

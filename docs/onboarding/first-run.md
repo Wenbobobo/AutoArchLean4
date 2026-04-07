@@ -35,10 +35,13 @@ uv run archonlab run start --config archonlab.exec.toml --execute
 # 7. 跑一个 benchmark smoke test
 uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-run --worker-slots 2
 
-# 8. 启动控制面 dashboard
+# 8. 看当前 queue worker telemetry
+uv run archonlab queue workers --config archonlab.toml
+
+# 9. 启动控制面 dashboard
 uv run archonlab dashboard serve --config archonlab.toml --port 8000
 
-# 9. 如果要直接走 Archon 固定 loop，再手动启动
+# 10. 如果要直接走 Archon 固定 loop，再手动启动
 ./archon-loop.sh /path/to/lean-project
 ```
 
@@ -51,6 +54,7 @@ uv run archonlab dashboard serve --config archonlab.toml --port 8000
 - `artifacts/` 里有没有产生可回放的 run / benchmark 结果
 - dashboard 里能不能暂停、恢复、注入 hint
 - `execution.json` 里有没有真实 executor 输出
+- `queue workers` 能不能看到 slot / current job / processed 统计
 - 日志里是正常推进还是反复 stuck
 
 ## 你第一次不用做什么

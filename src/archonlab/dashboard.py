@@ -94,6 +94,10 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
     def list_queue_jobs(limit: int = 50) -> list[dict[str, Any]]:
         return [job.model_dump(mode="json") for job in queue.list_jobs(limit=limit)]
 
+    @app.get("/api/queue/workers")
+    def list_queue_workers() -> list[dict[str, Any]]:
+        return [worker.model_dump(mode="json") for worker in queue.list_workers()]
+
     @app.post("/api/queue/enqueue")
     def enqueue_queue_job(body: QueueEnqueueRequest) -> list[dict[str, Any]]:
         jobs = queue.enqueue_benchmark_manifest(
@@ -334,6 +338,9 @@ def render_dashboard_html(project_id: str) -> str:
           </div>
           <div style="height: 12px"></div>
           <div class="list" id="queue-list"></div>
+          <div style="height: 16px"></div>
+          <h2>Workers</h2>
+          <div class="list" id="workers-list"></div>
         </aside>
       </div>
     </div>
@@ -346,6 +353,7 @@ def render_dashboard_html(project_id: str) -> str:
       const detailJson = document.getElementById("detail-json");
       const hintInput = document.getElementById("hint-input");
       const queueList = document.getElementById("queue-list");
+      const workersList = document.getElementById("workers-list");
 
       async function fetchJson(url, options) {{
         const response = await fetch(url, options);
@@ -398,23 +406,47 @@ def render_dashboard_html(project_id: str) -> str:
         for (const job of jobs) {{
           const item = document.createElement("div");
           item.className = "run";
+          const workerId = job.worker_id || "-";
           item.innerHTML = `
             <strong>${{job.job_id}}</strong>
-            <div class="meta">${{job.status}} · ${{job.project_id}}</div>
+            <div class="meta">${{job.status}} · ${{job.project_id}} · worker=${{workerId}}</div>
           `;
           queueList.appendChild(item);
         }}
       }}
 
+      function renderWorkers(workers) {{
+        if (!workers.length) {{
+          workersList.innerHTML = '<div class="meta">No worker telemetry yet.</div>';
+          return;
+        }}
+        workersList.innerHTML = "";
+        for (const worker of workers) {{
+          const item = document.createElement("div");
+          item.className = "run";
+          const currentJob = worker.current_job_id || "-";
+          item.innerHTML = `
+            <strong>${{worker.worker_id}}</strong>
+            <div class="meta">slot=${{worker.slot_index}} · ${{worker.status}}</div>
+            <div class="meta">current=${{currentJob}}</div>
+            <div class="meta">processed=${{worker.processed_jobs}}</div>
+            <div class="meta">failed=${{worker.failed_jobs}}</div>
+          `;
+          workersList.appendChild(item);
+        }}
+      }}
+
       async function refresh() {{
-        const [control, runs, jobs] = await Promise.all([
+        const [control, runs, jobs, workers] = await Promise.all([
           fetchJson(`/api/projects/${{projectId}}/control`),
           fetchJson(`/api/runs?limit=20`),
           fetchJson(`/api/queue/jobs?limit=20`),
+          fetchJson(`/api/queue/workers`),
         ]);
         renderControl(control);
         renderRuns(runs);
         renderQueue(jobs);
+        renderWorkers(workers);
       }}
 
       document.getElementById("pause-button").addEventListener("click", async () => {{

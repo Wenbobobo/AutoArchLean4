@@ -23,6 +23,8 @@ from .models import (
     QueueBenchmarkPayload,
     QueueJob,
     QueueJobStatus,
+    QueueWorkerLease,
+    WorkerStatus,
 )
 from .queue import QueueStore
 
@@ -55,12 +57,14 @@ class BatchRunner:
         artifact_root: Path,
         benchmark_runner_cls: Callable[[Path], Any] = BenchmarkRunService,
         slot_limit: int = 1,
+        heartbeat_interval_seconds: float = 1.0,
     ) -> None:
         self.queue_store = queue_store
         self.control_service = control_service
         self.artifact_root = artifact_root.resolve()
         self.benchmark_runner_cls = benchmark_runner_cls
         self.slot_limit = max(1, slot_limit)
+        self.heartbeat_interval_seconds = heartbeat_interval_seconds
 
     def run_pending(self, *, max_jobs: int | None = None) -> BatchRunReport:
         report = BatchRunReport()
@@ -68,20 +72,52 @@ class BatchRunner:
         claim_lock = threading.Lock()
         claimed_jobs = 0
 
-        def worker_loop() -> None:
+        def worker_loop(slot_index: int) -> None:
             nonlocal claimed_jobs
+            worker = self.queue_store.register_worker(
+                slot_index=slot_index,
+                thread_name=threading.current_thread().name,
+            )
+            with report_lock:
+                report.worker_ids.append(worker.worker_id)
             while True:
                 with claim_lock:
                     if max_jobs is not None and claimed_jobs >= max_jobs:
+                        self.queue_store.stop_worker(worker.worker_id)
                         return
-                    job = self.queue_store.claim_next_job()
+                    try:
+                        job = self.queue_store.claim_next_job(worker_id=worker.worker_id)
+                    except TypeError:
+                        job = self.queue_store.claim_next_job()
                     if job is None:
+                        self.queue_store.stop_worker(worker.worker_id)
                         return
                     claimed_jobs += 1
-                self._run_job(job, report, report_lock)
+                self.queue_store.assign_job_to_worker(worker.worker_id, job.id)
+                heartbeat_stop = threading.Event()
+                heartbeat_thread = threading.Thread(
+                    target=self._heartbeat_loop,
+                    args=(worker.worker_id, job.id, heartbeat_stop),
+                    daemon=True,
+                    name=f"{worker.worker_id}-heartbeat",
+                )
+                heartbeat_thread.start()
+                try:
+                    self._run_job(
+                        job,
+                        report,
+                        report_lock,
+                        worker_id=worker.worker_id,
+                    )
+                finally:
+                    heartbeat_stop.set()
+                    heartbeat_thread.join(timeout=self.heartbeat_interval_seconds * 2)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.slot_limit) as pool:
-            futures = [pool.submit(worker_loop) for _ in range(self.slot_limit)]
+            futures = [
+                pool.submit(worker_loop, slot_index)
+                for slot_index in range(1, self.slot_limit + 1)
+            ]
             for future in futures:
                 future.result()
         return report
@@ -91,6 +127,7 @@ class BatchRunner:
         job: QueueJob,
         report: BatchRunReport,
         report_lock: threading.Lock,
+        worker_id: str,
     ) -> None:
         manifest_path = Path(str(job.payload["manifest_path"])).resolve()
         artifact_dir = self.artifact_root / "jobs" / job.id
@@ -120,6 +157,12 @@ class BatchRunner:
                     artifact_dir=artifact_dir,
                     result_path=status_path,
                     pause_reason=paused_reason,
+                    worker_id=worker_id,
+                )
+                self.queue_store.release_job_from_worker(
+                    worker_id,
+                    job_id=job.id,
+                    failed=False,
                 )
                 with report_lock:
                     report.paused_job_ids.append(job.id)
@@ -143,6 +186,12 @@ class BatchRunner:
                 status=result_status,
                 artifact_dir=artifact_dir,
                 result_path=summary_path,
+                worker_id=worker_id,
+            )
+            self.queue_store.release_job_from_worker(
+                worker_id,
+                job_id=job.id,
+                failed=result_status is QueueJobStatus.FAILED,
             )
         except Exception as exc:  # noqa: BLE001
             error_path = artifact_dir / "error.json"
@@ -160,13 +209,37 @@ class BatchRunner:
                 artifact_dir=artifact_dir,
                 result_path=error_path,
                 error_message=str(exc),
+                worker_id=worker_id,
+            )
+            self.queue_store.release_job_from_worker(
+                worker_id,
+                job_id=job.id,
+                failed=True,
             )
             result_status = QueueJobStatus.FAILED
         with report_lock:
             if result_status is QueueJobStatus.PAUSED:
                 report.paused_job_ids.append(job.id)
+            elif result_status is QueueJobStatus.FAILED:
+                report.failed_job_ids.append(job.id)
             else:
                 report.processed_job_ids.append(job.id)
+
+    def list_worker_leases(self) -> list[QueueWorkerLease]:
+        return self.queue_store.list_workers()
+
+    def _heartbeat_loop(
+        self,
+        worker_id: str,
+        job_id: str,
+        stop_event: threading.Event,
+    ) -> None:
+        while not stop_event.wait(self.heartbeat_interval_seconds):
+            self.queue_store.heartbeat_worker(
+                worker_id,
+                status=WorkerStatus.RUNNING,
+                current_job_id=job_id,
+            )
 
     def _run_project_job(
         self,
@@ -187,6 +260,7 @@ class BatchRunner:
             cleanup_worktrees=payload.cleanup_worktrees,
             executor=manifest.executor,
             provider=manifest.provider,
+            execution_policy=manifest.execution_policy,
         )
         summary_path = artifact_dir / "summary.json"
         summary_path.write_text(

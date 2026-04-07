@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from .adapter import ArchonAdapter
 from .control import ControlService
 from .events import EventStore
+from .execution_policy import resolve_app_phase_configs
 from .executors import create_executor
 from .models import (
     AppConfig,
@@ -217,6 +218,7 @@ class RunService:
                     "run": self.config.run.model_dump(mode="json"),
                     "executor": self.config.executor.model_dump(mode="json"),
                     "provider": self.config.provider.model_dump(mode="json"),
+                    "execution_policy": self.config.execution_policy.model_dump(mode="json"),
                     "progress": progress.model_dump(mode="json"),
                     "snapshot": snapshot.model_dump(mode="json"),
                     "control": control_state.model_dump(mode="json"),
@@ -237,9 +239,13 @@ class RunService:
 
         execution_result = None
         if not actual_dry_run and str(action.phase) != "stop":
+            resolved_executor, resolved_provider = resolve_app_phase_configs(
+                self.config,
+                phase=action.phase,
+            )
             executor = create_executor(
-                executor_config=self.config.executor,
-                provider_config=self.config.provider,
+                executor_config=resolved_executor,
+                provider_config=resolved_provider,
             )
             execution_result = executor.execute(
                 ExecutionRequest(
@@ -273,6 +279,8 @@ class RunService:
                     task_id=action.task_id,
                     payload={
                         "executor": execution_result.executor.value,
+                        "resolved_executor": resolved_executor.model_dump(mode="json"),
+                        "resolved_provider": resolved_provider.model_dump(mode="json"),
                         "status": execution_result.status.value,
                         "command": execution_result.command,
                         "output_path": (
@@ -306,6 +314,8 @@ class RunService:
                         payload={
                             "reason": "executor_failed",
                             "executor": execution_result.executor.value,
+                            "resolved_executor": resolved_executor.model_dump(mode="json"),
+                            "resolved_provider": resolved_provider.model_dump(mode="json"),
                             "error_message": execution_result.error_message,
                         },
                     ),

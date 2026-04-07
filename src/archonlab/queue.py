@@ -9,7 +9,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .benchmark import load_benchmark_manifest
-from .models import QueueBenchmarkPayload, QueueJob, QueueJobKind, QueueJobStatus
+from .models import (
+    QueueBenchmarkPayload,
+    QueueJob,
+    QueueJobKind,
+    QueueJobStatus,
+    QueueWorkerLease,
+    WorkerStatus,
+)
 
 
 class QueueStore:
@@ -42,11 +49,27 @@ class QueueStore:
                     result_path TEXT,
                     error_message TEXT,
                     pause_reason TEXT,
-                    cancel_reason TEXT
+                    cancel_reason TEXT,
+                    worker_id TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS queue_workers (
+                    worker_id TEXT PRIMARY KEY,
+                    slot_index INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    current_job_id TEXT,
+                    last_job_id TEXT,
+                    thread_name TEXT,
+                    note TEXT,
+                    started_at TEXT NOT NULL,
+                    heartbeat_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    processed_jobs INTEGER NOT NULL,
+                    failed_jobs INTEGER NOT NULL
                 );
                 """
             )
-            for column in ["pause_reason", "cancel_reason"]:
+            for column in ["pause_reason", "cancel_reason", "worker_id"]:
                 with suppress(sqlite3.OperationalError):
                     self._conn.execute(f"ALTER TABLE queue_jobs ADD COLUMN {column} TEXT")
             self._conn.commit()
@@ -138,7 +161,7 @@ class QueueStore:
                 return None
             return self._row_to_job(row)
 
-    def claim_next_job(self) -> QueueJob | None:
+    def claim_next_job(self, *, worker_id: str | None = None) -> QueueJob | None:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             row = self._conn.execute(
@@ -157,13 +180,14 @@ class QueueStore:
             self._conn.execute(
                 """
                 UPDATE queue_jobs
-                SET status = ?, started_at = ?, updated_at = ?
+                SET status = ?, started_at = ?, updated_at = ?, worker_id = ?
                 WHERE job_id = ?
                 """,
                 (
                     QueueJobStatus.RUNNING.value,
                     started_at,
                     started_at,
+                    worker_id,
                     row["job_id"],
                 ),
             )
@@ -222,6 +246,7 @@ class QueueStore:
         error_message: str | None = None,
         pause_reason: str | None = None,
         cancel_reason: str | None = None,
+        worker_id: str | None = None,
     ) -> QueueJob:
         finished_at = datetime.now(UTC).isoformat()
         with self._lock:
@@ -229,7 +254,7 @@ class QueueStore:
                 """
                 UPDATE queue_jobs
                 SET status = ?, updated_at = ?, finished_at = ?, artifact_dir = ?, result_path = ?,
-                    error_message = ?, pause_reason = ?, cancel_reason = ?
+                    error_message = ?, pause_reason = ?, cancel_reason = ?, worker_id = ?
                 WHERE job_id = ?
                 """,
                 (
@@ -241,6 +266,7 @@ class QueueStore:
                     error_message,
                     pause_reason,
                     cancel_reason,
+                    worker_id,
                     job_id,
                 ),
             )
@@ -265,12 +291,201 @@ class QueueStore:
             self._conn.execute(
                 f"""
                 UPDATE queue_jobs
-                SET status = ?, updated_at = ?, pause_reason = NULL
+                SET status = ?, updated_at = ?, pause_reason = NULL, worker_id = NULL
                 WHERE {' AND '.join(clauses)}
                 """,
                 params,
             )
             self._conn.commit()
+
+    def register_worker(
+        self,
+        *,
+        slot_index: int,
+        thread_name: str | None = None,
+        note: str | None = None,
+    ) -> QueueWorkerLease:
+        lease = QueueWorkerLease(
+            worker_id=self._new_worker_id(),
+            slot_index=slot_index,
+            status=WorkerStatus.IDLE,
+            thread_name=thread_name,
+            note=note,
+        )
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO queue_workers (
+                    worker_id, slot_index, status, current_job_id, last_job_id,
+                    thread_name, note, started_at, heartbeat_at, finished_at,
+                    processed_jobs, failed_jobs
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lease.worker_id,
+                    lease.slot_index,
+                    lease.status.value,
+                    lease.current_job_id,
+                    lease.last_job_id,
+                    lease.thread_name,
+                    lease.note,
+                    lease.started_at.isoformat(),
+                    lease.heartbeat_at.isoformat(),
+                    lease.finished_at.isoformat() if lease.finished_at else None,
+                    lease.processed_jobs,
+                    lease.failed_jobs,
+                ),
+            )
+            self._conn.commit()
+        return lease
+
+    def list_workers(self, *, include_stopped: bool = True) -> list[QueueWorkerLease]:
+        with self._lock:
+            query = "SELECT * FROM queue_workers"
+            params: list[str] = []
+            if not include_stopped:
+                query += " WHERE status != ?"
+                params.append(WorkerStatus.STOPPED.value)
+            query += " ORDER BY slot_index ASC, started_at ASC"
+            rows = self._conn.execute(query, params).fetchall()
+            return [self._row_to_worker(row) for row in rows]
+
+    def list_worker_leases(self) -> list[QueueWorkerLease]:
+        return self.list_workers()
+
+    def heartbeat_worker(
+        self,
+        worker_id: str,
+        *,
+        status: WorkerStatus | None = None,
+        current_job_id: str | None = None,
+        note: str | None = None,
+    ) -> QueueWorkerLease:
+        current = self.get_worker(worker_id)
+        if current is None:
+            raise KeyError(f"Unknown worker: {worker_id}")
+        heartbeat_at = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE queue_workers
+                SET status = ?, current_job_id = ?, note = ?, heartbeat_at = ?
+                WHERE worker_id = ?
+                """,
+                (
+                    (status or current.status).value,
+                    current_job_id,
+                    note if note is not None else current.note,
+                    heartbeat_at,
+                    worker_id,
+                ),
+            )
+            self._conn.commit()
+        updated = self.get_worker(worker_id)
+        if updated is None:
+            raise KeyError(f"Unknown worker: {worker_id}")
+        return updated
+
+    def assign_job_to_worker(self, worker_id: str, job_id: str) -> QueueWorkerLease:
+        current = self.get_worker(worker_id)
+        if current is None:
+            raise KeyError(f"Unknown worker: {worker_id}")
+        heartbeat_at = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE queue_workers
+                SET status = ?, current_job_id = ?, heartbeat_at = ?
+                WHERE worker_id = ?
+                """,
+                (
+                    WorkerStatus.RUNNING.value,
+                    job_id,
+                    heartbeat_at,
+                    worker_id,
+                ),
+            )
+            self._conn.commit()
+        updated = self.get_worker(worker_id)
+        if updated is None:
+            raise KeyError(f"Unknown worker: {worker_id}")
+        return updated
+
+    def release_job_from_worker(
+        self,
+        worker_id: str,
+        *,
+        job_id: str | None,
+        failed: bool = False,
+    ) -> QueueWorkerLease:
+        current = self.get_worker(worker_id)
+        if current is None:
+            raise KeyError(f"Unknown worker: {worker_id}")
+        heartbeat_at = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE queue_workers
+                SET status = ?, current_job_id = NULL, last_job_id = ?, heartbeat_at = ?,
+                    processed_jobs = processed_jobs + 1,
+                    failed_jobs = failed_jobs + ?
+                WHERE worker_id = ?
+                """,
+                (
+                    WorkerStatus.IDLE.value,
+                    job_id,
+                    heartbeat_at,
+                    1 if failed else 0,
+                    worker_id,
+                ),
+            )
+            self._conn.commit()
+        updated = self.get_worker(worker_id)
+        if updated is None:
+            raise KeyError(f"Unknown worker: {worker_id}")
+        return updated
+
+    def stop_worker(
+        self,
+        worker_id: str,
+        *,
+        failed: bool = False,
+        note: str | None = None,
+    ) -> QueueWorkerLease:
+        current = self.get_worker(worker_id)
+        if current is None:
+            raise KeyError(f"Unknown worker: {worker_id}")
+        finished_at = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE queue_workers
+                SET status = ?, current_job_id = NULL, note = ?, heartbeat_at = ?, finished_at = ?
+                WHERE worker_id = ?
+                """,
+                (
+                    WorkerStatus.FAILED.value if failed else WorkerStatus.STOPPED.value,
+                    note if note is not None else current.note,
+                    finished_at,
+                    finished_at,
+                    worker_id,
+                ),
+            )
+            self._conn.commit()
+        updated = self.get_worker(worker_id)
+        if updated is None:
+            raise KeyError(f"Unknown worker: {worker_id}")
+        return updated
+
+    def get_worker(self, worker_id: str) -> QueueWorkerLease | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM queue_workers WHERE worker_id = ?",
+                (worker_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._row_to_worker(row)
 
     def _insert(self, job: QueueJob) -> None:
         with self._lock:
@@ -280,7 +495,8 @@ class QueueStore:
                     job_id, batch_id, kind, project_id, status, priority, payload_json,
                     created_at, updated_at, started_at, finished_at, artifact_dir, result_path,
                     error_message, pause_reason, cancel_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    , worker_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -299,6 +515,7 @@ class QueueStore:
                     job.error_message,
                     job.pause_reason,
                     job.cancel_reason,
+                    job.worker_id,
                 ),
             )
             self._conn.commit()
@@ -322,6 +539,28 @@ class QueueStore:
             error_message=row["error_message"],
             pause_reason=row["pause_reason"],
             cancel_reason=row["cancel_reason"],
+            worker_id=row["worker_id"],
+        )
+
+    @staticmethod
+    def _row_to_worker(row: sqlite3.Row) -> QueueWorkerLease:
+        return QueueWorkerLease(
+            worker_id=row["worker_id"],
+            slot_index=row["slot_index"],
+            status=WorkerStatus(row["status"]),
+            current_job_id=row["current_job_id"],
+            last_job_id=row["last_job_id"],
+            thread_name=row["thread_name"],
+            note=row["note"],
+            started_at=datetime.fromisoformat(row["started_at"]),
+            heartbeat_at=datetime.fromisoformat(row["heartbeat_at"]),
+            finished_at=(
+                datetime.fromisoformat(row["finished_at"])
+                if row["finished_at"]
+                else None
+            ),
+            processed_jobs=row["processed_jobs"],
+            failed_jobs=row["failed_jobs"],
         )
 
     @staticmethod
@@ -339,3 +578,7 @@ class QueueStore:
     def _new_batch_id() -> str:
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         return f"batch-{timestamp}-{uuid.uuid4().hex[:8]}"
+
+    @staticmethod
+    def _new_worker_id() -> str:
+        return f"worker-{uuid.uuid4().hex[:8]}"

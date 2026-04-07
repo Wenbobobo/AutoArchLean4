@@ -3,6 +3,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from .execution_policy import build_execution_policy
 from .models import (
     AppConfig,
     ExecutorConfig,
@@ -29,6 +30,8 @@ def load_config(config_path: Path) -> AppConfig:
     run_raw = raw.get("run", {})
     executor_raw = raw.get("executor", {})
     provider_raw = raw.get("provider", {})
+    phase_executor_raw = raw.get("phase_executor", {})
+    phase_provider_raw = raw.get("phase_provider", {})
 
     project_path = _resolve_path(base_dir, project_raw["project_path"])
     archon_path = _resolve_path(base_dir, project_raw["archon_path"])
@@ -37,6 +40,31 @@ def load_config(config_path: Path) -> AppConfig:
         _resolve_path(base_dir, run_raw["workflow_spec"])
         if "workflow_spec" in run_raw
         else None
+    )
+
+    executor = ExecutorConfig(
+        kind=ExecutorKind(executor_raw.get("kind", ExecutorKind.DRY_RUN)),
+        command=executor_raw.get("command", "codex"),
+        profile=executor_raw.get("profile"),
+        auto_approve=executor_raw.get("auto_approve", False),
+        skip_git_repo_check=executor_raw.get("skip_git_repo_check", True),
+        sandbox=executor_raw.get("sandbox"),
+        color=executor_raw.get("color", "never"),
+        extra_args=executor_raw.get("extra_args", []),
+        timeout_seconds=executor_raw.get("timeout_seconds", 600),
+    )
+    provider = ProviderConfig(
+        kind=ProviderKind(
+            provider_raw.get("kind", ProviderKind.OPENAI_COMPATIBLE)
+        ),
+        model=provider_raw.get("model"),
+        base_url=provider_raw.get("base_url"),
+        api_key_env=provider_raw.get("api_key_env", "OPENAI_API_KEY"),
+        endpoint_path=provider_raw.get(
+            "endpoint_path",
+            provider_raw.get("chat_completions_path", "/v1/responses"),
+        ),
+        headers=provider_raw.get("headers", {}),
     )
 
     return AppConfig(
@@ -56,29 +84,13 @@ def load_config(config_path: Path) -> AppConfig:
             dry_run=run_raw.get("dry_run", True),
             artifact_root=artifact_root,
         ),
-        executor=ExecutorConfig(
-            kind=ExecutorKind(executor_raw.get("kind", ExecutorKind.DRY_RUN)),
-            command=executor_raw.get("command", "codex"),
-            profile=executor_raw.get("profile"),
-            auto_approve=executor_raw.get("auto_approve", False),
-            skip_git_repo_check=executor_raw.get("skip_git_repo_check", True),
-            sandbox=executor_raw.get("sandbox"),
-            color=executor_raw.get("color", "never"),
-            extra_args=executor_raw.get("extra_args", []),
-            timeout_seconds=executor_raw.get("timeout_seconds", 600),
-        ),
-        provider=ProviderConfig(
-            kind=ProviderKind(
-                provider_raw.get("kind", ProviderKind.OPENAI_COMPATIBLE)
-            ),
-            model=provider_raw.get("model"),
-            base_url=provider_raw.get("base_url"),
-            api_key_env=provider_raw.get("api_key_env", "OPENAI_API_KEY"),
-            endpoint_path=provider_raw.get(
-                "endpoint_path",
-                provider_raw.get("chat_completions_path", "/v1/responses"),
-            ),
-            headers=provider_raw.get("headers", {}),
+        executor=executor,
+        provider=provider,
+        execution_policy=build_execution_policy(
+            base_executor=executor,
+            base_provider=provider,
+            phase_executor_raw=phase_executor_raw if isinstance(phase_executor_raw, dict) else {},
+            phase_provider_raw=phase_provider_raw if isinstance(phase_provider_raw, dict) else {},
         ),
     )
 
