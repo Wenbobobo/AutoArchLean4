@@ -186,6 +186,7 @@ def test_run_service_can_route_task_specific_executor_and_provider(
         'kind = "openai_compatible"\n'
         "\n"
         "[provider]\n"
+        'pool = "lab"\n'
         'model = "baseline-model"\n'
         "[phase_provider.prover]\n"
         'model = "phase-model"\n'
@@ -204,7 +205,8 @@ def test_run_service_can_route_task_specific_executor_and_provider(
         'kind = "codex_exec"\n'
         "\n"
         "[task_provider.core_focus]\n"
-        'model = "task-model"\n',
+        'model = "task-model"\n'
+        'member_name = "member-b"\n',
         encoding="utf-8",
     )
     config = load_config(config_path)
@@ -234,6 +236,8 @@ def test_run_service_can_route_task_specific_executor_and_provider(
         lambda **kwargs: resolved.append(
             {
                 "executor_kind": kwargs["executor_config"].kind,
+                "pool": kwargs["provider_config"].pool,
+                "member_name": kwargs["provider_config"].member_name,
                 "model": kwargs["provider_config"].model,
             }
         )
@@ -291,6 +295,10 @@ def test_run_service_can_route_task_specific_executor_and_provider(
     assert second_result.execution.metadata["model"] == "phase-model"
 
     assert resolved[0]["executor_kind"] is ExecutorKind.CODEX_EXEC
+    assert resolved[0]["pool"] == "lab"
+    assert resolved[0]["member_name"] == "member-b"
     assert resolved[0]["model"] == "task-model"
     assert resolved[1]["executor_kind"] is ExecutorKind.OPENAI_COMPATIBLE
+    assert resolved[1]["pool"] == "lab"
+    assert resolved[1]["member_name"] is None
     assert resolved[1]["model"] == "phase-model"

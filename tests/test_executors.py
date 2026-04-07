@@ -536,3 +536,190 @@ def test_provider_pool_health_persists_across_executor_instances_with_shared_db(
         backup_thread.join(timeout=2)
         reset_provider_pool_health()
         reset_provider_pool_health(db_path=db_path)
+
+
+def test_provider_pool_executor_honors_pinned_member_without_fallback() -> None:
+    captured = {"primary": 0, "backup": 0}
+
+    class PrimaryHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["primary"] += 1
+            encoded = json.dumps({"output_text": "primary-ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    class BackupHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["backup"] += 1
+            encoded = json.dumps({"output_text": "backup-ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    primary_server = ThreadingHTTPServer(("127.0.0.1", 0), PrimaryHandler)
+    backup_server = ThreadingHTTPServer(("127.0.0.1", 0), BackupHandler)
+    primary_thread = threading.Thread(target=primary_server.serve_forever, daemon=True)
+    backup_thread = threading.Thread(target=backup_server.serve_forever, daemon=True)
+    primary_thread.start()
+    backup_thread.start()
+    try:
+        pool_name = "research"
+        provider_pools = {
+            pool_name: ProviderPoolConfig(
+                name=pool_name,
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="primary",
+                        base_url=f"http://127.0.0.1:{primary_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                    ProviderPoolMemberConfig(
+                        name="backup",
+                        base_url=f"http://127.0.0.1:{backup_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                ],
+            )
+        }
+
+        executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name, member_name="backup"),
+            provider_pools=provider_pools,
+        )
+        result = executor.execute("prove foo", system_prompt="plan")
+
+        assert result.status is ExecutionStatus.COMPLETED
+        assert result.text == "backup-ok"
+        assert result.telemetry is not None
+        assert result.telemetry.provider_member == "backup"
+        assert result.telemetry.retry_count == 0
+        assert result.telemetry.attempted_members == ["backup"]
+        assert captured["primary"] == 0
+        assert captured["backup"] == 1
+    finally:
+        primary_server.shutdown()
+        backup_server.shutdown()
+        primary_server.server_close()
+        backup_server.server_close()
+        primary_thread.join(timeout=2)
+        backup_thread.join(timeout=2)
+
+
+def test_provider_pool_executor_returns_failed_result_for_unavailable_pinned_member() -> None:
+    reset_provider_pool_health()
+    captured = {"primary": 0, "backup": 0}
+
+    class PrimaryHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["primary"] += 1
+            encoded = json.dumps({"error": "primary unavailable"}).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    class BackupHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["backup"] += 1
+            encoded = json.dumps({"output_text": "backup-ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    primary_server = ThreadingHTTPServer(("127.0.0.1", 0), PrimaryHandler)
+    backup_server = ThreadingHTTPServer(("127.0.0.1", 0), BackupHandler)
+    primary_thread = threading.Thread(target=primary_server.serve_forever, daemon=True)
+    backup_thread = threading.Thread(target=backup_server.serve_forever, daemon=True)
+    primary_thread.start()
+    backup_thread.start()
+    try:
+        pool_name = "research"
+        provider_pools = {
+            pool_name: ProviderPoolConfig(
+                name=pool_name,
+                max_consecutive_failures=1,
+                quarantine_seconds=600,
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="primary",
+                        base_url=f"http://127.0.0.1:{primary_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                    ProviderPoolMemberConfig(
+                        name="backup",
+                        base_url=f"http://127.0.0.1:{backup_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                ],
+            )
+        }
+
+        warmup = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+        )
+        warmup_result = warmup.execute("prove foo", system_prompt="plan")
+        assert warmup_result.status is ExecutionStatus.COMPLETED
+        assert captured["primary"] == 1
+        assert captured["backup"] == 1
+
+        pinned = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name, member_name="primary"),
+            provider_pools=provider_pools,
+        )
+        quarantined_result = pinned.execute("prove foo again", system_prompt="plan")
+
+        assert quarantined_result.status is ExecutionStatus.FAILED
+        assert quarantined_result.telemetry is not None
+        assert quarantined_result.telemetry.provider_member == "primary"
+        assert quarantined_result.telemetry.attempted_members == ["primary"]
+        assert quarantined_result.telemetry.retry_count == 0
+        assert "quarantined" in (quarantined_result.error_message or "")
+        assert captured["primary"] == 1
+        assert captured["backup"] == 1
+
+        missing = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name, member_name="missing"),
+            provider_pools=provider_pools,
+        )
+        missing_result = missing.execute("prove missing", system_prompt="plan")
+
+        assert missing_result.status is ExecutionStatus.FAILED
+        assert missing_result.telemetry is not None
+        assert missing_result.telemetry.provider_member == "missing"
+        assert missing_result.telemetry.attempted_members == ["missing"]
+        assert "Unknown provider pool member" in (missing_result.error_message or "")
+        assert captured["primary"] == 1
+        assert captured["backup"] == 1
+    finally:
+        primary_server.shutdown()
+        backup_server.shutdown()
+        primary_server.server_close()
+        backup_server.server_close()
+        primary_thread.join(timeout=2)
+        backup_thread.join(timeout=2)
+        reset_provider_pool_health()

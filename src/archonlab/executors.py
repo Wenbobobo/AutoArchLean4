@@ -551,10 +551,23 @@ class ProviderPoolExecutor:
         pool = self.provider_pools.get(pool_name)
         if pool is None:
             raise ValueError(f"Unknown provider pool: {pool_name}")
-        members, health_status = _eligible_pool_members(
-            pool,
-            db_path=self.provider_health_db_path,
-        )
+        pinned_member_name = self.provider_config.member_name
+        if pinned_member_name is not None:
+            pinned_member, health_status, preflight_result = _resolve_pinned_pool_member(
+                executor_kind=self.executor_config.kind,
+                provider_config=self.provider_config,
+                pool=pool,
+                db_path=self.provider_health_db_path,
+            )
+            if preflight_result is not None:
+                return preflight_result
+            assert pinned_member is not None
+            members = [pinned_member]
+        else:
+            members, health_status = _eligible_pool_members(
+                pool,
+                db_path=self.provider_health_db_path,
+            )
         if not members:
             raise ValueError(f"Provider pool {pool_name} has no enabled members")
 
@@ -796,6 +809,84 @@ def _eligible_pool_members(
     if healthy_members:
         return healthy_members, ("degraded" if quarantined_members else "healthy")
     return sorted_members, "all_quarantined"
+
+
+def _resolve_pinned_pool_member(
+    *,
+    executor_kind: ExecutorKind,
+    provider_config: ProviderConfig,
+    pool: ProviderPoolConfig,
+    db_path: Path | None,
+) -> tuple[ProviderPoolMemberConfig | None, str, ExecutionResult | None]:
+    member_name = provider_config.member_name
+    if member_name is None:
+        raise ValueError("provider.member_name is required for pinned pool routing")
+
+    requested_member = next((member for member in pool.members if member.name == member_name), None)
+    if requested_member is None:
+        return None, "member_missing", _pool_preflight_failure_result(
+            executor_kind=executor_kind,
+            provider_config=provider_config,
+            pool_name=pool.name,
+            provider_member=member_name,
+            health_status="member_missing",
+            error_message=f"Unknown provider pool member: {pool.name}/{member_name}",
+        )
+    if not requested_member.enabled:
+        return None, "disabled", _pool_preflight_failure_result(
+            executor_kind=executor_kind,
+            provider_config=provider_config,
+            pool_name=pool.name,
+            provider_member=member_name,
+            health_status="disabled",
+            error_message=f"Provider pool member is disabled: {pool.name}/{member_name}",
+        )
+
+    state = _load_provider_pool_health_state(db_path=db_path).get((pool.name, member_name))
+    now = datetime.now(UTC)
+    if state is not None and state.quarantined_until is not None and state.quarantined_until > now:
+        return None, "quarantined", _pool_preflight_failure_result(
+            executor_kind=executor_kind,
+            provider_config=provider_config,
+            pool_name=pool.name,
+            provider_member=member_name,
+            health_status="quarantined",
+            error_message=f"Provider pool member is quarantined: {pool.name}/{member_name}",
+        )
+    if state is not None and state.consecutive_failures > 0:
+        return requested_member, "degraded", None
+    return requested_member, "healthy", None
+
+
+def _pool_preflight_failure_result(
+    *,
+    executor_kind: ExecutorKind,
+    provider_config: ProviderConfig,
+    pool_name: str,
+    provider_member: str,
+    health_status: str,
+    error_message: str,
+) -> ExecutionResult:
+    started_at, started_perf = _telemetry_clock()
+    result = _with_execution_telemetry(
+        ExecutionResult(
+            executor=executor_kind,
+            status=ExecutionStatus.FAILED,
+            error_message=error_message,
+            metadata={"provider": provider_config.kind.value},
+        ),
+        started_at=started_at,
+        started_perf=started_perf,
+        provider_config=provider_config,
+    )
+    return _augment_pool_result(
+        result,
+        provider_pool=pool_name,
+        provider_member=provider_member,
+        attempted_members=[provider_member],
+        retry_count=0,
+        health_status=health_status,
+    )
 
 
 def _mark_pool_success(
