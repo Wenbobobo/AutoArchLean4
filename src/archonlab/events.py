@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .models import (
+    BenchmarkResult,
     EventRecord,
     FleetControllerResult,
     ProjectSession,
@@ -118,6 +119,14 @@ class EventStore:
             CREATE TABLE IF NOT EXISTS fleet_runs (
                 fleet_run_id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS benchmark_runs (
+                run_id TEXT PRIMARY KEY,
+                benchmark_name TEXT NOT NULL,
                 started_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 payload_json TEXT NOT NULL
@@ -605,6 +614,31 @@ class EventStore:
         )
         self._conn.commit()
 
+    def upsert_benchmark_run(self, result: BenchmarkResult) -> None:
+        if not result.run_id:
+            raise ValueError("Benchmark result requires run_id.")
+        updated_at = datetime.now(UTC).isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO benchmark_runs (
+                run_id, benchmark_name, started_at, updated_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                benchmark_name = excluded.benchmark_name,
+                started_at = excluded.started_at,
+                updated_at = excluded.updated_at,
+                payload_json = excluded.payload_json
+            """,
+            (
+                result.run_id,
+                result.benchmark.name,
+                result.started_at.isoformat(),
+                updated_at,
+                result.model_dump_json(),
+            ),
+        )
+        self._conn.commit()
+
     def upsert_run_loop_run(self, result: RunLoopResult) -> None:
         if not result.loop_run_id:
             raise ValueError("Run loop result requires loop_run_id.")
@@ -743,6 +777,41 @@ class EventStore:
         if row is None:
             return None
         return FleetControllerResult.model_validate_json(str(row["payload_json"]))
+
+    def list_benchmark_runs(
+        self,
+        *,
+        benchmark_name: str | None = None,
+        limit: int = 20,
+    ) -> list[BenchmarkResult]:
+        query = """
+            SELECT payload_json
+            FROM benchmark_runs
+        """
+        params: list[str | int] = []
+        if benchmark_name is not None:
+            query += " WHERE benchmark_name = ?"
+            params.append(benchmark_name)
+        query += " ORDER BY started_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
+        return [
+            BenchmarkResult.model_validate_json(str(row["payload_json"]))
+            for row in rows
+        ]
+
+    def get_benchmark_run(self, run_id: str) -> BenchmarkResult | None:
+        row = self._conn.execute(
+            """
+            SELECT payload_json
+            FROM benchmark_runs
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return BenchmarkResult.model_validate_json(str(row["payload_json"]))
 
     def get_run(self, run_id: str) -> RunSummary | None:
         row = self._conn.execute(

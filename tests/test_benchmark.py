@@ -11,6 +11,7 @@ from archonlab.benchmark import (
     load_benchmark_manifest,
     score_project_snapshot,
 )
+from archonlab.events import EventStore
 
 
 def _init_git_repo(repo_path: Path) -> None:
@@ -215,6 +216,24 @@ def test_benchmark_run_service_writes_manifest_copy_and_summary(
     }
     assert taxonomy["contains_sorry"]["count"] == 1
     assert taxonomy["contains_sorry"]["samples"] == ["foo"]
+
+
+def test_benchmark_run_service_persists_result_in_event_store(tmp_path: Path) -> None:
+    manifest_path = _write_benchmark_manifest(tmp_path)
+
+    result = BenchmarkRunService(manifest_path).run()
+    store = EventStore(result.benchmark.artifact_root / "archonlab.db")
+
+    listed = store.list_benchmark_runs()
+    detail = store.get_benchmark_run(result.run_id)
+
+    assert len(listed) == 1
+    assert listed[0].run_id == result.run_id
+    assert detail is not None
+    assert detail.benchmark.name == "smoke"
+    assert detail.ledger_path == result.ledger_path
+    assert detail.ledger_summary is not None
+    assert detail.ledger_summary.total_projects == 1
 
 
 def test_benchmark_run_service_can_use_worktrees(tmp_path: Path) -> None:

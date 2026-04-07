@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from .events import EventStore
 from .execution_policy import build_execution_policy
 from .experiment_ledger import (
     build_experiment_ledger,
@@ -237,6 +238,9 @@ class BenchmarkRunService:
         summary_path.write_text(
             json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2),
             encoding="utf-8",
+        )
+        EventStore(self.manifest.benchmark.artifact_root / "archonlab.db").upsert_benchmark_run(
+            result
         )
         return result
 

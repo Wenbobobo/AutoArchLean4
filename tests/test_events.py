@@ -8,15 +8,24 @@ import pytest
 from archonlab.events import EventStore
 from archonlab.models import (
     ActionPhase,
+    BenchmarkConfig,
+    BenchmarkProjectResult,
+    BenchmarkResult,
+    BenchmarkRunStatus,
     EventRecord,
+    ExperimentLedgerSummary,
     FleetControllerCycle,
     FleetControllerResult,
+    ProgressSnapshot,
+    ProjectScore,
     ProjectSession,
+    ProjectSnapshot,
     RunLoopResult,
     RunStatus,
     RunSummary,
     SessionIteration,
     SessionStatus,
+    SnapshotDelta,
     WorkflowMode,
     WorkspaceLoopCycle,
     WorkspaceLoopResult,
@@ -94,6 +103,99 @@ def test_event_store_lists_recent_project_events_in_order(tmp_path: Path) -> Non
     recent = store.list_recent_project_events("demo", limit=10)
 
     assert [event.run_id for event in recent] == ["run-1", "run-2"]
+
+
+def test_event_store_round_trips_benchmark_runs(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "artifacts" / "archonlab.db")
+
+    def build_result(run_id: str, *, benchmark_name: str, started_at: datetime) -> BenchmarkResult:
+        artifact_root = tmp_path / "benchmarks"
+        artifact_dir = artifact_root / "runs" / run_id
+        manifest_path = tmp_path / f"{run_id}.toml"
+        manifest_copy_path = artifact_dir / "manifest.toml"
+        summary_path = artifact_dir / "summary.json"
+        ledger_path = artifact_dir / "experiment-ledger.json"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text("", encoding="utf-8")
+        return BenchmarkResult(
+            benchmark=BenchmarkConfig(
+                name=benchmark_name,
+                artifact_root=artifact_root,
+            ),
+            manifest_path=manifest_path,
+            run_id=run_id,
+            status=BenchmarkRunStatus.COMPLETED,
+            dry_run=True,
+            started_at=started_at,
+            finished_at=started_at,
+            artifact_dir=artifact_dir,
+            manifest_copy_path=manifest_copy_path,
+            summary_path=summary_path,
+            ledger_path=ledger_path,
+            ledger_summary=ExperimentLedgerSummary(total_projects=1, total_theorems=1),
+            projects=[
+                BenchmarkProjectResult(
+                    id="demo",
+                    workflow=WorkflowMode.ADAPTIVE_LOOP,
+                    budget_minutes=30,
+                    run_id="run-demo",
+                    run_status=RunStatus.COMPLETED,
+                    snapshot=ProjectSnapshot(
+                        project_id="demo",
+                        project_path=tmp_path / "DemoProject",
+                        archon_path=tmp_path / "Archon",
+                        progress=ProgressSnapshot(stage="prover"),
+                        lean_file_count=1,
+                        theorem_count=1,
+                        sorry_count=0,
+                        axiom_count=0,
+                    ),
+                    score=ProjectScore(
+                        project_id="demo",
+                        stage="prover",
+                        objective_count=0,
+                        task_result_count=0,
+                        review_session_count=0,
+                        progress_ratio=1.0,
+                        backlog_penalty=0,
+                        proof_gap_penalty=0,
+                        axiom_penalty=0,
+                        score=1.0,
+                    ),
+                    delta=SnapshotDelta(
+                        sorry_delta=0,
+                        axiom_delta=0,
+                        review_session_delta=0,
+                        task_results_delta=0,
+                        checklist_done_delta=0,
+                        score_delta=0.0,
+                    ),
+                )
+            ],
+        )
+
+    earlier = build_result(
+        "benchmark-1",
+        benchmark_name="smoke-a",
+        started_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    later = build_result(
+        "benchmark-2",
+        benchmark_name="smoke-b",
+        started_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+    store.upsert_benchmark_run(earlier)
+    store.upsert_benchmark_run(later)
+
+    listed = store.list_benchmark_runs()
+    detail = store.get_benchmark_run("benchmark-1")
+
+    assert [result.run_id for result in listed] == ["benchmark-2", "benchmark-1"]
+    assert detail is not None
+    assert detail.benchmark.name == "smoke-a"
+    assert detail.ledger_summary is not None
+    assert detail.ledger_summary.total_projects == 1
 
 
 def test_event_store_tracks_project_sessions_and_iterations(tmp_path: Path) -> None:

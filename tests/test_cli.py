@@ -1225,6 +1225,62 @@ def test_benchmark_run_creates_summary(
     assert isinstance(replay_payload["theorem_outcomes"], list)
 
 
+def test_benchmark_runs_commands_list_and_show_detail(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    manifest_path = tmp_path / "benchmark.toml"
+    manifest_path.write_text(
+        "[benchmark]\n"
+        'name = "smoke"\n'
+        'artifact_root = "./artifacts/benchmarks/smoke"\n\n'
+        "[[projects]]\n"
+        'id = "demo"\n'
+        f'path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n'
+        'workflow = "adaptive_loop"\n',
+        encoding="utf-8",
+    )
+
+    run_result = runner.invoke(app, ["benchmark", "run", "--manifest", str(manifest_path)])
+
+    assert run_result.exit_code == 0
+    run_id = next(
+        line.split(": ", maxsplit=1)[1]
+        for line in run_result.output.splitlines()
+        if line.startswith("Run: ")
+    )
+
+    runs_result = runner.invoke(
+        app,
+        ["benchmark", "runs", "--manifest", str(manifest_path), "--json"],
+    )
+
+    assert runs_result.exit_code == 0
+    runs_payload = json.loads(runs_result.output)
+    assert runs_payload[0]["run_id"] == run_id
+    assert runs_payload[0]["benchmark"]["name"] == "smoke"
+    assert runs_payload[0]["ledger_path"].endswith("experiment-ledger.json")
+
+    detail_result = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "run-detail",
+            "--manifest",
+            str(manifest_path),
+            "--run-id",
+            run_id,
+            "--json",
+        ],
+    )
+
+    assert detail_result.exit_code == 0
+    detail_payload = json.loads(detail_result.output)
+    assert detail_payload["run_id"] == run_id
+    assert detail_payload["benchmark"]["name"] == "smoke"
+    assert detail_payload["ledger_summary"]["total_projects"] == 1
+
+
 def test_benchmark_compare_reports_theorem_level_deltas(tmp_path: Path) -> None:
     baseline_ledger = tmp_path / "baseline-ledger.json"
     candidate_ledger = tmp_path / "candidate-ledger.json"

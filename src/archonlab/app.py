@@ -8,7 +8,7 @@ from typing import Annotated
 import typer
 
 from .batch import BatchRunner
-from .benchmark import BenchmarkRunService
+from .benchmark import BenchmarkRunService, load_benchmark_manifest
 from .checks import gather_doctor_report
 from .config import (
     build_workspace_project_app_config,
@@ -144,6 +144,22 @@ def _resolve_provider_runtime(
     except (KeyError, ValueError):
         app_config = load_config(resolved_config_path)
         return app_config.provider.pool, app_config.provider_pools
+
+
+def _resolve_benchmark_artifact_root(
+    *,
+    manifest_path: Path | None,
+    artifact_root: Path | None,
+) -> Path:
+    if manifest_path is not None and artifact_root is not None:
+        raise typer.BadParameter("Specify either --manifest or --artifact-root, not both.")
+    if manifest_path is None and artifact_root is None:
+        raise typer.BadParameter("Specify --manifest or --artifact-root.")
+    if manifest_path is not None:
+        return load_benchmark_manifest(manifest_path.resolve()).benchmark.artifact_root
+    if artifact_root is None:
+        raise typer.BadParameter("Specify --manifest or --artifact-root.")
+    return artifact_root.resolve()
 
 
 @app.command()
@@ -1370,6 +1386,90 @@ def benchmark_run(
         )
         if project.worktree_path is not None:
             typer.echo(f"  worktree={project.worktree_path}")
+
+
+@benchmark_app.command("runs")
+def benchmark_runs(
+    manifest: Annotated[
+        Path | None,
+        typer.Option("--manifest", exists=True, help="Benchmark manifest TOML."),
+    ] = None,
+    artifact_root: Annotated[
+        Path | None,
+        typer.Option("--artifact-root", help="Benchmark artifact root."),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, help="Maximum number of benchmark runs to list."),
+    ] = 20,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable JSON.")
+    ] = False,
+) -> None:
+    resolved_artifact_root = _resolve_benchmark_artifact_root(
+        manifest_path=manifest,
+        artifact_root=artifact_root,
+    )
+    runs = EventStore(resolved_artifact_root / "archonlab.db").list_benchmark_runs(limit=limit)
+    if json_output:
+        typer.echo(
+            json.dumps(
+                [result.model_dump(mode="json") for result in runs],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    typer.echo(f"Artifact Root: {resolved_artifact_root}")
+    typer.echo(f"Runs: {len(runs)}")
+    if not runs:
+        typer.echo("No benchmark runs recorded.")
+        return
+    for result in runs:
+        typer.echo(
+            f"{result.run_id} | {result.status.value} | "
+            f"benchmark={result.benchmark.name} | projects={len(result.projects)} | "
+            f"started={result.started_at.isoformat()}"
+        )
+
+
+@benchmark_app.command("run-detail")
+def benchmark_run_detail(
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Benchmark run identifier."),
+    ],
+    manifest: Annotated[
+        Path | None,
+        typer.Option("--manifest", exists=True, help="Benchmark manifest TOML."),
+    ] = None,
+    artifact_root: Annotated[
+        Path | None,
+        typer.Option("--artifact-root", help="Benchmark artifact root."),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable JSON.")
+    ] = False,
+) -> None:
+    resolved_artifact_root = _resolve_benchmark_artifact_root(
+        manifest_path=manifest,
+        artifact_root=artifact_root,
+    )
+    result = EventStore(resolved_artifact_root / "archonlab.db").get_benchmark_run(run_id)
+    if result is None:
+        raise typer.BadParameter(f"Unknown benchmark run: {run_id}")
+    if json_output:
+        typer.echo(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"Benchmark: {result.benchmark.name}")
+    typer.echo(f"Run: {result.run_id}")
+    typer.echo(f"Status: {result.status.value}")
+    typer.echo(f"Artifacts: {result.artifact_dir}")
+    if result.ledger_path is not None:
+        typer.echo(f"Ledger: {result.ledger_path}")
+    typer.echo(f"Projects: {len(result.projects)}")
 
 
 @benchmark_app.command("ledger")
