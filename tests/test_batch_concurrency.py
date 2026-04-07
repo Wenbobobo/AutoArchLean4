@@ -137,6 +137,79 @@ def test_batch_runner_slot_limit_dispatches_jobs_concurrently(tmp_path: Path) ->
 
     assert set(report.processed_job_ids) == {job_a.id, job_b.id}
     assert BlockingBenchmarkRunService.max_active >= 2
-    assert BlockingBenchmarkRunService.started_manifests == [manifest_a, manifest_b]
+    assert set(BlockingBenchmarkRunService.started_manifests) == {manifest_a, manifest_b}
     assert queue_store.list_jobs()[0].status.value == "completed"
     assert queue_store.list_jobs()[1].status.value == "completed"
+
+
+def test_batch_runner_fleet_launches_auto_slot_workers(tmp_path: Path) -> None:
+    project_path = _make_project(tmp_path, "DemoProject")
+    archon_path = _make_archon(tmp_path)
+    manifest_a = _make_manifest(tmp_path / "a", project_path, archon_path, "bench-a")
+    manifest_b = _make_manifest(tmp_path / "b", project_path, archon_path, "bench-b")
+
+    queue_store = QueueStore(tmp_path / "queue.db")
+    queue_store.enqueue("benchmark", {"manifest_path": str(manifest_a)})
+    queue_store.enqueue("benchmark", {"manifest_path": str(manifest_b)})
+
+    control_service = ControlService(tmp_path / "control")
+
+    class BlockingBenchmarkRunService:
+        active = 0
+        max_active = 0
+        lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        def __init__(self, manifest_path: Path) -> None:
+            self.manifest_path = manifest_path
+
+        def run(self, *, dry_run: bool = True, use_worktrees: bool = False) -> object:
+            del dry_run, use_worktrees
+            with BlockingBenchmarkRunService.lock:
+                BlockingBenchmarkRunService.active += 1
+                BlockingBenchmarkRunService.max_active = max(
+                    BlockingBenchmarkRunService.max_active,
+                    BlockingBenchmarkRunService.active,
+                )
+            try:
+                BlockingBenchmarkRunService.barrier.wait(timeout=2)
+                artifact_dir = tmp_path / "fleet-artifacts" / self.manifest_path.stem
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                summary_path = artifact_dir / "summary.json"
+                summary_path.write_text(
+                    "{\"status\": \"completed\"}",
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(
+                    benchmark=SimpleNamespace(name="bench"),
+                    run_id=f"run-{self.manifest_path.stem}",
+                    status=SimpleNamespace(value="completed"),
+                    artifact_dir=artifact_dir,
+                    summary_path=summary_path,
+                    projects=[],
+                )
+            finally:
+                with BlockingBenchmarkRunService.lock:
+                    BlockingBenchmarkRunService.active -= 1
+
+    runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=control_service,
+        artifact_root=tmp_path / "batch-artifacts",
+        benchmark_runner_cls=BlockingBenchmarkRunService,
+        slot_limit=2,
+    )
+
+    report = runner.run_fleet(
+        worker_count=2,
+        idle_timeout_seconds=0.1,
+        poll_seconds=0.01,
+        stale_after_seconds=60,
+    )
+
+    assert len(report.processed_job_ids) == 2
+    assert len(report.worker_ids) == 2
+    workers = queue_store.list_workers()
+    assert {worker.slot_index for worker in workers} == {1, 2}
+    assert all(worker.worker_id.startswith("worker-auto-") for worker in workers)
+    assert BlockingBenchmarkRunService.max_active >= 2

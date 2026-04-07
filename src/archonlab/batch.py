@@ -145,7 +145,8 @@ class BatchRunner:
     ) -> BatchRunReport:
         report = BatchRunReport()
         report_lock = threading.Lock()
-        resolved_worker_id = worker_id or f"worker-slot-{slot_index}-{uuid.uuid4().hex[:8]}"
+        slot_label = f"slot-{slot_index}" if slot_index is not None else "auto"
+        resolved_worker_id = worker_id or f"worker-{slot_label}-{uuid.uuid4().hex[:8]}"
         worker = self.queue_store.register_worker(
             slot_index=slot_index,
             worker_id=resolved_worker_id,
@@ -201,6 +202,43 @@ class BatchRunner:
             raise
         self.queue_store.stop_worker(worker.worker_id, note=note)
         return report
+
+    def run_fleet(
+        self,
+        *,
+        worker_count: int | None = None,
+        max_jobs_per_worker: int | None = None,
+        poll_seconds: float = 2.0,
+        idle_timeout_seconds: float = 30.0,
+        stale_after_seconds: float | None = None,
+    ) -> BatchRunReport:
+        desired_workers = max(1, worker_count or self.slot_limit)
+        aggregate = BatchRunReport()
+        aggregate_lock = threading.Lock()
+
+        def fleet_worker(index: int) -> None:
+            report = self.run_worker(
+                slot_index=None,
+                max_jobs=max_jobs_per_worker,
+                poll_seconds=poll_seconds,
+                idle_timeout_seconds=idle_timeout_seconds,
+                note=f"fleet_worker_{index}",
+                stale_after_seconds=stale_after_seconds,
+            )
+            with aggregate_lock:
+                aggregate.processed_job_ids.extend(report.processed_job_ids)
+                aggregate.paused_job_ids.extend(report.paused_job_ids)
+                aggregate.failed_job_ids.extend(report.failed_job_ids)
+                aggregate.worker_ids.extend(report.worker_ids)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=desired_workers) as pool:
+            futures = [
+                pool.submit(fleet_worker, index)
+                for index in range(1, desired_workers + 1)
+            ]
+            for future in futures:
+                future.result()
+        return aggregate
 
     def _run_job(
         self,

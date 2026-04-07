@@ -485,6 +485,65 @@ def queue_run(
     typer.echo(f"Workers: {len(report.worker_ids)}")
 
 
+@queue_app.command("fleet")
+def queue_fleet(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    workers: Annotated[
+        int | None,
+        typer.Option("--workers", min=1, help="Number of auto-slot workers to launch."),
+    ] = None,
+    max_jobs_per_worker: Annotated[
+        int | None,
+        typer.Option(
+            "--max-jobs-per-worker",
+            min=1,
+            help="Optional maximum jobs processed by each worker.",
+        ),
+    ] = None,
+    poll_seconds: Annotated[
+        float,
+        typer.Option("--poll-seconds", min=0.1, help="Polling interval when the queue is empty."),
+    ] = 2.0,
+    idle_timeout_seconds: Annotated[
+        float,
+        typer.Option(
+            "--idle-timeout-seconds",
+            min=0.1,
+            help="Stop each worker after this many idle seconds.",
+        ),
+    ] = 30.0,
+    stale_after_seconds: Annotated[
+        float | None,
+        typer.Option(
+            "--stale-after-seconds",
+            min=0.1,
+            help="Reap stale active workers before each fleet worker claims a slot.",
+        ),
+    ] = 120.0,
+) -> None:
+    app_config = load_config(config)
+    runner = BatchRunner(
+        queue_store=QueueStore(app_config.run.artifact_root / "archonlab.db"),
+        control_service=ControlService(app_config.run.artifact_root),
+        artifact_root=app_config.run.artifact_root,
+        slot_limit=workers or app_config.run.max_parallel,
+    )
+    report = runner.run_fleet(
+        worker_count=workers or app_config.run.max_parallel,
+        max_jobs_per_worker=max_jobs_per_worker,
+        poll_seconds=poll_seconds,
+        idle_timeout_seconds=idle_timeout_seconds,
+        stale_after_seconds=stale_after_seconds,
+    )
+    typer.echo(f"Processed: {len(report.processed_job_ids)}")
+    typer.echo(f"Paused: {len(report.paused_job_ids)}")
+    typer.echo(f"Failed: {len(report.failed_job_ids)}")
+    typer.echo(f"Workers: {len(report.worker_ids)}")
+
+
 @queue_app.command("status")
 def queue_status(
     config: Annotated[

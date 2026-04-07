@@ -66,6 +66,7 @@
 - 独立 `queue worker` 进程模式已落地，可跨进程共享队列
 - 独立 `queue worker` 现已支持 auto-slot，可自动认领空闲 slot
 - stale worker recovery 已落地，可回收失联 worker 并重排遗留 job
+- 本地 fleet supervisor 已落地，可一键拉起多 auto-slot worker
 - Phase 4 的最小契约测试已经覆盖 task graph、supervisor、worktree
 
 ## Phase 5: workflow 与最小 UI

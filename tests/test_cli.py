@@ -363,3 +363,67 @@ def test_queue_sweep_workers_command_reaps_stale_worker(
     assert "Reaped: 1" in sweep_result.output
     assert workers_result.exit_code == 0
     assert "worker-stale | slot=1 | failed" in workers_result.output
+
+
+def test_queue_fleet_command_processes_jobs_with_auto_slot_workers(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_parallel = 2\n",
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "benchmark.toml"
+    manifest_path.write_text(
+        "[benchmark]\n"
+        'name = "smoke"\n'
+        'artifact_root = "./artifacts/benchmarks/smoke"\n\n'
+        "[[projects]]\n"
+        'id = "demo"\n'
+        f'path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n'
+        'workflow = "adaptive_loop"\n',
+        encoding="utf-8",
+    )
+
+    enqueue_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "enqueue-benchmark",
+            "--config",
+            str(config_path),
+            "--manifest",
+            str(manifest_path),
+            "--dry-run",
+        ],
+    )
+    fleet_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "fleet",
+            "--config",
+            str(config_path),
+            "--workers",
+            "1",
+            "--idle-timeout-seconds",
+            "0.1",
+            "--poll-seconds",
+            "0.1",
+        ],
+    )
+
+    assert enqueue_result.exit_code == 0
+    assert fleet_result.exit_code == 0
+    assert "Processed: 1" in fleet_result.output
+    assert "Workers: 1" in fleet_result.output

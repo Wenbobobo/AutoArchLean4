@@ -34,6 +34,14 @@ class QueueCancelRequest(BaseModel):
     reason: str | None = None
 
 
+class QueueFleetRequest(BaseModel):
+    workers: int | None = None
+    max_jobs_per_worker: int | None = None
+    poll_seconds: float = 2.0
+    idle_timeout_seconds: float = 30.0
+    stale_after_seconds: float | None = 120.0
+
+
 class QueueSweepWorkersRequest(BaseModel):
     stale_after_seconds: float = 120.0
     requeue_running_jobs: bool = True
@@ -124,6 +132,22 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             slot_limit=config.run.max_parallel,
         )
         return runner.run_pending(max_jobs=max_jobs).model_dump(mode="json")
+
+    @app.post("/api/queue/fleet")
+    def run_queue_fleet(body: QueueFleetRequest) -> dict[str, Any]:
+        runner = BatchRunner(
+            queue_store=queue,
+            control_service=control,
+            artifact_root=config.run.artifact_root,
+            slot_limit=body.workers or config.run.max_parallel,
+        )
+        return runner.run_fleet(
+            worker_count=body.workers or config.run.max_parallel,
+            max_jobs_per_worker=body.max_jobs_per_worker,
+            poll_seconds=body.poll_seconds,
+            idle_timeout_seconds=body.idle_timeout_seconds,
+            stale_after_seconds=body.stale_after_seconds,
+        ).model_dump(mode="json")
 
     @app.post("/api/queue/jobs/{job_id}/cancel")
     def cancel_queue_job(job_id: str, body: QueueCancelRequest) -> dict[str, Any]:
@@ -351,6 +375,7 @@ def render_dashboard_html(project_id: str) -> str:
           <h2>Queue</h2>
           <div class="controls">
             <button class="secondary" id="queue-run-button">Run Pending Queue</button>
+            <button class="secondary" id="queue-fleet-button">Run Auto-Slot Fleet</button>
             <button class="secondary" id="worker-sweep-button">Sweep Stale Workers</button>
           </div>
           <div style="height: 12px"></div>
@@ -505,6 +530,15 @@ def render_dashboard_html(project_id: str) -> str:
 
       document.getElementById("queue-run-button").addEventListener("click", async () => {{
         await fetchJson(`/api/queue/run`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{}}),
+        }});
+        await refresh();
+      }});
+
+      document.getElementById("queue-fleet-button").addEventListener("click", async () => {{
+        await fetchJson(`/api/queue/fleet`, {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify({{}}),

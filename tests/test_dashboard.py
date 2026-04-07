@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from archonlab.dashboard import create_dashboard_app  # noqa: E402
 from archonlab.events import EventStore  # noqa: E402
 from archonlab.models import (  # noqa: E402
+    BatchRunReport,
     EventRecord,
     RunStatus,
     RunSummary,
@@ -149,3 +150,16 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     swept = sweep_response.json()
     assert swept[0]["worker_id"] == "worker-test"
     assert swept[0]["status"] == "failed"
+
+    monkeypatch.setattr(
+        "archonlab.dashboard.BatchRunner.run_fleet",
+        lambda self, **kwargs: BatchRunReport(
+            processed_job_ids=["job-1"],
+            worker_ids=["worker-auto-1"],
+        ),
+    )
+    fleet_response = client.post("/api/queue/fleet", json={})
+    assert fleet_response.status_code == 200
+    fleet_payload = fleet_response.json()
+    assert fleet_payload["processed_job_ids"] == ["job-1"]
+    assert fleet_payload["worker_ids"] == ["worker-auto-1"]

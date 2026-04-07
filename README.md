@@ -45,6 +45,7 @@ uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-ru
 uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --use-worktrees --worker-slots 4
 uv run archonlab queue enqueue-benchmark --config archonlab.toml --manifest benchmarks/smoke.example.toml
 uv run archonlab queue run --config archonlab.toml --slots 4
+uv run archonlab queue fleet --config archonlab.toml --workers 4
 uv run archonlab queue worker --config archonlab.toml --slot-index 1 --max-jobs 10
 uv run archonlab queue worker --config archonlab.toml --auto-slot --max-jobs 10
 uv run archonlab queue sweep-workers --config archonlab.toml --stale-after-seconds 120
@@ -162,6 +163,8 @@ model = "gpt-5.4"
 
 - `queue run --slots 4`
   适合单机内快速起一个本地线程池。
+- `queue fleet --workers 4`
+  适合启动一组 auto-slot worker，行为上更接近真实 worker farm。
 - `queue worker --slot-index N`
   适合起多个独立 worker 进程，共享同一个队列数据库。
 - `queue worker --auto-slot`
