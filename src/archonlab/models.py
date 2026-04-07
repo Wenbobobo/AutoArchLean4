@@ -96,6 +96,11 @@ class AdapterAction(BaseModel):
     reason: str
     stage: str
     prompt_preview: str | None = None
+    task_id: str | None = None
+    task_title: str | None = None
+    file_path: Path | None = None
+    supervisor_action: SupervisorAction | None = None
+    supervisor_reason: SupervisorReason | None = None
 
 
 class EventRecord(BaseModel):

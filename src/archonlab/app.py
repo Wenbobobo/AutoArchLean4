@@ -117,6 +117,11 @@ def run_start(
     typer.echo(f"Run: {result.run_id}")
     typer.echo(f"Status: {result.status.value}")
     typer.echo(f"Next action: {result.action.phase} ({result.action.reason})")
+    if result.action.task_title is not None:
+        target = result.action.task_title
+        if result.action.file_path is not None:
+            target = f"{target} @ {result.action.file_path}"
+        typer.echo(f"Focus task: {target}")
     typer.echo(f"Artifacts: {result.artifact_dir}")
     typer.echo(f"Prompt preview: {result.prompt_path}")
     if result.task_graph_path is not None:

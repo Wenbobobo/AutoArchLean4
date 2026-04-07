@@ -70,7 +70,11 @@ def test_run_start_creates_artifacts(
     db_path = tmp_path / "artifacts" / "archonlab.db"
     assert db_path.exists()
     runs_dir = tmp_path / "artifacts" / "runs"
-    assert any(path.is_dir() for path in runs_dir.iterdir())
+    run_dirs = [path for path in runs_dir.iterdir() if path.is_dir()]
+    assert run_dirs
+    run_dir = run_dirs[0]
+    assert (run_dir / "task-graph.json").exists()
+    assert (run_dir / "supervisor.json").exists()
 
 
 def test_benchmark_run_creates_summary(

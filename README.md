@@ -52,3 +52,6 @@ uv run archonlab worktree create --repo-path /path/to/repo --name phase4-run
 - `task-graph.json`: 从 objectives 和 Lean 声明提取的 task graph
 - `supervisor.json`: stuck/健康状态判断与建议动作
 - `summary.json`: benchmark 级别的统一回放摘要
+
+`run start` 现在会用 `task-graph.json` 和 `supervisor.json` 共同选择下一步动作，
+而不再只是复用最早的固定启发式。

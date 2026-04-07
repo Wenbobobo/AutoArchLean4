@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from .adapter import ArchonAdapter
 from .events import EventStore
 from .models import AppConfig, EventRecord, RunResult, RunStatus, RunSummary
+from .planner import select_next_action
 from .project_state import collect_project_snapshot
 from .supervisor import decide_supervisor_action
 from .task_graph import build_task_graph
@@ -103,7 +104,13 @@ class RunService:
             jsonl_path=events_jsonl,
         )
 
-        action = self.adapter.choose_next_action(self.config.run.workflow, progress)
+        action = select_next_action(
+            adapter=self.adapter,
+            workflow=self.config.run.workflow,
+            snapshot=snapshot,
+            task_graph=task_graph,
+            supervisor=supervisor,
+        )
         prompt_text = action.prompt_preview or ""
         prompt_path.write_text(prompt_text, encoding="utf-8")
 
@@ -117,6 +124,19 @@ class RunService:
                     "reason": action.reason,
                     "stage": action.stage,
                     "prompt_path": str(prompt_path),
+                    "task_id": action.task_id,
+                    "task_title": action.task_title,
+                    "file_path": str(action.file_path) if action.file_path is not None else None,
+                    "supervisor_action": (
+                        action.supervisor_action.value
+                        if action.supervisor_action is not None
+                        else None
+                    ),
+                    "supervisor_reason": (
+                        action.supervisor_reason.value
+                        if action.supervisor_reason is not None
+                        else None
+                    ),
                 },
             ),
             jsonl_path=events_jsonl,
