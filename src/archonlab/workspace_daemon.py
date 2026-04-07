@@ -9,7 +9,9 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from .config import load_workspace_config
+from .events import EventStore
 from .fleet import WorkerLauncher
+from .models import SessionStatus, WorkspaceLoopResult
 from .workspace_loop import WorkspaceLoopController
 
 
@@ -291,8 +293,14 @@ class WorkspaceDaemonRunner:
                     )
                 if max_ticks is not None and tick_count >= max_ticks:
                     return self._finalize_state(status="idle", exit_reason="max_ticks_reached")
-                if poll_seconds > 0:
-                    time.sleep(poll_seconds)
+                sleep_seconds = self._effective_poll_seconds(
+                    base_poll_seconds=poll_seconds,
+                    loop_result=loop_result,
+                    project_id=project_id,
+                    project_tags=project_tags or [],
+                )
+                if sleep_seconds > 0:
+                    time.sleep(sleep_seconds)
         except Exception as exc:  # noqa: BLE001
             self._finalize_state(
                 status="failed",
@@ -306,6 +314,75 @@ class WorkspaceDaemonRunner:
                 daemon_run_id=daemon_run_id,
                 pid=pid,
             )
+
+    def _effective_poll_seconds(
+        self,
+        *,
+        base_poll_seconds: float,
+        loop_result: WorkspaceLoopResult,
+        project_id: str | None,
+        project_tags: list[str],
+    ) -> float:
+        if base_poll_seconds <= 0:
+            return 0.0
+        if loop_result.stop_reason != "failure_cooldown_active":
+            return base_poll_seconds
+        retry_at = self._next_failure_cooldown_retry_at(
+            project_id=project_id,
+            project_tags=project_tags,
+        )
+        if retry_at is None:
+            return base_poll_seconds
+        remaining_seconds = max((retry_at - datetime.now(UTC)).total_seconds(), 0.0)
+        return max(base_poll_seconds, remaining_seconds)
+
+    def _next_failure_cooldown_retry_at(
+        self,
+        *,
+        project_id: str | None,
+        project_tags: list[str],
+    ) -> datetime | None:
+        selected_project_ids = self._selected_project_ids(
+            project_id=project_id,
+            project_tags=project_tags,
+        )
+        if not selected_project_ids:
+            return None
+        store = EventStore(self.artifact_root / "archonlab.db")
+        sessions = store.list_sessions(
+            workspace_id=self.workspace_config.name,
+            limit=10_000,
+        )
+        now = datetime.now(UTC)
+        retry_ats = [
+            session.cooldown_until
+            for session in sessions
+            if (
+                session.project_id in selected_project_ids
+                and session.status is SessionStatus.FAILED
+                and session.cooldown_until is not None
+                and session.cooldown_until > now
+            )
+        ]
+        return min(retry_ats) if retry_ats else None
+
+    def _selected_project_ids(
+        self,
+        *,
+        project_id: str | None,
+        project_tags: list[str],
+    ) -> set[str]:
+        if project_id is not None:
+            return {project_id}
+        selected_tags = set(project_tags)
+        project_ids: set[str] = set()
+        for project in self.workspace_config.projects:
+            if not project.enabled:
+                continue
+            if selected_tags and not selected_tags.issubset(set(project.tags)):
+                continue
+            project_ids.add(project.id)
+        return project_ids
 
     def _finalize_state(
         self,

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from archonlab.models import WorkspaceLoopResult
+from archonlab.events import EventStore
+from archonlab.models import (
+    ProjectSession,
+    SessionStatus,
+    WorkflowMode,
+    WorkspaceLoopResult,
+)
 from archonlab.workspace_daemon import (
     WorkspaceDaemonRunner,
     WorkspaceDaemonState,
@@ -273,3 +280,73 @@ def test_workspace_daemon_runner_stops_before_next_tick_when_stop_requested_duri
     assert state.status == "stopped"
     assert state.exit_reason == "stop_during_sleep"
     assert state.request_reason == "stop_during_sleep"
+
+
+def test_workspace_daemon_runner_waits_for_failure_cooldown_before_retrying(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    EventStore(artifact_root / "archonlab.db").register_session(
+        ProjectSession(
+            session_id="session-alpha-cooling",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.FAILED,
+            workflow=WorkflowMode.ADAPTIVE_LOOP,
+            dry_run=True,
+            max_iterations=2,
+            completed_iterations=1,
+            last_stop_reason="run_failed",
+            consecutive_failures=1,
+            max_consecutive_failures=3,
+            failure_cooldown_seconds=45,
+            last_failure_at=datetime.now(UTC) - timedelta(seconds=5),
+            cooldown_until=datetime.now(UTC) + timedelta(seconds=45),
+        )
+    )
+    calls: list[dict[str, object]] = []
+    sleep_calls: list[float] = []
+
+    def fake_run(self, **kwargs) -> WorkspaceLoopResult:
+        calls.append(dict(kwargs))
+        return WorkspaceLoopResult(
+            workspace_id="demo-workspace",
+            loop_run_id="loop-daemon-cooldown-1",
+            loop_id="loop-daemon-cooldown-1",
+            stop_reason="failure_cooldown_active",
+            cycles_completed=1,
+        )
+
+    def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        request_workspace_daemon_stop(
+            artifact_root,
+            reason="stop_after_backoff",
+            requested_by="test",
+        )
+
+    monkeypatch.setattr("archonlab.workspace_daemon.WorkspaceLoopController.run", fake_run)
+    monkeypatch.setattr("archonlab.workspace_daemon.time.sleep", fake_sleep)
+
+    state = WorkspaceDaemonRunner(config_path).run(
+        max_ticks=4,
+        poll_seconds=5.0,
+        fleet_max_cycles=1,
+        queue_poll_seconds=0.01,
+        queue_idle_timeout_seconds=0.01,
+    )
+
+    assert len(calls) == 1
+    assert len(sleep_calls) == 1
+    assert sleep_calls[0] > 30.0
+    assert state.status == "stopped"
+    assert state.exit_reason == "stop_after_backoff"
