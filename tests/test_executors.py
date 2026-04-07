@@ -12,6 +12,7 @@ from archonlab.executors import (
     OpenAICompatibleHttpExecutor,
     create_executor,
     reset_provider_pool_health,
+    snapshot_provider_pool_health,
 )
 from archonlab.models import (
     ExecutionCapability,
@@ -20,7 +21,9 @@ from archonlab.models import (
     ExecutorKind,
     ProviderConfig,
     ProviderPoolConfig,
+    ProviderPoolHealthStatus,
     ProviderPoolMemberConfig,
+    ProviderPoolMemberHealthStatus,
 )
 
 
@@ -314,6 +317,98 @@ def test_provider_pool_executor_fails_over_and_quarantines_unhealthy_member() ->
 
         assert captured["primary"] == 1
         assert captured["backup"] == 2
+    finally:
+        primary_server.shutdown()
+        backup_server.shutdown()
+        primary_server.server_close()
+        backup_server.server_close()
+        primary_thread.join(timeout=2)
+        backup_thread.join(timeout=2)
+        reset_provider_pool_health()
+
+
+def test_provider_pool_health_snapshot_reports_quarantine_and_manual_reset() -> None:
+    reset_provider_pool_health()
+    captured = {"primary": 0, "backup": 0}
+
+    class PrimaryHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["primary"] += 1
+            encoded = json.dumps({"error": "primary unavailable"}).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    class BackupHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["backup"] += 1
+            encoded = json.dumps({"output_text": "backup-ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    primary_server = ThreadingHTTPServer(("127.0.0.1", 0), PrimaryHandler)
+    backup_server = ThreadingHTTPServer(("127.0.0.1", 0), BackupHandler)
+    primary_thread = threading.Thread(target=primary_server.serve_forever, daemon=True)
+    backup_thread = threading.Thread(target=backup_server.serve_forever, daemon=True)
+    primary_thread.start()
+    backup_thread.start()
+    try:
+        pool_name = "research"
+        provider_pools = {
+            pool_name: ProviderPoolConfig(
+                name=pool_name,
+                max_consecutive_failures=1,
+                quarantine_seconds=600,
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="primary",
+                        base_url=f"http://127.0.0.1:{primary_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                    ProviderPoolMemberConfig(
+                        name="backup",
+                        base_url=f"http://127.0.0.1:{backup_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                ],
+            )
+        }
+
+        executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+        )
+        result = executor.execute("prove foo", system_prompt="plan")
+
+        assert result.status is ExecutionStatus.COMPLETED
+        report = snapshot_provider_pool_health(provider_pools)[0]
+        primary = next(member for member in report.members if member.member_name == "primary")
+        backup = next(member for member in report.members if member.member_name == "backup")
+
+        assert report.status is ProviderPoolHealthStatus.DEGRADED
+        assert primary.status is ProviderPoolMemberHealthStatus.QUARANTINED
+        assert primary.consecutive_failures == 1
+        assert backup.status is ProviderPoolMemberHealthStatus.HEALTHY
+        assert reset_provider_pool_health(pool_name=pool_name, member_name="primary") == 1
+
+        refreshed = snapshot_provider_pool_health(provider_pools)[0]
+        refreshed_primary = next(
+            member for member in refreshed.members if member.member_name == "primary"
+        )
+        assert refreshed_primary.status is ProviderPoolMemberHealthStatus.HEALTHY
+        assert refreshed.status is ProviderPoolHealthStatus.HEALTHY
     finally:
         primary_server.shutdown()
         backup_server.shutdown()

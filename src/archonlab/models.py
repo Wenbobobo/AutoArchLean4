@@ -254,6 +254,48 @@ class ProviderPoolConfig(BaseModel):
     members: list[ProviderPoolMemberConfig] = Field(default_factory=list)
 
 
+class ProviderPoolMemberHealthStatus(StrEnum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    QUARANTINED = "quarantined"
+    DISABLED = "disabled"
+
+
+class ProviderPoolHealthStatus(StrEnum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    ALL_QUARANTINED = "all_quarantined"
+    EMPTY = "empty"
+
+
+class ProviderPoolMemberHealth(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pool_name: str
+    member_name: str
+    status: ProviderPoolMemberHealthStatus
+    enabled: bool = True
+    priority: int = 0
+    model: str | None = None
+    base_url: str | None = None
+    cost_tier: str | None = None
+    endpoint_class: str | None = None
+    consecutive_failures: int = 0
+    quarantined_until: datetime | None = None
+
+
+class ProviderPoolHealthReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pool_name: str
+    status: ProviderPoolHealthStatus
+    strategy: str
+    total_members: int = 0
+    available_members: int = 0
+    quarantined_members: int = 0
+    members: list[ProviderPoolMemberHealth] = Field(default_factory=list)
+
+
 class ExecutorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1288,6 +1330,31 @@ class ExecutionTelemetry(BaseModel):
     cost_estimate: float | None = None
     status_code: int | None = None
     health_status: str | None = None
+
+
+class ProviderMemberRuntimeSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    member_name: str
+    success_count: int = 0
+    failure_count: int = 0
+    retry_count: int = 0
+    total_cost_estimate: float = 0.0
+    last_health_status: str | None = None
+    last_seen_at: datetime | None = None
+
+
+class ProviderPoolRuntimeSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pool_name: str
+    success_count: int = 0
+    failure_count: int = 0
+    total_retry_count: int = 0
+    total_cost_estimate: float = 0.0
+    last_health_status: str | None = None
+    last_seen_at: datetime | None = None
+    members: list[ProviderMemberRuntimeSummary] = Field(default_factory=list)
 
 
 class FleetControllerCycle(BaseModel):

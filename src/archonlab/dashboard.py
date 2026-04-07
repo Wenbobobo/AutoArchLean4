@@ -463,6 +463,10 @@ def _build_workspace_overview(
             ),
         },
         "projects": project_summaries,
+        "provider_runtime": [
+            item.model_dump(mode="json")
+            for item in store.summarize_provider_runtime(limit=200)
+        ],
         "sessions": [
             {
                 **session.model_dump(mode="json"),

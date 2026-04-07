@@ -460,6 +460,22 @@ def test_dashboard_workspace_overview_and_project_switching(
         workspace_id="other-workspace",
         priority=99,
     )
+    store.append(
+        EventRecord(
+            run_id="run-alpha-1",
+            kind="executor.completed",
+            project_id="alpha",
+            payload={
+                "telemetry": {
+                    "provider_pool": "lab",
+                    "provider_member": "member-a",
+                    "retry_count": 1,
+                    "cost_estimate": 0.2,
+                    "health_status": "degraded",
+                }
+            },
+        )
+    )
 
     app = create_dashboard_app(workspace_config_path)
     client = TestClient(app)
@@ -491,6 +507,9 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert beta_summary["max_iterations"] == 4
     assert beta_summary["session_count"] == 1
     assert beta_summary["queued_jobs"] == 0
+    assert overview["provider_runtime"][0]["pool_name"] == "lab"
+    assert overview["provider_runtime"][0]["success_count"] == 1
+    assert overview["provider_runtime"][0]["members"][0]["member_name"] == "member-a"
     alpha_session = next(item for item in overview["sessions"] if item["project_id"] == "alpha")
     assert alpha_session["remaining_iterations"] == 4
 

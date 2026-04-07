@@ -9,12 +9,26 @@ from pathlib import Path
 from .models import (
     EventRecord,
     ProjectSession,
+    ProviderMemberRuntimeSummary,
+    ProviderPoolRuntimeSummary,
     RunStatus,
     RunSummary,
     SessionIteration,
     SessionStatus,
     WorkflowMode,
 )
+
+
+def _coerce_int(value: object) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def _coerce_float(value: object) -> float:
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _coerce_datetime(value: object) -> datetime | None:
+    return value if isinstance(value, datetime) else None
 
 
 class EventStore:
@@ -542,6 +556,146 @@ class EventStore:
             )
             for row in rows
         ]
+
+    def summarize_provider_runtime(
+        self,
+        *,
+        limit: int = 200,
+    ) -> list[ProviderPoolRuntimeSummary]:
+        rows = self._conn.execute(
+            """
+            SELECT ts, kind, payload_json
+            FROM events
+            WHERE kind IN ('executor.completed', 'executor.failed')
+            ORDER BY seq DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        pool_totals: dict[str, dict[str, object]] = {}
+
+        for row in reversed(rows):
+            payload = json.loads(row["payload_json"])
+            telemetry = payload.get("telemetry")
+            if not isinstance(telemetry, dict):
+                continue
+            pool_name = telemetry.get("provider_pool")
+            member_name = telemetry.get("provider_member")
+            if not isinstance(pool_name, str) or not isinstance(member_name, str):
+                continue
+            retry_count = telemetry.get("retry_count", 0)
+            cost_estimate = telemetry.get("cost_estimate", 0.0)
+            health_status = telemetry.get("health_status")
+            event_ts = datetime.fromisoformat(row["ts"])
+            success = row["kind"] == "executor.completed"
+
+            pool_state = pool_totals.setdefault(
+                pool_name,
+                {
+                    "success_count": 0,
+                    "failure_count": 0,
+                    "total_retry_count": 0,
+                    "total_cost_estimate": 0.0,
+                    "last_health_status": None,
+                    "last_seen_at": None,
+                    "members": {},
+                },
+            )
+            if success:
+                pool_state["success_count"] = _coerce_int(pool_state["success_count"]) + 1
+            else:
+                pool_state["failure_count"] = _coerce_int(pool_state["failure_count"]) + 1
+            pool_state["total_retry_count"] = _coerce_int(pool_state["total_retry_count"]) + (
+                retry_count if isinstance(retry_count, int) else 0
+            )
+            pool_state["total_cost_estimate"] = _coerce_float(pool_state["total_cost_estimate"]) + (
+                float(cost_estimate)
+                if isinstance(cost_estimate, (int, float))
+                else 0.0
+            )
+            pool_state["last_health_status"] = (
+                str(health_status) if isinstance(health_status, str) else None
+            )
+            pool_state["last_seen_at"] = event_ts
+
+            members = pool_state["members"]
+            if not isinstance(members, dict):
+                continue
+            member_state = members.setdefault(
+                member_name,
+                {
+                    "success_count": 0,
+                    "failure_count": 0,
+                    "retry_count": 0,
+                    "total_cost_estimate": 0.0,
+                    "last_health_status": None,
+                    "last_seen_at": None,
+                },
+            )
+            if success:
+                member_state["success_count"] = _coerce_int(member_state["success_count"]) + 1
+            else:
+                member_state["failure_count"] = _coerce_int(member_state["failure_count"]) + 1
+            member_state["retry_count"] = _coerce_int(member_state["retry_count"]) + (
+                retry_count if isinstance(retry_count, int) else 0
+            )
+            member_state["total_cost_estimate"] = _coerce_float(
+                member_state["total_cost_estimate"]
+            ) + (
+                float(cost_estimate)
+                if isinstance(cost_estimate, (int, float))
+                else 0.0
+            )
+            member_state["last_health_status"] = (
+                str(health_status) if isinstance(health_status, str) else None
+            )
+            member_state["last_seen_at"] = event_ts
+
+        summaries: list[ProviderPoolRuntimeSummary] = []
+        for pool_name in sorted(pool_totals):
+            pool_state = pool_totals[pool_name]
+            members = pool_state["members"]
+            if not isinstance(members, dict):
+                continue
+            member_summaries = [
+                ProviderMemberRuntimeSummary(
+                    member_name=member_name,
+                    success_count=_coerce_int(member_state["success_count"]),
+                    failure_count=_coerce_int(member_state["failure_count"]),
+                    retry_count=_coerce_int(member_state["retry_count"]),
+                    total_cost_estimate=round(
+                        _coerce_float(member_state["total_cost_estimate"]),
+                        6,
+                    ),
+                    last_health_status=(
+                        str(member_state["last_health_status"])
+                        if member_state["last_health_status"] is not None
+                        else None
+                    ),
+                    last_seen_at=_coerce_datetime(member_state["last_seen_at"]),
+                )
+                for member_name, member_state in sorted(members.items())
+            ]
+            summaries.append(
+                ProviderPoolRuntimeSummary(
+                    pool_name=pool_name,
+                    success_count=_coerce_int(pool_state["success_count"]),
+                    failure_count=_coerce_int(pool_state["failure_count"]),
+                    total_retry_count=_coerce_int(pool_state["total_retry_count"]),
+                    total_cost_estimate=round(
+                        _coerce_float(pool_state["total_cost_estimate"]),
+                        6,
+                    ),
+                    last_health_status=(
+                        str(pool_state["last_health_status"])
+                        if pool_state["last_health_status"] is not None
+                        else None
+                    ),
+                    last_seen_at=_coerce_datetime(pool_state["last_seen_at"]),
+                    members=member_summaries,
+                )
+            )
+        return summaries
 
     def list_recent_project_events(self, project_id: str, *, limit: int = 20) -> list[EventRecord]:
         rows = self._conn.execute(

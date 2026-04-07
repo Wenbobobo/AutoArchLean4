@@ -13,13 +13,21 @@ from archonlab.events import EventStore
 from archonlab.models import (
     ActionPhase,
     BatchRunReport,
+    EventRecord,
     ExecutorKind,
     ProjectSession,
     ProviderKind,
+    ProviderPoolHealthReport,
+    ProviderPoolHealthStatus,
+    ProviderPoolMemberHealth,
+    ProviderPoolMemberHealthStatus,
     QueueJobPreview,
+    RunStatus,
+    RunSummary,
     SessionStatus,
     SupervisorAction,
     SupervisorReason,
+    WorkflowMode,
 )
 from archonlab.queue import QueueStore
 
@@ -1476,6 +1484,169 @@ def test_queue_plan_fleet_and_fleet_commands_accept_workspace_config(
     assert "Profiles: 1" in plan_result.output
     assert "Processed: 1" in fleet_result.output
     assert "Workers: 1" in fleet_result.output
+
+
+def test_queue_provider_health_and_reset_commands_accept_workspace_config(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + (
+            "[provider]\n"
+            'pool = "lab"\n\n'
+            "[provider_pool.lab]\n"
+            "max_consecutive_failures = 1\n"
+            "quarantine_seconds = 60\n\n"
+            "[[provider_pool.lab.members]]\n"
+            'name = "primary"\n'
+            'model = "gpt-5.4-mini"\n\n'
+            "[[provider_pool.lab.members]]\n"
+            'name = "backup"\n'
+            'model = "gpt-5.4"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "archonlab.app.snapshot_provider_pool_health",
+        lambda provider_pools: [
+            ProviderPoolHealthReport(
+                pool_name="lab",
+                status=ProviderPoolHealthStatus.DEGRADED,
+                strategy="ordered_failover",
+                total_members=2,
+                available_members=1,
+                quarantined_members=1,
+                members=[
+                    ProviderPoolMemberHealth(
+                        pool_name="lab",
+                        member_name="primary",
+                        status=ProviderPoolMemberHealthStatus.QUARANTINED,
+                        consecutive_failures=2,
+                        model="gpt-5.4-mini",
+                    ),
+                    ProviderPoolMemberHealth(
+                        pool_name="lab",
+                        member_name="backup",
+                        status=ProviderPoolMemberHealthStatus.HEALTHY,
+                        model="gpt-5.4",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_reset_provider_pool_health(
+        *,
+        pool_name: str | None = None,
+        member_name: str | None = None,
+    ) -> int:
+        captured["pool_name"] = pool_name
+        captured["member_name"] = member_name
+        return 1
+
+    monkeypatch.setattr(
+        "archonlab.app.reset_provider_pool_health",
+        fake_reset_provider_pool_health,
+    )
+
+    health_result = runner.invoke(
+        app,
+        ["queue", "provider-health", "--config", str(config_path)],
+    )
+    reset_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "reset-provider-health",
+            "--config",
+            str(config_path),
+            "--pool",
+            "lab",
+            "--member",
+            "primary",
+        ],
+    )
+
+    assert health_result.exit_code == 0
+    assert "lab default | degraded | available=1/2 | quarantined=1" in health_result.output
+    assert "primary | quarantined | failures=2 | model=gpt-5.4-mini" in health_result.output
+    assert "backup | healthy | failures=0 | model=gpt-5.4" in health_result.output
+    assert reset_result.exit_code == 0
+    assert "Reset health entries: 1" in reset_result.output
+    assert captured == {"pool_name": "lab", "member_name": "primary"}
+
+
+def test_queue_runtime_summary_command_accepts_workspace_config(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    started_at = datetime.now(UTC)
+    store.register_run(
+        RunSummary(
+            run_id="run-runtime-1",
+            project_id="alpha",
+            workflow=WorkflowMode.ADAPTIVE_LOOP,
+            status=RunStatus.COMPLETED,
+            stage="prover",
+            dry_run=False,
+            started_at=started_at,
+            artifact_dir=artifact_root / "runs" / "run-runtime-1",
+        )
+    )
+    store.append(
+        EventRecord(
+            run_id="run-runtime-1",
+            kind="executor.completed",
+            project_id="alpha",
+            payload={
+                "telemetry": {
+                    "provider_pool": "lab",
+                    "provider_member": "member-a",
+                    "retry_count": 1,
+                    "cost_estimate": 0.25,
+                    "health_status": "degraded",
+                }
+            },
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "runtime-summary",
+            "--config",
+            str(config_path),
+            "--limit",
+            "20",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "lab | success=1 | failed=0" in result.output
+    assert "member-a | success=1 | failed=0 | retries=1" in result.output
 
 
 def test_queue_autoscale_command_accepts_workspace_config(

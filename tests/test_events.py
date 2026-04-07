@@ -188,3 +188,79 @@ def test_event_store_prevents_stale_owner_from_overwriting_recovered_session(
     assert current.status is SessionStatus.PENDING
     assert current.owner_worker_id == "worker-fresh"
     assert current.owner_job_id == "job-fresh"
+
+
+def test_event_store_summarizes_provider_runtime_telemetry(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "artifacts" / "archonlab.db")
+    started_at = datetime.now(UTC)
+    store.register_run(
+        RunSummary(
+            run_id="run-1",
+            project_id="demo",
+            workflow=WorkflowMode.ADAPTIVE_LOOP,
+            status=RunStatus.COMPLETED,
+            stage="prover",
+            dry_run=False,
+            started_at=started_at,
+            artifact_dir=tmp_path / "artifacts" / "runs" / "run-1",
+        )
+    )
+    store.register_run(
+        RunSummary(
+            run_id="run-2",
+            project_id="demo",
+            workflow=WorkflowMode.ADAPTIVE_LOOP,
+            status=RunStatus.FAILED,
+            stage="prover",
+            dry_run=False,
+            started_at=started_at,
+            artifact_dir=tmp_path / "artifacts" / "runs" / "run-2",
+        )
+    )
+    store.append(
+        EventRecord(
+            run_id="run-1",
+            kind="executor.completed",
+            project_id="demo",
+            payload={
+                "telemetry": {
+                    "provider_pool": "lab",
+                    "provider_member": "backup",
+                    "retry_count": 1,
+                    "cost_estimate": 0.12,
+                    "health_status": "degraded",
+                }
+            },
+        )
+    )
+    store.append(
+        EventRecord(
+            run_id="run-2",
+            kind="executor.failed",
+            project_id="demo",
+            payload={
+                "telemetry": {
+                    "provider_pool": "lab",
+                    "provider_member": "primary",
+                    "retry_count": 0,
+                    "cost_estimate": 0.03,
+                    "health_status": "all_members_failed",
+                }
+            },
+        )
+    )
+
+    summary = store.summarize_provider_runtime(limit=20)
+
+    assert len(summary) == 1
+    pool = summary[0]
+    assert pool.pool_name == "lab"
+    assert pool.success_count == 1
+    assert pool.failure_count == 1
+    assert pool.total_retry_count == 1
+    assert round(pool.total_cost_estimate, 2) == 0.15
+    assert pool.last_health_status == "all_members_failed"
+    assert {member.member_name for member in pool.members} == {"backup", "primary"}
+    backup = next(member for member in pool.members if member.member_name == "backup")
+    assert backup.success_count == 1
+    assert backup.retry_count == 1

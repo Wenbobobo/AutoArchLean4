@@ -20,6 +20,7 @@ from .config import (
 from .control import ControlService
 from .dashboard import create_dashboard_app
 from .events import EventStore
+from .executors import reset_provider_pool_health, snapshot_provider_pool_health
 from .experiment_ledger import (
     build_experiment_replay,
     compare_experiment_ledgers,
@@ -34,6 +35,7 @@ from .models import (
     ProjectSession,
     ProviderConfig,
     ProviderKind,
+    ProviderPoolConfig,
     QueueJobStatus,
     SessionStatus,
     WorkflowMode,
@@ -98,6 +100,18 @@ def _resolve_queue_runtime(config_path: Path) -> tuple[Path, int]:
     except (KeyError, ValueError):
         app_config = load_config(resolved_config_path)
         return app_config.run.artifact_root, app_config.run.max_parallel
+
+
+def _resolve_provider_runtime(
+    config_path: Path,
+) -> tuple[str | None, dict[str, ProviderPoolConfig]]:
+    resolved_config_path = config_path.resolve()
+    try:
+        workspace_config = load_workspace_config(resolved_config_path)
+        return workspace_config.provider.pool, workspace_config.provider_pools
+    except (KeyError, ValueError):
+        app_config = load_config(resolved_config_path)
+        return app_config.provider.pool, app_config.provider_pools
 
 
 @app.command()
@@ -1609,6 +1623,49 @@ def queue_status(
         )
 
 
+@queue_app.command("runtime-summary")
+def queue_runtime_summary(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, max=1000, help="Number of executor events to scan."),
+    ] = 200,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable JSON."),
+    ] = False,
+) -> None:
+    artifact_root, _ = _resolve_queue_runtime(config)
+    summary = EventStore(artifact_root / "archonlab.db").summarize_provider_runtime(limit=limit)
+    if json_output:
+        typer.echo(
+            json.dumps(
+                [item.model_dump(mode="json") for item in summary],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+    if not summary:
+        typer.echo("No provider runtime telemetry.")
+        return
+    for pool in summary:
+        typer.echo(
+            f"{pool.pool_name} | success={pool.success_count} | failed={pool.failure_count} | "
+            f"retries={pool.total_retry_count} | cost={pool.total_cost_estimate:.6f} | "
+            f"health={pool.last_health_status or '-'}"
+        )
+        for member in pool.members:
+            typer.echo(
+                f"  {member.member_name} | success={member.success_count} | "
+                f"failed={member.failure_count} | retries={member.retry_count} | "
+                f"cost={member.total_cost_estimate:.6f} | health={member.last_health_status or '-'}"
+            )
+
+
 @queue_app.command("session-status")
 def queue_session_status(
     config: Annotated[
@@ -1686,6 +1743,67 @@ def queue_workers(
             f"current={current_job} | processed={worker.processed_jobs}{stale} | "
             f"executors={capabilities} | models={models} | cost_tiers={cost_tiers}"
         )
+
+
+@queue_app.command("provider-health")
+def queue_provider_health(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable provider pool health JSON."),
+    ] = False,
+) -> None:
+    default_pool, provider_pools = _resolve_provider_runtime(config)
+    reports = snapshot_provider_pool_health(provider_pools)
+    if json_output:
+        typer.echo(json.dumps([report.model_dump(mode="json") for report in reports], indent=2))
+        return
+    if not reports:
+        typer.echo("No provider pools configured.")
+        return
+    for report in reports:
+        default_marker = " default" if report.pool_name == default_pool else ""
+        typer.echo(
+            f"{report.pool_name}{default_marker} | {report.status.value} | "
+            f"available={report.available_members}/{report.total_members} | "
+            f"quarantined={report.quarantined_members}"
+        )
+        for member in report.members:
+            typer.echo(
+                f"{member.member_name} | {member.status.value} | "
+                f"failures={member.consecutive_failures} | model={member.model or '-'}"
+            )
+
+
+@queue_app.command("reset-provider-health")
+def queue_reset_provider_health(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    pool: Annotated[
+        str | None,
+        typer.Option("--pool", help="Optional provider pool name."),
+    ] = None,
+    member: Annotated[
+        str | None,
+        typer.Option("--member", help="Optional provider pool member name."),
+    ] = None,
+) -> None:
+    _, provider_pools = _resolve_provider_runtime(config)
+    if member is not None and pool is None:
+        raise typer.BadParameter("--pool is required when --member is set")
+    if pool is not None and pool not in provider_pools:
+        raise typer.BadParameter(f"Unknown provider pool: {pool}")
+    if pool is not None and member is not None:
+        known_members = {pool_member.name for pool_member in provider_pools[pool].members}
+        if member not in known_members:
+            raise typer.BadParameter(f"Unknown provider pool member: {member}")
+    removed = reset_provider_pool_health(pool_name=pool, member_name=member)
+    typer.echo(f"Reset health entries: {removed}")
 
 
 @queue_app.command("worker")

@@ -24,7 +24,11 @@ from .models import (
     ExecutorKind,
     ProviderConfig,
     ProviderPoolConfig,
+    ProviderPoolHealthReport,
+    ProviderPoolHealthStatus,
     ProviderPoolMemberConfig,
+    ProviderPoolMemberHealth,
+    ProviderPoolMemberHealthStatus,
 )
 
 
@@ -787,6 +791,96 @@ def _mark_pool_failure(pool: ProviderPoolConfig, member_name: str) -> None:
         _PROVIDER_POOL_HEALTH[key] = state
 
 
-def reset_provider_pool_health() -> None:
+def snapshot_provider_pool_health(
+    provider_pools: dict[str, ProviderPoolConfig],
+) -> list[ProviderPoolHealthReport]:
+    now = datetime.now(UTC)
     with _PROVIDER_POOL_HEALTH_LOCK:
-        _PROVIDER_POOL_HEALTH.clear()
+        health_state = {
+            key: _ProviderPoolHealthState(
+                consecutive_failures=value.consecutive_failures,
+                quarantined_until=value.quarantined_until,
+            )
+            for key, value in _PROVIDER_POOL_HEALTH.items()
+        }
+
+    reports: list[ProviderPoolHealthReport] = []
+    for pool_name in sorted(provider_pools):
+        pool = provider_pools[pool_name]
+        members: list[ProviderPoolMemberHealth] = []
+        available_members = 0
+        quarantined_members = 0
+        degraded_members = 0
+        ordered_members = sorted(pool.members, key=lambda member: -member.priority)
+        for member in ordered_members:
+            state = health_state.get((pool_name, member.name), _ProviderPoolHealthState())
+            if not member.enabled:
+                status = ProviderPoolMemberHealthStatus.DISABLED
+            elif state.quarantined_until is not None and state.quarantined_until > now:
+                status = ProviderPoolMemberHealthStatus.QUARANTINED
+                quarantined_members += 1
+            elif state.consecutive_failures > 0:
+                status = ProviderPoolMemberHealthStatus.DEGRADED
+                degraded_members += 1
+                available_members += 1
+            else:
+                status = ProviderPoolMemberHealthStatus.HEALTHY
+                available_members += 1
+            members.append(
+                ProviderPoolMemberHealth(
+                    pool_name=pool_name,
+                    member_name=member.name,
+                    status=status,
+                    enabled=member.enabled,
+                    priority=member.priority,
+                    model=member.model,
+                    base_url=member.base_url,
+                    cost_tier=member.cost_tier,
+                    endpoint_class=member.endpoint_class,
+                    consecutive_failures=state.consecutive_failures,
+                    quarantined_until=state.quarantined_until,
+                )
+            )
+
+        enabled_members = sum(1 for member in ordered_members if member.enabled)
+        if enabled_members == 0:
+            overall_status = ProviderPoolHealthStatus.EMPTY
+        elif available_members == 0 and quarantined_members > 0:
+            overall_status = ProviderPoolHealthStatus.ALL_QUARANTINED
+        elif quarantined_members > 0 or degraded_members > 0:
+            overall_status = ProviderPoolHealthStatus.DEGRADED
+        else:
+            overall_status = ProviderPoolHealthStatus.HEALTHY
+        reports.append(
+            ProviderPoolHealthReport(
+                pool_name=pool_name,
+                status=overall_status,
+                strategy=pool.strategy,
+                total_members=len(ordered_members),
+                available_members=available_members,
+                quarantined_members=quarantined_members,
+                members=members,
+            )
+        )
+    return reports
+
+
+def reset_provider_pool_health(
+    *,
+    pool_name: str | None = None,
+    member_name: str | None = None,
+) -> int:
+    with _PROVIDER_POOL_HEALTH_LOCK:
+        if pool_name is None and member_name is None:
+            removed = len(_PROVIDER_POOL_HEALTH)
+            _PROVIDER_POOL_HEALTH.clear()
+            return removed
+        keys = [
+            key
+            for key in _PROVIDER_POOL_HEALTH
+            if (pool_name is None or key[0] == pool_name)
+            and (member_name is None or key[1] == member_name)
+        ]
+        for key in keys:
+            _PROVIDER_POOL_HEALTH.pop(key, None)
+        return len(keys)
