@@ -13,12 +13,17 @@ from .config import load_config
 from .control import ControlService
 from .events import EventStore
 from .models import (
+    ActionPhase,
     ExecutorKind,
     ProviderKind,
     QueueJob,
+    RunPreview,
     TaskGraph,
+    TaskSource,
     TaskStatus,
     WorkflowMode,
+    WorkflowRule,
+    WorkflowSpec,
 )
 from .queue import QueueStore
 from .services import RunService
@@ -134,6 +139,9 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
                 else None
             ),
             "task_graph_summary": _summarize_task_graph(preview.task_graph),
+            "focus_task": _summarize_focus_task(preview),
+            "workflow_rules": _summarize_workflow_rules(workflow_spec),
+            "supervisor_evidence": preview.supervisor.evidence,
             "preview": preview.model_dump(mode="json"),
         }
 
@@ -295,6 +303,12 @@ def _resolve_dashboard_path(base_dir: Path, raw_path: Path) -> Path:
 def _summarize_task_graph(task_graph: TaskGraph) -> dict[str, int]:
     return {
         "total_nodes": len(task_graph.nodes),
+        "objective_nodes": sum(
+            1 for node in task_graph.nodes if TaskSource.OBJECTIVE in node.sources
+        ),
+        "declaration_nodes": sum(
+            1 for node in task_graph.nodes if TaskSource.LEAN_DECLARATION in node.sources
+        ),
         "blocked_nodes": sum(
             1 for node in task_graph.nodes if node.status is TaskStatus.BLOCKED
         ),
@@ -304,6 +318,57 @@ def _summarize_task_graph(task_graph: TaskGraph) -> dict[str, int]:
         "completed_nodes": sum(
             1 for node in task_graph.nodes if node.status is TaskStatus.COMPLETED
         ),
+    }
+
+
+def _summarize_focus_task(preview: RunPreview) -> dict[str, Any] | None:
+    action = preview.action
+    if action.task_id is None and action.task_title is None and action.theorem_name is None:
+        return None
+    return {
+        "task_id": action.task_id,
+        "title": action.task_title,
+        "theorem_name": action.theorem_name,
+        "file_path": str(action.file_path) if action.file_path is not None else None,
+        "task_status": (
+            action.task_status.value if action.task_status is not None else None
+        ),
+        "task_priority": action.task_priority,
+        "objective_relevant": action.objective_relevant,
+        "task_sources": [source.value for source in action.task_sources],
+        "task_blockers": action.task_blockers,
+    }
+
+
+def _summarize_workflow_rules(spec: WorkflowSpec | None) -> list[dict[str, Any]]:
+    if spec is None:
+        return []
+    return [_summarize_workflow_rule(rule) for rule in spec.rules]
+
+
+def _summarize_workflow_rule(rule: WorkflowRule) -> dict[str, Any]:
+    conditions: list[str] = []
+    if rule.when_supervisor_reason is not None:
+        conditions.append(f"supervisor={rule.when_supervisor_reason.value}")
+    if rule.when_task_status is not None:
+        conditions.append(f"task_status={rule.when_task_status.value}")
+    if rule.when_phase is not None:
+        conditions.append(f"phase={rule.when_phase.value}")
+    if rule.when_has_task_results is not None:
+        conditions.append(
+            f"task_results={'yes' if rule.when_has_task_results else 'no'}"
+        )
+    if rule.when_has_review_sessions is not None:
+        conditions.append(
+            f"review_sessions={'yes' if rule.when_has_review_sessions else 'no'}"
+        )
+    return {
+        "name": rule.name,
+        "phase": (
+            rule.phase.value if isinstance(rule.phase, ActionPhase) else str(rule.phase)
+        ),
+        "reason": rule.reason,
+        "conditions": conditions,
     }
 
 
@@ -593,6 +658,74 @@ def render_dashboard_html(project_id: str) -> str:
         padding-top: 16px;
         border-top: 1px solid var(--line);
       }}
+      .preview-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }}
+      .preview-card {{
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.56);
+      }}
+      .preview-card h3 {{
+        margin: 0;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: var(--muted);
+      }}
+      .fact-grid {{
+        display: grid;
+        gap: 8px;
+      }}
+      .fact {{
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid rgba(31, 40, 51, 0.08);
+      }}
+      .fact:last-child {{
+        border-bottom: none;
+        padding-bottom: 0;
+      }}
+      .fact span {{
+        font-size: 12px;
+        color: var(--muted);
+      }}
+      .fact strong {{
+        text-align: right;
+        font-size: 13px;
+      }}
+      .rule-list {{
+        display: grid;
+        gap: 10px;
+      }}
+      .rule {{
+        display: grid;
+        gap: 5px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.7);
+      }}
+      .rule strong {{
+        font-size: 13px;
+      }}
+      .drawer {{
+        margin-top: 14px;
+        border-top: 1px solid var(--line);
+        padding-top: 14px;
+      }}
+      .drawer summary {{
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 13px;
+      }}
       @media (max-width: 920px) {{
         .grid {{ grid-template-columns: 1fr; }}
         .board-grid {{ grid-template-columns: 1fr; }}
@@ -709,7 +842,33 @@ def render_dashboard_html(project_id: str) -> str:
         </div>
         <div class="chip-row" id="project-preview-chips"></div>
         <div style="height: 12px"></div>
-        <pre id="project-preview-json">{{}}</pre>
+        <div class="preview-grid">
+          <section class="preview-card">
+            <h3>Overview</h3>
+            <div class="fact-grid" id="project-preview-overview"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Focus Task</h3>
+            <div class="fact-grid" id="project-preview-focus"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Supervisor</h3>
+            <div class="fact-grid" id="project-preview-supervisor"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Workflow Rules</h3>
+            <div class="rule-list" id="project-preview-rules"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Task Graph</h3>
+            <div class="rule-list" id="project-preview-graph"></div>
+          </section>
+        </div>
+        <details class="drawer">
+          <summary>Raw Preview JSON</summary>
+          <div style="height: 10px"></div>
+          <pre id="project-preview-json">{{}}</pre>
+        </details>
       </section>
     </div>
 
@@ -732,6 +891,11 @@ def render_dashboard_html(project_id: str) -> str:
       const queueDetailJson = document.getElementById("queue-detail-json");
       const projectPreviewMeta = document.getElementById("project-preview-meta");
       const projectPreviewChips = document.getElementById("project-preview-chips");
+      const projectPreviewOverview = document.getElementById("project-preview-overview");
+      const projectPreviewFocus = document.getElementById("project-preview-focus");
+      const projectPreviewSupervisor = document.getElementById("project-preview-supervisor");
+      const projectPreviewRules = document.getElementById("project-preview-rules");
+      const projectPreviewGraph = document.getElementById("project-preview-graph");
       const projectPreviewJson = document.getElementById("project-preview-json");
       const jobRequeueButton = document.getElementById("job-requeue-button");
       const jobCancelButton = document.getElementById("job-cancel-button");
@@ -938,6 +1102,13 @@ def render_dashboard_html(project_id: str) -> str:
         const provider = preview.resolved_provider || {{}};
         const graph = payload.task_graph_summary || {{}};
         const workflowSpec = payload.workflow_spec;
+        const workflowRules = payload.workflow_rules || [];
+        const focusTask = payload.focus_task || null;
+        const evidence = payload.supervisor_evidence || {{}};
+        const taskGraph = preview.task_graph || {{}};
+        const taskNodes = taskGraph.nodes || [];
+        const blockedNodes = taskNodes.filter((node) => node.status === "blocked").slice(0, 4);
+        const pendingNodes = taskNodes.filter((node) => node.status === "pending").slice(0, 4);
         const chips = [
           ["workflow", payload.workflow || "-"],
           ["configured", payload.configured_workflow || "-"],
@@ -967,6 +1138,102 @@ def render_dashboard_html(project_id: str) -> str:
         projectPreviewChips.innerHTML = chips
           .map(([label, value]) => `<div class="chip">${{label}} <strong>${{value}}</strong></div>`)
           .join("");
+        projectPreviewOverview.innerHTML = renderFacts([
+          ["phase", action.phase || "-"],
+          ["reason", action.reason || "-"],
+          ["stage", action.stage || "-"],
+          ["workflow", payload.workflow || "-"],
+          ["spec", payload.workflow_spec_path || "-"],
+          ["spec_name", workflowSpec?.name || "-"],
+          ["executor", executor.kind || "-"],
+          ["provider", provider.kind || "-"],
+          ["model", provider.model || "-"],
+          ["endpoint", provider.endpoint_class || "-"],
+          [
+            "task_graph",
+            `${{graph.total_nodes || 0}} total / ${{graph.blocked_nodes || 0}} blocked`,
+          ],
+        ]);
+        projectPreviewFocus.innerHTML = focusTask
+          ? renderFacts([
+              ["task_id", focusTask.task_id || "-"],
+              ["title", focusTask.title || "-"],
+              ["theorem", focusTask.theorem_name || "-"],
+              ["file", focusTask.file_path || "-"],
+              ["status", focusTask.task_status || "-"],
+              ["priority", `${{focusTask.task_priority ?? "-"}}`],
+              ["objective", focusTask.objective_relevant ? "yes" : "no"],
+              ["sources", (focusTask.task_sources || []).join(", ") || "-"],
+              ["blockers", (focusTask.task_blockers || []).join(", ") || "-"],
+            ])
+          : '<div class="meta">No focused task for the current prediction.</div>';
+        const evidenceEntries = Object.entries(evidence);
+        projectPreviewSupervisor.innerHTML = [
+          renderFacts([
+            ["action", supervisor.action || "-"],
+            ["reason", supervisor.reason || "-"],
+            ["summary", supervisor.summary || "-"],
+          ]),
+          evidenceEntries.length
+            ? evidenceEntries
+                .map(
+                  ([key, value]) => `
+                    <div class="rule">
+                      <strong>${{key}}</strong>
+                      <div class="meta">${{value}}</div>
+                    </div>
+                  `,
+                )
+                .join("")
+            : '<div class="meta">No supervisor evidence.</div>',
+        ].join("");
+        projectPreviewRules.innerHTML = workflowRules.length
+          ? [
+              workflowSpec?.description
+                ? `
+                    <div class="rule">
+                      <strong>${{workflowSpec.name}}</strong>
+                      <div class="meta">${{workflowSpec.description}}</div>
+                    </div>
+                  `
+                : "",
+              ...workflowRules.map((rule) => `
+                <div class="rule">
+                  <strong>${{rule.name}}</strong>
+                  <div class="meta">phase=${{rule.phase}} · reason=${{rule.reason}}</div>
+                  <div class="meta">${{(rule.conditions || []).join(" · ") || "always"}}</div>
+                </div>
+              `),
+            ].join("")
+          : (
+              workflowSpec
+                ? '<div class="meta">Workflow spec loaded, but no rules are defined.</div>'
+                : '<div class="meta">No workflow spec override is active.</div>'
+            );
+        projectPreviewGraph.innerHTML = [
+          renderFacts([
+            ["total", `${{graph.total_nodes || 0}}`],
+            ["blocked", `${{graph.blocked_nodes || 0}}`],
+            ["pending", `${{graph.pending_nodes || 0}}`],
+            ["completed", `${{graph.completed_nodes || 0}}`],
+          ]),
+          blockedNodes.length
+            ? `
+                <div class="rule">
+                  <strong>Blocked Nodes</strong>
+                  <div class="meta">${{blockedNodes.map((node) => node.title || node.id).join(", ")}}</div>
+                </div>
+              `
+            : '<div class="meta">No blocked nodes.</div>',
+          pendingNodes.length
+            ? `
+                <div class="rule">
+                  <strong>Pending Nodes</strong>
+                  <div class="meta">${{pendingNodes.map((node) => node.title || node.id).join(", ")}}</div>
+                </div>
+              `
+            : '<div class="meta">No pending nodes.</div>',
+        ].join("");
         projectPreviewJson.textContent = JSON.stringify(payload, null, 2);
       }}
 
@@ -974,7 +1241,21 @@ def render_dashboard_html(project_id: str) -> str:
         projectPreviewMeta.textContent = "Current preview is unavailable.";
         projectPreviewChips.innerHTML =
           '<div class="chip">error <strong>preview_failed</strong></div>';
+        projectPreviewOverview.innerHTML = '<div class="meta">Preview unavailable.</div>';
+        projectPreviewFocus.innerHTML = '<div class="meta">Preview unavailable.</div>';
+        projectPreviewSupervisor.innerHTML = '<div class="meta">Preview unavailable.</div>';
+        projectPreviewRules.innerHTML = '<div class="meta">Preview unavailable.</div>';
+        projectPreviewGraph.innerHTML = '<div class="meta">Preview unavailable.</div>';
         projectPreviewJson.textContent = message;
+      }}
+
+      function renderFacts(entries) {{
+        return entries.map(([label, value]) => `
+          <div class="fact">
+            <span>${{label}}</span>
+            <strong>${{value}}</strong>
+          </div>
+        `).join("");
       }}
 
       function renderWorkers(workers) {{

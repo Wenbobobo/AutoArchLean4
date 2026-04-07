@@ -112,6 +112,11 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     app = create_dashboard_app(config_path)
     client = TestClient(app)
 
+    index_response = client.get("/")
+    assert index_response.status_code == 200
+    assert 'id="project-preview-overview"' in index_response.text
+    assert 'id="project-preview-rules"' in index_response.text
+
     runs_response = client.get("/api/runs")
     assert runs_response.status_code == 200
     runs = runs_response.json()
@@ -137,6 +142,10 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert preview_payload["preview"]["action"]["phase"] == "plan"
     assert preview_payload["preview"]["action"]["reason"] == "bootstrap_first_iteration"
     assert preview_payload["task_graph_summary"]["total_nodes"] >= 1
+    assert preview_payload["task_graph_summary"]["objective_nodes"] >= 1
+    assert preview_payload["focus_task"] is not None
+    assert preview_payload["workflow_rules"] == []
+    assert isinstance(preview_payload["supervisor_evidence"], dict)
 
     workflow_override_response = client.post(
         "/api/projects/DemoProject/workflow",
@@ -181,6 +190,8 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert spec_preview["workflow"] == "adaptive_loop"
     assert spec_preview["workflow_spec_path"] == str(workflow_spec.resolve())
     assert spec_preview["preview"]["action"]["reason"] == "from_dashboard_spec"
+    assert spec_preview["workflow_rules"][0]["name"] == "rewrite_plan_reason"
+    assert "phase=plan" in spec_preview["workflow_rules"][0]["conditions"]
 
     workflow_reset_response = client.post("/api/projects/DemoProject/workflow/reset")
     assert workflow_reset_response.status_code == 200
