@@ -81,6 +81,38 @@ class WorkspaceSessionResumeResult:
     skipped: list[WorkspaceSessionResumeSkip] = field(default_factory=list)
 
 
+@dataclass
+class WorkspaceSessionEnqueueResult:
+    jobs: list[QueueJob] = field(default_factory=list)
+    skipped: list[WorkspaceSessionResumeSkip] = field(default_factory=list)
+
+
+def summarize_workspace_session_skips(
+    skipped: list[WorkspaceSessionResumeSkip],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in skipped:
+        counts[item.reason] = counts.get(item.reason, 0) + 1
+    return counts
+
+
+def infer_workspace_session_block_reason(
+    skipped: list[WorkspaceSessionResumeSkip],
+) -> str | None:
+    if not skipped:
+        return None
+    counts = summarize_workspace_session_skips(skipped)
+    for reason in [
+        "failure_budget_exhausted",
+        "failure_cooldown_active",
+        "control_paused",
+        "budget_exhausted",
+    ]:
+        if counts.get(reason, 0) > 0:
+            return reason
+    return "sessions_blocked"
+
+
 class QueueStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -221,6 +253,27 @@ class QueueStore:
         priority: int = 0,
         note: str | None = None,
     ) -> list[QueueJob]:
+        return self.enqueue_workspace_sessions_detailed(
+            workspace_config_path,
+            project_ids=project_ids,
+            project_tags=project_tags,
+            max_iterations=max_iterations,
+            dry_run=dry_run,
+            priority=priority,
+            note=note,
+        ).jobs
+
+    def enqueue_workspace_sessions_detailed(
+        self,
+        workspace_config_path: Path,
+        *,
+        project_ids: list[str] | None = None,
+        project_tags: list[str] | None = None,
+        max_iterations: int | None = None,
+        dry_run: bool | None = None,
+        priority: int = 0,
+        note: str | None = None,
+    ) -> WorkspaceSessionEnqueueResult:
         from .config import load_workspace_config
 
         resolved_workspace_config_path = workspace_config_path.resolve()
@@ -229,7 +282,7 @@ class QueueStore:
         selected_project_ids = set(project_ids) if project_ids is not None else None
         selected_project_tags = set(project_tags) if project_tags is not None else None
         batch_id = self._new_batch_id()
-        jobs: list[QueueJob] = []
+        result = WorkspaceSessionEnqueueResult()
         for project in workspace_config.projects:
             if not self._workspace_project_matches(
                 project,
@@ -265,7 +318,7 @@ class QueueStore:
                     dry_run=dry_run,
                     note=note,
                 )
-                jobs.append(
+                result.jobs.append(
                     self.enqueue_session_quantum(
                         resolved_workspace_config_path,
                         session_id=session.session_id,
@@ -285,7 +338,7 @@ class QueueStore:
                     max_iterations=max_iterations,
                     note=note,
                 )
-                jobs.append(
+                result.jobs.append(
                     self.enqueue_session_quantum(
                         resolved_workspace_config_path,
                         session_id=session.session_id,
@@ -302,7 +355,28 @@ class QueueStore:
                     max_iterations=max_iterations,
                     note=note,
                 )
-                if self._session_failure_gate_reason(session) is not None:
+                blocked_reason = self._session_failure_gate_reason(session)
+                if blocked_reason is not None:
+                    result.skipped.append(
+                        WorkspaceSessionResumeSkip(
+                            project_id=project.id,
+                            session_id=session.session_id,
+                            reason=blocked_reason,
+                        )
+                    )
+                    continue
+                resume_block_reason = self._session_resume_block_reason(
+                    session,
+                    max_iterations=max_iterations,
+                )
+                if resume_block_reason is not None:
+                    result.skipped.append(
+                        WorkspaceSessionResumeSkip(
+                            project_id=project.id,
+                            session_id=session.session_id,
+                            reason=resume_block_reason,
+                        )
+                    )
                     continue
                 _, resumed_job = self.resume_session(
                     resolved_workspace_config_path,
@@ -313,21 +387,41 @@ class QueueStore:
                     note=note,
                     reset_failure_state=False,
                 )
-                jobs.append(resumed_job)
+                result.jobs.append(resumed_job)
                 continue
 
             if (
                 latest_session.status is SessionStatus.PAUSED
                 and latest_session.last_stop_reason == "stop:control_paused"
             ):
-                self._update_workspace_session_defaults(
+                session = self._update_workspace_session_defaults(
                     latest_session,
                     event_store=event_store,
                     max_iterations=max_iterations,
                     note=note,
                 )
+                result.skipped.append(
+                    WorkspaceSessionResumeSkip(
+                        project_id=project.id,
+                        session_id=session.session_id,
+                        reason="control_paused",
+                    )
+                )
                 continue
 
+            resume_block_reason = self._session_resume_block_reason(
+                latest_session,
+                max_iterations=max_iterations,
+            )
+            if resume_block_reason is not None:
+                result.skipped.append(
+                    WorkspaceSessionResumeSkip(
+                        project_id=project.id,
+                        session_id=latest_session.session_id,
+                        reason=resume_block_reason,
+                    )
+                )
+                continue
             try:
                 _, resumed_job = self.resume_session(
                     resolved_workspace_config_path,
@@ -338,9 +432,16 @@ class QueueStore:
                     note=note,
                 )
             except ValueError:
+                result.skipped.append(
+                    WorkspaceSessionResumeSkip(
+                        project_id=project.id,
+                        session_id=latest_session.session_id,
+                        reason="resume_blocked",
+                    )
+                )
                 continue
-            jobs.append(resumed_job)
-        return jobs
+            result.jobs.append(resumed_job)
+        return result
 
     def resume_session(
         self,
@@ -1739,6 +1840,22 @@ class QueueStore:
             return "failure_budget_exhausted"
         if session.cooldown_until is not None and session.cooldown_until > datetime.now(UTC):
             return "failure_cooldown_active"
+        return None
+
+    @staticmethod
+    def _session_resume_block_reason(
+        session: ProjectSession,
+        *,
+        max_iterations: int | None,
+    ) -> str | None:
+        resolved_max_iterations = (
+            max_iterations if max_iterations is not None else session.max_iterations
+        )
+        if (
+            session.status is not SessionStatus.RUNNING
+            and resolved_max_iterations <= session.completed_iterations
+        ):
+            return "budget_exhausted"
         return None
 
     @staticmethod

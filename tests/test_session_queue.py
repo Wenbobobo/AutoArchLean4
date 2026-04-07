@@ -504,9 +504,12 @@ def test_queue_store_enqueue_workspace_sessions_skips_failed_session_during_cool
     )
     queue_store = QueueStore(artifact_root / "archonlab.db")
 
-    jobs = queue_store.enqueue_workspace_sessions(workspace_path)
+    result = queue_store.enqueue_workspace_sessions_detailed(workspace_path)
 
-    assert jobs == []
+    assert result.jobs == []
+    assert [(item.session_id, item.reason) for item in result.skipped] == [
+        ("session-demo-project-cooling", "failure_cooldown_active")
+    ]
     updated = event_store.get_session("session-demo-project-cooling")
     assert updated is not None
     assert updated.status is SessionStatus.FAILED
@@ -546,9 +549,12 @@ def test_queue_store_enqueue_workspace_sessions_skips_failed_session_after_retry
     )
     queue_store = QueueStore(artifact_root / "archonlab.db")
 
-    jobs = queue_store.enqueue_workspace_sessions(workspace_path)
+    result = queue_store.enqueue_workspace_sessions_detailed(workspace_path)
 
-    assert jobs == []
+    assert result.jobs == []
+    assert [(item.session_id, item.reason) for item in result.skipped] == [
+        ("session-demo-project-exhausted", "failure_budget_exhausted")
+    ]
     updated = event_store.get_session("session-demo-project-exhausted")
     assert updated is not None
     assert updated.status is SessionStatus.FAILED

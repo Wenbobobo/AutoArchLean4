@@ -12,7 +12,11 @@ from .control import ControlService
 from .events import EventStore
 from .fleet import FleetController, WorkerLauncher
 from .models import WorkspaceLoopControlState, WorkspaceLoopCycle, WorkspaceLoopResult
-from .queue import QueueStore
+from .queue import (
+    QueueStore,
+    infer_workspace_session_block_reason,
+    summarize_workspace_session_skips,
+)
 
 
 class WorkspaceLoopController:
@@ -132,7 +136,7 @@ class WorkspaceLoopController:
                     stop_reason = control_state.reason or "operator_stop_requested"
                     break
                 cycle_started_at = datetime.now(UTC)
-                jobs = self.queue_store.enqueue_workspace_sessions(
+                enqueue_result = self.queue_store.enqueue_workspace_sessions_detailed(
                     self.config_path,
                     project_ids=[project_id] if project_id is not None else None,
                     project_tags=project_tags,
@@ -140,6 +144,10 @@ class WorkspaceLoopController:
                     dry_run=dry_run,
                     priority=priority,
                     note=note,
+                )
+                jobs = enqueue_result.jobs
+                admission_skip_counts = summarize_workspace_session_skips(
+                    enqueue_result.skipped
                 )
                 scheduled_job_ids = [job.id for job in jobs]
                 scheduled_session_ids = [
@@ -185,6 +193,7 @@ class WorkspaceLoopController:
                     plan=plan,
                     scheduled_job_ids=scheduled_job_ids,
                     scheduled_session_ids=scheduled_session_ids,
+                    admission_skip_counts=admission_skip_counts,
                     fleet_result=fleet_result,
                 )
                 cycles.append(cycle)
@@ -211,6 +220,13 @@ class WorkspaceLoopController:
                 ):
                     stop_reason = fleet_result.stop_reason
                     break
+                if not scheduled_job_ids:
+                    blocked_reason = infer_workspace_session_block_reason(
+                        enqueue_result.skipped
+                    )
+                    if blocked_reason is not None:
+                        stop_reason = blocked_reason
+                        break
 
                 made_progress = (
                     fleet_result is not None

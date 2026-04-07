@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from archonlab.events import EventStore
 from archonlab.models import (
+    ProjectSession,
     ProviderPoolHealthReport,
     ProviderPoolHealthStatus,
     ProviderPoolMemberHealth,
@@ -614,3 +616,53 @@ def test_workspace_loop_controller_surfaces_provider_capacity_unavailable(
     assert result.total_processed_jobs == 0
     assert len(result.cycles) == 1
     assert result.cycles[0].plan.profiles[0].provider_capacity_status == "unavailable"
+
+
+def test_workspace_loop_controller_surfaces_failure_cooldown_active(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    EventStore(artifact_root / "archonlab.db").register_session(
+        ProjectSession(
+            session_id="session-alpha-cooling",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.FAILED,
+            max_iterations=3,
+            completed_iterations=1,
+            error_message="executor failed",
+            last_stop_reason="run_failed",
+            consecutive_failures=1,
+            max_consecutive_failures=3,
+            failure_cooldown_seconds=60,
+            last_failure_at=datetime.now(UTC) - timedelta(seconds=5),
+            cooldown_until=datetime.now(UTC) + timedelta(seconds=60),
+        )
+    )
+
+    controller = WorkspaceLoopController(config_path)
+    result = controller.run(
+        project_id="alpha",
+        max_cycles=3,
+        idle_cycles=3,
+        sleep_seconds=0.0,
+        fleet_max_cycles=1,
+        fleet_idle_cycles=1,
+        queue_poll_seconds=0.01,
+        queue_idle_timeout_seconds=0.01,
+    )
+
+    assert result.stop_reason == "failure_cooldown_active"
+    assert result.total_scheduled_jobs == 0
+    assert result.total_processed_jobs == 0
+    assert result.cycles_completed == 1
+    assert result.cycles[0].scheduled_session_ids == []
+    assert result.cycles[0].admission_skip_counts == {"failure_cooldown_active": 1}

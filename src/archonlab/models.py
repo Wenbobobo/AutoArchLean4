@@ -1413,6 +1413,7 @@ class WorkspaceLoopCycle(BaseModel):
     plan: QueueFleetPlan = Field(default_factory=QueueFleetPlan)
     scheduled_job_ids: list[str] = Field(default_factory=list)
     scheduled_session_ids: list[str] = Field(default_factory=list)
+    admission_skip_counts: dict[str, int] = Field(default_factory=dict)
     fleet_result: FleetControllerResult | None = None
 
 

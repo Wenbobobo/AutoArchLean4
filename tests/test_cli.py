@@ -753,7 +753,7 @@ def test_workspace_run_command_skips_control_paused_session_without_autoscaling(
 
     assert result.exit_code == 0
     assert "Enqueued sessions: 0" in result.output
-    assert "Stop reason: no_sessions_enqueued" in result.output
+    assert "Stop reason: control_paused" in result.output
     session = store.get_session("session-alpha-control")
     assert session is not None
     assert session.status is SessionStatus.PAUSED
@@ -1082,6 +1082,53 @@ def test_workspace_run_command_project_filter_executes_only_target_project_sessi
     assert beta_session.completed_iterations == 1
     assert alpha_current is not None
     assert alpha_current.status is QueueJobStatus.QUEUED
+
+
+def test_workspace_run_command_reports_failure_budget_exhausted_when_project_is_blocked(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    EventStore(artifact_root / "archonlab.db").register_session(
+        ProjectSession(
+            session_id="session-alpha-blocked",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.FAILED,
+            max_iterations=3,
+            completed_iterations=1,
+            error_message="executor failed",
+            last_stop_reason="run_failed",
+            consecutive_failures=3,
+            max_consecutive_failures=3,
+            failure_cooldown_seconds=60,
+            last_failure_at=datetime.now(UTC) - timedelta(seconds=180),
+            cooldown_until=datetime.now(UTC) - timedelta(seconds=120),
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "run",
+            "--config",
+            str(config_path),
+            "--project-id",
+            "alpha",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Enqueued sessions: 0" in result.output
+    assert "Stop reason: failure_budget_exhausted" in result.output
 
 
 def test_run_start_creates_artifacts(

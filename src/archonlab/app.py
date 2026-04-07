@@ -41,7 +41,7 @@ from .models import (
     WorkflowMode,
     WorktreeLease,
 )
-from .queue import QueueStore
+from .queue import QueueStore, infer_workspace_session_block_reason
 from .services import RunService
 from .workspace_daemon import (
     WorkspaceDaemonRunner,
@@ -966,7 +966,7 @@ def workspace_run(
 ) -> None:
     workspace_config = load_workspace_config(config)
     queue_store = QueueStore(workspace_config.run.artifact_root / "archonlab.db")
-    jobs = queue_store.enqueue_workspace_sessions(
+    enqueue_result = queue_store.enqueue_workspace_sessions_detailed(
         config,
         project_ids=[project_id] if project_id is not None else None,
         project_tags=tags,
@@ -975,9 +975,14 @@ def workspace_run(
         priority=priority,
         note=note,
     )
+    jobs = enqueue_result.jobs
     typer.echo(f"Enqueued sessions: {len(jobs)}")
     if not jobs:
-        typer.echo("Stop reason: no_sessions_enqueued")
+        stop_reason = (
+            infer_workspace_session_block_reason(enqueue_result.skipped)
+            or "no_sessions_enqueued"
+        )
+        typer.echo(f"Stop reason: {stop_reason}")
         typer.echo("Processed: 0")
         typer.echo("Paused: 0")
         typer.echo("Failed: 0")
