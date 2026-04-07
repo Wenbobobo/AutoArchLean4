@@ -57,7 +57,10 @@ class QueueStore:
                     cancel_reason TEXT,
                     worker_id TEXT,
                     required_executor_kinds TEXT,
-                    required_provider_kinds TEXT
+                    required_provider_kinds TEXT,
+                    required_models TEXT,
+                    required_cost_tiers TEXT,
+                    required_endpoint_classes TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS queue_workers (
@@ -75,7 +78,10 @@ class QueueStore:
                     processed_jobs INTEGER NOT NULL,
                     failed_jobs INTEGER NOT NULL,
                     executor_kinds TEXT,
-                    provider_kinds TEXT
+                    provider_kinds TEXT,
+                    models TEXT,
+                    cost_tiers TEXT,
+                    endpoint_classes TEXT
                 );
                 """
             )
@@ -85,10 +91,20 @@ class QueueStore:
                 "worker_id",
                 "required_executor_kinds",
                 "required_provider_kinds",
+                "required_models",
+                "required_cost_tiers",
+                "required_endpoint_classes",
             ]:
                 with suppress(sqlite3.OperationalError):
                     self._conn.execute(f"ALTER TABLE queue_jobs ADD COLUMN {column} TEXT")
-            for column in ["worktree_root", "executor_kinds", "provider_kinds"]:
+            for column in [
+                "worktree_root",
+                "executor_kinds",
+                "provider_kinds",
+                "models",
+                "cost_tiers",
+                "endpoint_classes",
+            ]:
                 with suppress(sqlite3.OperationalError):
                     self._conn.execute(f"ALTER TABLE queue_workers ADD COLUMN {column} TEXT")
             self._conn.commit()
@@ -103,6 +119,9 @@ class QueueStore:
         batch_id: str | None = None,
         required_executor_kinds: list[ExecutorKind] | None = None,
         required_provider_kinds: list[ProviderKind] | None = None,
+        required_models: list[str] | None = None,
+        required_cost_tiers: list[str] | None = None,
+        required_endpoint_classes: list[str] | None = None,
     ) -> QueueJob:
         job = QueueJob(
             job_id=self._new_job_id(),
@@ -114,6 +133,9 @@ class QueueStore:
             payload=payload,
             required_executor_kinds=required_executor_kinds or [],
             required_provider_kinds=required_provider_kinds or [],
+            required_models=required_models or [],
+            required_cost_tiers=required_cost_tiers or [],
+            required_endpoint_classes=required_endpoint_classes or [],
         )
         self._insert(job)
         return job
@@ -128,7 +150,13 @@ class QueueStore:
         priority: int = 0,
     ) -> list[QueueJob]:
         manifest = load_benchmark_manifest(manifest_path)
-        required_executor_kinds, required_provider_kinds = collect_required_execution_kinds(
+        (
+            required_executor_kinds,
+            required_provider_kinds,
+            required_models,
+            required_cost_tiers,
+            required_endpoint_classes,
+        ) = collect_required_execution_kinds(
             executor=manifest.executor,
             provider=manifest.provider,
             execution_policy=manifest.execution_policy,
@@ -153,6 +181,9 @@ class QueueStore:
                     batch_id=batch_id,
                     required_executor_kinds=required_executor_kinds,
                     required_provider_kinds=required_provider_kinds,
+                    required_models=required_models,
+                    required_cost_tiers=required_cost_tiers,
+                    required_endpoint_classes=required_endpoint_classes,
                 )
             )
         return jobs
@@ -352,6 +383,9 @@ class QueueStore:
         stale_after_seconds: float | None = None,
         executor_kinds: list[ExecutorKind] | None = None,
         provider_kinds: list[ProviderKind] | None = None,
+        models: list[str] | None = None,
+        cost_tiers: list[str] | None = None,
+        endpoint_classes: list[str] | None = None,
     ) -> QueueWorkerLease:
         resolved_worker_id = worker_id or self._new_worker_id()
         with self._lock:
@@ -399,14 +433,18 @@ class QueueStore:
                 provider_kinds=(
                     provider_kinds if provider_kinds is not None else list(ProviderKind)
                 ),
+                models=models or [],
+                cost_tiers=cost_tiers or [],
+                endpoint_classes=endpoint_classes or [],
             )
             self._conn.execute(
                 """
                 INSERT INTO queue_workers (
                     worker_id, slot_index, status, current_job_id, last_job_id,
                     thread_name, note, worktree_root, started_at, heartbeat_at, finished_at,
-                    processed_jobs, failed_jobs, executor_kinds, provider_kinds
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    processed_jobs, failed_jobs, executor_kinds, provider_kinds,
+                    models, cost_tiers, endpoint_classes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     lease.worker_id,
@@ -430,6 +468,9 @@ class QueueStore:
                         [kind.value for kind in lease.provider_kinds],
                         ensure_ascii=False,
                     ),
+                    json.dumps(lease.models, ensure_ascii=False),
+                    json.dumps(lease.cost_tiers, ensure_ascii=False),
+                    json.dumps(lease.endpoint_classes, ensure_ascii=False),
                 ),
             )
             self._conn.commit()
@@ -720,8 +761,9 @@ class QueueStore:
                     job_id, batch_id, kind, project_id, status, priority, payload_json,
                     created_at, updated_at, started_at, finished_at, artifact_dir, result_path,
                     error_message, pause_reason, cancel_reason
-                    , worker_id, required_executor_kinds, required_provider_kinds
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    , worker_id, required_executor_kinds, required_provider_kinds,
+                    required_models, required_cost_tiers, required_endpoint_classes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -749,6 +791,9 @@ class QueueStore:
                         [kind.value for kind in job.required_provider_kinds],
                         ensure_ascii=False,
                     ),
+                    json.dumps(job.required_models, ensure_ascii=False),
+                    json.dumps(job.required_cost_tiers, ensure_ascii=False),
+                    json.dumps(job.required_endpoint_classes, ensure_ascii=False),
                 ),
             )
             self._conn.commit()
@@ -781,6 +826,11 @@ class QueueStore:
                 ProviderKind(value)
                 for value in json.loads(row["required_provider_kinds"] or "[]")
             ],
+            required_models=json.loads(row["required_models"] or "[]"),
+            required_cost_tiers=json.loads(row["required_cost_tiers"] or "[]"),
+            required_endpoint_classes=json.loads(
+                row["required_endpoint_classes"] or "[]"
+            ),
         )
 
     @staticmethod
@@ -811,6 +861,9 @@ class QueueStore:
                 ProviderKind(value)
                 for value in json.loads(row["provider_kinds"] or "[]")
             ],
+            models=json.loads(row["models"] or "[]"),
+            cost_tiers=json.loads(row["cost_tiers"] or "[]"),
+            endpoint_classes=json.loads(row["endpoint_classes"] or "[]"),
         )
 
     def _get_worker_locked(self, worker_id: str | None) -> sqlite3.Row | None:
@@ -839,8 +892,18 @@ class QueueStore:
             set(worker.provider_kinds)
         ):
             return False
-        return not job.required_provider_kinds or set(job.required_provider_kinds).issubset(
-            set(worker.provider_kinds)
+        if job.required_models and worker.models and not set(job.required_models).issubset(
+            set(worker.models)
+        ):
+            return False
+        if job.required_cost_tiers and worker.cost_tiers and not set(
+            job.required_cost_tiers
+        ).issubset(set(worker.cost_tiers)):
+            return False
+        return not (
+            job.required_endpoint_classes
+            and worker.endpoint_classes
+            and not set(job.required_endpoint_classes).issubset(set(worker.endpoint_classes))
         )
 
     @staticmethod

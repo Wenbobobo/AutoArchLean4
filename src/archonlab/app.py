@@ -61,6 +61,12 @@ def _parse_provider_kinds(raw: str | None) -> list[ProviderKind]:
     return [ProviderKind(value) for value in values]
 
 
+def _parse_csv_strings(raw: str | None) -> list[str]:
+    if raw is None:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 @app.command()
 def doctor(
     config: Annotated[
@@ -556,6 +562,27 @@ def queue_fleet(
             help="Comma-separated provider kinds this fleet can run.",
         ),
     ] = None,
+    models: Annotated[
+        str | None,
+        typer.Option(
+            "--models",
+            help="Comma-separated provider models this fleet can run.",
+        ),
+    ] = None,
+    cost_tiers: Annotated[
+        str | None,
+        typer.Option(
+            "--cost-tiers",
+            help="Comma-separated provider cost tiers this fleet can run.",
+        ),
+    ] = None,
+    endpoint_classes: Annotated[
+        str | None,
+        typer.Option(
+            "--endpoint-classes",
+            help="Comma-separated endpoint classes this fleet can run.",
+        ),
+    ] = None,
 ) -> None:
     app_config = load_config(config)
     runner = BatchRunner(
@@ -572,6 +599,9 @@ def queue_fleet(
         stale_after_seconds=stale_after_seconds,
         executor_kinds=_parse_executor_kinds(executor_kinds),
         provider_kinds=_parse_provider_kinds(provider_kinds),
+        models=_parse_csv_strings(models),
+        cost_tiers=_parse_csv_strings(cost_tiers),
+        endpoint_classes=_parse_csv_strings(endpoint_classes),
     )
     typer.echo(f"Processed: {len(report.processed_job_ids)}")
     typer.echo(f"Paused: {len(report.paused_job_ids)}")
@@ -604,9 +634,11 @@ def queue_status(
     for job in jobs:
         worker = job.worker_id or "-"
         requirements = ",".join(kind.value for kind in job.required_executor_kinds) or "-"
+        models = ",".join(job.required_models) or "-"
+        cost_tiers = ",".join(job.required_cost_tiers) or "-"
         typer.echo(
             f"{job.id} | {job.status.value} | {job.project_id} | worker={worker} | "
-            f"requires={requirements}"
+            f"requires={requirements} | models={models} | cost_tiers={cost_tiers}"
         )
 
 
@@ -636,10 +668,12 @@ def queue_workers(
         current_job = worker.current_job_id or "-"
         stale = " stale" if worker.stale else ""
         capabilities = ",".join(kind.value for kind in worker.executor_kinds) or "-"
+        models = ",".join(worker.models) or "-"
+        cost_tiers = ",".join(worker.cost_tiers) or "-"
         typer.echo(
             f"{worker.worker_id} | slot={worker.slot_index} | {worker.status.value} | "
             f"current={current_job} | processed={worker.processed_jobs}{stale} | "
-            f"executors={capabilities}"
+            f"executors={capabilities} | models={models} | cost_tiers={cost_tiers}"
         )
 
 
@@ -706,6 +740,27 @@ def queue_worker(
             help="Comma-separated provider kinds this worker can run.",
         ),
     ] = None,
+    models: Annotated[
+        str | None,
+        typer.Option(
+            "--models",
+            help="Comma-separated provider models this worker can run.",
+        ),
+    ] = None,
+    cost_tiers: Annotated[
+        str | None,
+        typer.Option(
+            "--cost-tiers",
+            help="Comma-separated provider cost tiers this worker can run.",
+        ),
+    ] = None,
+    endpoint_classes: Annotated[
+        str | None,
+        typer.Option(
+            "--endpoint-classes",
+            help="Comma-separated endpoint classes this worker can run.",
+        ),
+    ] = None,
 ) -> None:
     app_config = load_config(config)
     runner = BatchRunner(
@@ -724,6 +779,9 @@ def queue_worker(
         stale_after_seconds=stale_after_seconds,
         executor_kinds=_parse_executor_kinds(executor_kinds),
         provider_kinds=_parse_provider_kinds(provider_kinds),
+        models=_parse_csv_strings(models),
+        cost_tiers=_parse_csv_strings(cost_tiers),
+        endpoint_classes=_parse_csv_strings(endpoint_classes),
     )
     if report.worker_ids:
         lease = runner.queue_store.get_worker(report.worker_ids[0])

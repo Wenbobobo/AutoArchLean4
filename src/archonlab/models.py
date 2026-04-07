@@ -120,6 +120,8 @@ class ProviderConfig(BaseModel):
 
     kind: ProviderKind = ProviderKind.OPENAI_COMPATIBLE
     model: str | None = None
+    cost_tier: str | None = None
+    endpoint_class: str | None = None
     base_url: str | None = None
     api_key_env: str = "OPENAI_API_KEY"
     endpoint_path: str = "/v1/responses"
@@ -484,6 +486,9 @@ class QueueJob(BaseModel):
     worker_id: str | None = None
     required_executor_kinds: list[ExecutorKind] = Field(default_factory=list)
     required_provider_kinds: list[ProviderKind] = Field(default_factory=list)
+    required_models: list[str] = Field(default_factory=list)
+    required_cost_tiers: list[str] = Field(default_factory=list)
+    required_endpoint_classes: list[str] = Field(default_factory=list)
 
     @property
     def id(self) -> str:
@@ -510,6 +515,9 @@ class QueueWorkerLease(BaseModel):
     stale: bool = False
     executor_kinds: list[ExecutorKind] = Field(default_factory=list)
     provider_kinds: list[ProviderKind] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
+    cost_tiers: list[str] = Field(default_factory=list)
+    endpoint_classes: list[str] = Field(default_factory=list)
 
     @property
     def heartbeat(self) -> datetime:

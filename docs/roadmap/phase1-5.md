@@ -68,6 +68,7 @@
 - stale worker recovery 已落地，可回收失联 worker 并重排遗留 job
 - 本地 fleet supervisor 已落地，可一键拉起多 auto-slot worker
 - queue job / worker capability matching 已落地，可按 executor/provider 能力做资源约束调度
+- capability matching 已扩展到 `model / cost_tier / endpoint_class`
 - Phase 4 的最小契约测试已经覆盖 task graph、supervisor、worktree
 
 ## Phase 5: workflow 与最小 UI

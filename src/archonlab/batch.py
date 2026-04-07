@@ -148,6 +148,9 @@ class BatchRunner:
         stale_after_seconds: float | None = None,
         executor_kinds: list[ExecutorKind] | None = None,
         provider_kinds: list[ProviderKind] | None = None,
+        models: list[str] | None = None,
+        cost_tiers: list[str] | None = None,
+        endpoint_classes: list[str] | None = None,
     ) -> BatchRunReport:
         report = BatchRunReport()
         report_lock = threading.Lock()
@@ -167,6 +170,9 @@ class BatchRunner:
             stale_after_seconds=stale_after_seconds,
             executor_kinds=executor_kinds,
             provider_kinds=provider_kinds,
+            models=models,
+            cost_tiers=cost_tiers,
+            endpoint_classes=endpoint_classes,
         )
         report.worker_ids.append(worker.worker_id)
         processed_count = 0
@@ -221,6 +227,9 @@ class BatchRunner:
         stale_after_seconds: float | None = None,
         executor_kinds: list[ExecutorKind] | None = None,
         provider_kinds: list[ProviderKind] | None = None,
+        models: list[str] | None = None,
+        cost_tiers: list[str] | None = None,
+        endpoint_classes: list[str] | None = None,
     ) -> BatchRunReport:
         desired_workers = max(1, worker_count or self.slot_limit)
         aggregate = BatchRunReport()
@@ -236,6 +245,9 @@ class BatchRunner:
                 stale_after_seconds=stale_after_seconds,
                 executor_kinds=executor_kinds,
                 provider_kinds=provider_kinds,
+                models=models,
+                cost_tiers=cost_tiers,
+                endpoint_classes=endpoint_classes,
             )
             with aggregate_lock:
                 aggregate.processed_job_ids.extend(report.processed_job_ids)

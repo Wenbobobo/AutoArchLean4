@@ -43,6 +43,9 @@ class QueueFleetRequest(BaseModel):
     stale_after_seconds: float | None = 120.0
     executor_kinds: list[ExecutorKind] | None = None
     provider_kinds: list[ProviderKind] | None = None
+    models: list[str] | None = None
+    cost_tiers: list[str] | None = None
+    endpoint_classes: list[str] | None = None
 
 
 class QueueSweepWorkersRequest(BaseModel):
@@ -152,6 +155,9 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             stale_after_seconds=body.stale_after_seconds,
             executor_kinds=body.executor_kinds,
             provider_kinds=body.provider_kinds,
+            models=body.models,
+            cost_tiers=body.cost_tiers,
+            endpoint_classes=body.endpoint_classes,
         ).model_dump(mode="json")
 
     @app.post("/api/queue/jobs/{job_id}/cancel")
@@ -455,10 +461,13 @@ def render_dashboard_html(project_id: str) -> str:
           item.className = "run";
           const workerId = job.worker_id || "-";
           const executors = (job.required_executor_kinds || []).join(",") || "-";
+          const models = (job.required_models || []).join(",") || "-";
+          const costTiers = (job.required_cost_tiers || []).join(",") || "-";
           item.innerHTML = `
             <strong>${{job.job_id}}</strong>
             <div class="meta">${{job.status}} · ${{job.project_id}} · worker=${{workerId}}</div>
             <div class="meta">requires executors=${{executors}}</div>
+            <div class="meta">models=${{models}} · cost_tiers=${{costTiers}}</div>
           `;
           queueList.appendChild(item);
         }}
@@ -479,6 +488,8 @@ def render_dashboard_html(project_id: str) -> str:
             : `${{worker.heartbeat_age_seconds.toFixed(1)}}s`;
           const stale = worker.stale ? " · stale" : "";
           const executors = (worker.executor_kinds || []).join(",") || "-";
+          const models = (worker.models || []).join(",") || "-";
+          const costTiers = (worker.cost_tiers || []).join(",") || "-";
           item.innerHTML = `
             <strong>${{worker.worker_id}}</strong>
             <div class="meta">slot=${{worker.slot_index}} · ${{worker.status}}${{stale}}</div>
@@ -486,6 +497,7 @@ def render_dashboard_html(project_id: str) -> str:
             <div class="meta">processed=${{worker.processed_jobs}}</div>
             <div class="meta">failed=${{worker.failed_jobs}}</div>
             <div class="meta">executors=${{executors}}</div>
+            <div class="meta">models=${{models}} · cost_tiers=${{costTiers}}</div>
             <div class="meta">heartbeat_age=${{heartbeatAge}}</div>
           `;
           workersList.appendChild(item);

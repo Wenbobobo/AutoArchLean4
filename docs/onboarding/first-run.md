@@ -50,6 +50,9 @@ uv run archonlab queue fleet --config archonlab.toml --workers 2
 # 9c-b. 如果你只想让 fleet 接特定 executor 类型的 job
 uv run archonlab queue fleet --config archonlab.toml --workers 2 --executor-kinds dry_run,codex_exec
 
+# 9c-c. 如果你想把 cheap 和 premium 模型 worker 分开
+uv run archonlab queue fleet --config archonlab.toml --workers 2 --models gpt-5.4-mini --cost-tiers cheap --endpoint-classes fast
+
 # 9d. 如果 worker 异常退出，清理 stale lease
 uv run archonlab queue sweep-workers --config archonlab.toml --stale-after-seconds 120
 
@@ -74,6 +77,7 @@ uv run archonlab dashboard serve --config archonlab.toml --port 8000
 - `--auto-slot` 启动的 worker 能不能自动拿到空闲 slot
 - `queue fleet` 能不能拉起多个 auto-slot worker 并吃掉队列
 - capability 受限的 worker/fleet 会不会只 claim 自己能执行的 job
+- model/cost-tier 受限的 worker/fleet 会不会把 cheap/premium 任务分流
 - stale worker sweep 之后，遗留 job 是否重新进入队列
 - 日志里是正常推进还是反复 stuck
 

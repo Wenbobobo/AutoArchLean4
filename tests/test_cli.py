@@ -230,6 +230,10 @@ def test_queue_worker_command_processes_benchmark_jobs(
             "1",
             "--executor-kinds",
             "dry_run",
+            "--models",
+            "gpt-5.4-mini",
+            "--cost-tiers",
+            "cheap",
             "--max-jobs",
             "1",
             "--idle-timeout-seconds",
@@ -248,6 +252,7 @@ def test_queue_worker_command_processes_benchmark_jobs(
     assert workers_result.exit_code == 0
     assert "slot=1" in workers_result.output
     assert "executors=dry_run" in workers_result.output
+    assert "models=gpt-5.4-mini" in workers_result.output
 
 
 def test_queue_worker_command_can_auto_assign_slot(
@@ -423,6 +428,10 @@ def test_queue_fleet_command_processes_jobs_with_auto_slot_workers(
             "1",
             "--executor-kinds",
             "dry_run",
+            "--models",
+            "gpt-5.4-mini",
+            "--cost-tiers",
+            "cheap",
             "--idle-timeout-seconds",
             "0.1",
             "--poll-seconds",

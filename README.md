@@ -47,6 +47,7 @@ uv run archonlab queue enqueue-benchmark --config archonlab.toml --manifest benc
 uv run archonlab queue run --config archonlab.toml --slots 4
 uv run archonlab queue fleet --config archonlab.toml --workers 4
 uv run archonlab queue fleet --config archonlab.toml --workers 2 --executor-kinds dry_run,codex_exec
+uv run archonlab queue fleet --config archonlab.toml --workers 2 --models gpt-5.4-mini --cost-tiers cheap --endpoint-classes fast
 uv run archonlab queue worker --config archonlab.toml --slot-index 1 --max-jobs 10
 uv run archonlab queue worker --config archonlab.toml --auto-slot --max-jobs 10
 uv run archonlab queue sweep-workers --config archonlab.toml --stale-after-seconds 120
@@ -93,6 +94,8 @@ timeout_seconds = 600
 
 [provider]
 model = "gpt-5.4-mini"
+cost_tier = "cheap"
+endpoint_class = "lab"
 base_url = "http://127.0.0.1:8000/v1"
 api_key_env = "OPENAI_API_KEY"
 endpoint_path = "/v1/responses"
@@ -168,6 +171,8 @@ model = "gpt-5.4"
   适合启动一组 auto-slot worker，行为上更接近真实 worker farm。
 - `queue fleet --workers 2 --executor-kinds dry_run,codex_exec`
   适合按 executor 能力声明启动 resource-aware worker pool。
+- `queue fleet --workers 2 --models gpt-5.4-mini --cost-tiers cheap`
+  适合把低成本模型 worker 和高成本模型 worker 分开。
 - `queue worker --slot-index N`
   适合起多个独立 worker 进程，共享同一个队列数据库。
 - `queue worker --auto-slot`
@@ -181,6 +186,7 @@ model = "gpt-5.4"
 - 记录 `current_job_id` / `last_job_id`
 - 使用自己的 `queue-worktrees/<worker_id>` 根目录
 - 暴露自己的 executor/provider capabilities，并只 claim 自己能跑的 job
+- 进一步暴露 `model / cost_tier / endpoint_class`，支持更细粒度的资源调度
 
 ## Workflow DSL
 

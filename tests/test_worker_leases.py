@@ -347,3 +347,43 @@ def test_queue_store_claim_next_job_respects_worker_executor_capabilities(
     assert claimed.id == dry_run_job.id
     assert claimed.required_executor_kinds == [ExecutorKind.DRY_RUN]
     assert queue_store.get_job(codex_job.id).status is QueueJobStatus.QUEUED
+
+
+def test_queue_store_claim_next_job_respects_model_and_cost_capabilities(
+    tmp_path: Path,
+) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    premium_job = queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "premium.toml"},
+        required_executor_kinds=[ExecutorKind.OPENAI_COMPATIBLE],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4"],
+        required_cost_tiers=["premium"],
+        required_endpoint_classes=["lab"],
+    )
+    cheap_job = queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "cheap.toml"},
+        required_executor_kinds=[ExecutorKind.OPENAI_COMPATIBLE],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4-mini"],
+        required_cost_tiers=["cheap"],
+        required_endpoint_classes=["lab"],
+    )
+    worker = queue_store.register_worker(
+        slot_index=1,
+        worker_id="worker-cheap",
+        executor_kinds=[ExecutorKind.OPENAI_COMPATIBLE],
+        provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        models=["gpt-5.4-mini"],
+        cost_tiers=["cheap"],
+        endpoint_classes=["lab"],
+    )
+
+    claimed = queue_store.claim_next_job(worker_id=worker.worker_id)
+
+    assert claimed is not None
+    assert claimed.id == cheap_job.id
+    assert claimed.required_models == ["gpt-5.4-mini"]
+    assert queue_store.get_job(premium_job.id).status is QueueJobStatus.QUEUED

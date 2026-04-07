@@ -143,20 +143,45 @@ def collect_required_execution_kinds(
     executor: ExecutorConfig,
     provider: ProviderConfig,
     execution_policy: ExecutionPolicy,
-) -> tuple[list[ExecutorKind], list[ProviderKind]]:
+) -> tuple[list[ExecutorKind], list[ProviderKind], list[str], list[str], list[str]]:
     executor_kinds = {executor.kind}
     provider_kinds = {provider.kind}
+    models = {provider.model} if provider.model is not None else set()
+    cost_tiers = {provider.cost_tier} if provider.cost_tier is not None else set()
+    endpoint_classes = (
+        {provider.endpoint_class}
+        if provider.endpoint_class is not None
+        else set()
+    )
     for override in execution_policy.phases.values():
         if override.executor is not None:
             executor_kinds.add(override.executor.kind)
         if override.provider is not None:
             provider_kinds.add(override.provider.kind)
+            if override.provider.model is not None:
+                models.add(override.provider.model)
+            if override.provider.cost_tier is not None:
+                cost_tiers.add(override.provider.cost_tier)
+            if override.provider.endpoint_class is not None:
+                endpoint_classes.add(override.provider.endpoint_class)
     for rule in execution_policy.task_rules:
         if rule.executor is not None:
             executor_kinds.add(rule.executor.kind)
         if rule.provider is not None:
             provider_kinds.add(rule.provider.kind)
-    return sorted(executor_kinds), sorted(provider_kinds)
+            if rule.provider.model is not None:
+                models.add(rule.provider.model)
+            if rule.provider.cost_tier is not None:
+                cost_tiers.add(rule.provider.cost_tier)
+            if rule.provider.endpoint_class is not None:
+                endpoint_classes.add(rule.provider.endpoint_class)
+    return (
+        sorted(executor_kinds),
+        sorted(provider_kinds),
+        sorted(models),
+        sorted(cost_tiers),
+        sorted(endpoint_classes),
+    )
 
 
 def build_task_matcher(name: str, raw_matcher: object) -> ExecutionTaskMatcher:
@@ -359,6 +384,8 @@ def apply_provider_patch(base: ProviderConfig, raw_patch: object) -> ProviderCon
         patch["kind"] = ProviderKind(str(raw_patch["kind"]))
     for field in [
         "model",
+        "cost_tier",
+        "endpoint_class",
         "base_url",
         "api_key_env",
         "endpoint_path",

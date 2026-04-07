@@ -11,6 +11,8 @@ auto_approve = false
 
 [provider]
 model = "gpt-5.4-mini"
+cost_tier = "cheap"
+endpoint_class = "lab"
 base_url = "http://127.0.0.1:8000/v1"
 api_key_env = "OPENAI_API_KEY"
 endpoint_path = "/v1/responses"

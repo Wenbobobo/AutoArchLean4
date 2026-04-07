@@ -31,6 +31,8 @@ def test_load_config_parses_executor_and_provider_sections(tmp_path: Path) -> No
         "auto_approve = true\n\n"
         "[provider]\n"
         'model = "gpt-5.4-mini"\n'
+        'cost_tier = "cheap"\n'
+        'endpoint_class = "lab"\n'
         'base_url = "http://localhost:8000/v1"\n'
         'api_key_env = "LAB_KEY"\n',
         encoding="utf-8",
@@ -42,6 +44,8 @@ def test_load_config_parses_executor_and_provider_sections(tmp_path: Path) -> No
     assert config.executor.profile == "research"
     assert config.executor.auto_approve is True
     assert config.provider.model == "gpt-5.4-mini"
+    assert config.provider.cost_tier == "cheap"
+    assert config.provider.endpoint_class == "lab"
     assert config.provider.base_url == "http://localhost:8000/v1"
     assert config.provider.api_key_env == "LAB_KEY"
 
@@ -99,9 +103,16 @@ def test_collect_required_execution_kinds_includes_phase_and_task_overrides(
         "\n"
         "[provider]\n"
         'model = "gpt-5.4-mini"\n'
+        'cost_tier = "cheap"\n'
+        'endpoint_class = "lab"\n'
         "\n"
         "[phase_executor.plan]\n"
         'kind = "dry_run"\n'
+        "\n"
+        "[phase_provider.plan]\n"
+        'model = "gpt-5.4-nano"\n'
+        'cost_tier = "nano"\n'
+        'endpoint_class = "fast"\n'
         "\n"
         "[task_matcher.core_focus]\n"
         'phase = "prover"\n'
@@ -113,7 +124,13 @@ def test_collect_required_execution_kinds_includes_phase_and_task_overrides(
     )
 
     config = load_config(config_path)
-    executor_kinds, provider_kinds = collect_required_execution_kinds(
+    (
+        executor_kinds,
+        provider_kinds,
+        models,
+        cost_tiers,
+        endpoint_classes,
+    ) = collect_required_execution_kinds(
         executor=config.executor,
         provider=config.provider,
         execution_policy=config.execution_policy,
@@ -125,3 +142,6 @@ def test_collect_required_execution_kinds_includes_phase_and_task_overrides(
         ExecutorKind.OPENAI_COMPATIBLE,
     }
     assert provider_kinds == [ProviderKind.OPENAI_COMPATIBLE]
+    assert set(models) == {"gpt-5.4-mini", "gpt-5.4-nano"}
+    assert set(cost_tiers) == {"cheap", "nano"}
+    assert set(endpoint_classes) == {"fast", "lab"}

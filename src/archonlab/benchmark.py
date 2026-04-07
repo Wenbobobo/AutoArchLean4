@@ -77,6 +77,8 @@ def load_benchmark_manifest(manifest_path: Path) -> BenchmarkManifest:
     provider = ProviderConfig(
         kind=provider_raw.get("kind", "openai_compatible"),
         model=provider_raw.get("model"),
+        cost_tier=provider_raw.get("cost_tier"),
+        endpoint_class=provider_raw.get("endpoint_class"),
         base_url=provider_raw.get("base_url"),
         api_key_env=provider_raw.get("api_key_env", "OPENAI_API_KEY"),
         endpoint_path=provider_raw.get(
