@@ -2158,6 +2158,63 @@ def test_queue_resume_session_command_extends_budget_and_enqueues_quantum(
     assert jobs[0].session_id == session.session_id
 
 
+def test_queue_session_status_reports_failure_gate_state(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+    cooldown_until = datetime.now(UTC) + timedelta(seconds=120)
+    EventStore(artifact_root / "archonlab.db").register_session(
+        ProjectSession(
+            session_id="session-demo-project-failed",
+            workspace_id="demo-workspace",
+            project_id="demo-project",
+            status=SessionStatus.FAILED,
+            max_iterations=2,
+            completed_iterations=1,
+            error_message="executor failed",
+            last_stop_reason="run_failed",
+            consecutive_failures=2,
+            max_consecutive_failures=3,
+            failure_cooldown_seconds=120,
+            last_failure_at=datetime.now(UTC) - timedelta(seconds=10),
+            cooldown_until=cooldown_until,
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "session-status",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "session-demo-project-failed",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "failure=2/3" in result.output
+    assert f"cooldown={cooldown_until.isoformat()}" in result.output
+
+
 def test_queue_resume_workspace_command_resumes_workspace_sessions(
     tmp_path: Path,
     fake_archon_project: Path,

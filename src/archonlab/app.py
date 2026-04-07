@@ -2506,6 +2506,8 @@ def queue_session_status(
             f"{session.session_id} | {session.project_id} | {session.status.value} | "
             f"iterations={session.completed_iterations}/{session.max_iterations} | "
             f"job={(active_job.id if active_job is not None else '-')} | "
+            f"failure={session.consecutive_failures}/{session.max_consecutive_failures} | "
+            f"cooldown={session.cooldown_until.isoformat() if session.cooldown_until else '-'} | "
             f"stop={session.last_stop_reason or '-'} | "
             f"resume={session.last_resume_reason or '-'} | "
             f"owner={session.owner_worker_id or '-'}:{session.owner_job_id or '-'}"
