@@ -9,21 +9,25 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from .batch import BatchRunner
-from .config import load_config
+from .config import build_workspace_project_app_config, load_config, load_workspace_config
 from .control import ControlService
 from .events import EventStore
 from .models import (
     ActionPhase,
+    AppConfig,
     ExecutorKind,
     ProviderKind,
     QueueJob,
     RunPreview,
+    SessionStatus,
     TaskGraph,
     TaskSource,
     TaskStatus,
     WorkflowMode,
     WorkflowRule,
     WorkflowSpec,
+    WorkspaceConfig,
+    WorkspaceProjectConfig,
 )
 from .queue import QueueStore
 from .services import RunService
@@ -76,15 +80,42 @@ class WorkflowOverrideRequest(BaseModel):
 
 def create_dashboard_app(config_path: Path) -> FastAPI:
     resolved_config_path = config_path.resolve()
-    config = load_config(resolved_config_path)
+    try:
+        workspace_config = load_workspace_config(resolved_config_path)
+        default_project_id = workspace_config.projects[0].id
+        config = build_workspace_project_app_config(
+            workspace_config,
+            project_id=default_project_id,
+        )
+        dashboard_title = workspace_config.name
+        available_projects = {project.id for project in workspace_config.projects}
+    except (KeyError, ValueError):
+        workspace_config = None
+        config = load_config(resolved_config_path)
+        default_project_id = config.project.name
+        dashboard_title = config.project.name
+        available_projects = {config.project.name}
+
     store = EventStore(config.run.artifact_root / "archonlab.db")
     control = ControlService(config.run.artifact_root)
     queue = QueueStore(config.run.artifact_root / "archonlab.db")
     app = FastAPI(title="ArchonLab Dashboard")
 
+    def resolve_project_app_config(project_id: str) -> AppConfig:
+        _ensure_project(available_projects, project_id)
+        if workspace_config is None:
+            return config
+        return build_workspace_project_app_config(
+            workspace_config,
+            project_id=project_id,
+        )
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return render_dashboard_html(config.project.name)
+        return render_dashboard_html(
+            dashboard_title,
+            default_project_id=default_project_id,
+        )
 
     @app.get("/api/runs")
     def list_runs(limit: int = 20) -> list[dict[str, Any]]:
@@ -109,26 +140,26 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
 
     @app.get("/api/projects/{project_id}/control")
     def get_control(project_id: str) -> dict[str, Any]:
-        _ensure_project(config.project.name, project_id)
-        return control.read(config.project).model_dump(mode="json")
+        project_config = resolve_project_app_config(project_id)
+        return control.read(project_config.project).model_dump(mode="json")
 
     @app.get("/api/projects/{project_id}/preview")
     def get_project_preview(project_id: str) -> dict[str, Any]:
-        _ensure_project(config.project.name, project_id)
-        preview = RunService(config).preview()
+        project_config = resolve_project_app_config(project_id)
+        preview = RunService(project_config).preview()
         workflow_spec = preview.workflow_spec
         return {
-            "project_id": config.project.name,
+            "project_id": project_config.project.name,
             "workflow": preview.workflow.value,
-            "configured_workflow": config.run.workflow.value,
+            "configured_workflow": project_config.run.workflow.value,
             "workflow_spec_path": (
                 str(preview.workflow_spec_path)
                 if preview.workflow_spec_path is not None
                 else None
             ),
             "configured_workflow_spec_path": (
-                str(config.run.workflow_spec)
-                if config.run.workflow_spec is not None
+                str(project_config.run.workflow_spec)
+                if project_config.run.workflow_spec is not None
                 else None
             ),
             "workflow_spec": (
@@ -149,7 +180,7 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
 
     @app.post("/api/projects/{project_id}/workflow")
     def set_project_workflow(project_id: str, body: WorkflowOverrideRequest) -> dict[str, Any]:
-        _ensure_project(config.project.name, project_id)
+        project_config = resolve_project_app_config(project_id)
         if (
             body.workflow is None
             and body.workflow_spec_path is None
@@ -172,7 +203,7 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
         if workflow_spec_path is not None and not workflow_spec_path.exists():
             raise HTTPException(status_code=404, detail="Workflow spec not found")
         state = control.set_workflow(
-            config.project,
+            project_config.project,
             workflow=body.workflow,
             workflow_spec_override=workflow_spec_path,
             clear_workflow_spec=body.clear_workflow_spec,
@@ -181,27 +212,37 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
 
     @app.post("/api/projects/{project_id}/workflow/reset")
     def reset_project_workflow(project_id: str) -> dict[str, Any]:
-        _ensure_project(config.project.name, project_id)
-        return control.reset_workflow(config.project).model_dump(mode="json")
+        project_config = resolve_project_app_config(project_id)
+        return control.reset_workflow(project_config.project).model_dump(mode="json")
 
     @app.post("/api/projects/{project_id}/pause")
     def pause_project(project_id: str, body: PauseRequest) -> dict[str, Any]:
-        _ensure_project(config.project.name, project_id)
-        return control.pause(config.project, reason=body.reason).model_dump(mode="json")
+        project_config = resolve_project_app_config(project_id)
+        return control.pause(project_config.project, reason=body.reason).model_dump(mode="json")
 
     @app.post("/api/projects/{project_id}/resume")
     def resume_project(project_id: str) -> dict[str, Any]:
-        _ensure_project(config.project.name, project_id)
-        return control.resume(config.project).model_dump(mode="json")
+        project_config = resolve_project_app_config(project_id)
+        return control.resume(project_config.project).model_dump(mode="json")
 
     @app.post("/api/projects/{project_id}/hint")
     def add_hint(project_id: str, body: HintRequest) -> dict[str, Any]:
-        _ensure_project(config.project.name, project_id)
+        project_config = resolve_project_app_config(project_id)
         return control.add_hint(
-            config.project,
+            project_config.project,
             text=body.text,
             author=body.author,
         ).model_dump(mode="json")
+
+    @app.get("/api/workspace/overview")
+    def get_workspace_overview(limit_sessions: int = 100) -> dict[str, Any]:
+        return _build_workspace_overview(
+            config=config,
+            workspace_config=workspace_config,
+            store=store,
+            queue=queue,
+            limit_sessions=limit_sessions,
+        )
 
     @app.get("/api/queue/jobs")
     def list_queue_jobs(limit: int = 50) -> list[dict[str, Any]]:
@@ -304,8 +345,8 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
     return app
 
 
-def _ensure_project(expected_project_id: str, actual_project_id: str) -> None:
-    if expected_project_id != actual_project_id:
+def _ensure_project(available_project_ids: set[str], actual_project_id: str) -> None:
+    if actual_project_id not in available_project_ids:
         raise HTTPException(status_code=404, detail="Project not found")
 
 
@@ -320,6 +361,120 @@ def _resolve_dashboard_path(base_dir: Path, raw_path: Path) -> Path:
     if raw_path.is_absolute():
         return raw_path.resolve()
     return (base_dir / raw_path).resolve()
+
+
+def _build_workspace_overview(
+    *,
+    config: AppConfig,
+    workspace_config: WorkspaceConfig | None,
+    store: EventStore,
+    queue: QueueStore,
+    limit_sessions: int,
+) -> dict[str, Any]:
+    if workspace_config is None:
+        workspace_name = "standalone"
+        project_rows = [
+            WorkspaceProjectConfig(
+                id=config.project.name,
+                project_path=config.project.project_path,
+                archon_path=config.project.archon_path,
+                workflow=config.run.workflow,
+                max_iterations=config.run.max_iterations,
+                dry_run=config.run.dry_run,
+            )
+        ]
+        sessions = store.list_sessions(project_id=config.project.name, limit=limit_sessions)
+    else:
+        workspace_name = workspace_config.name
+        project_rows = workspace_config.projects
+        sessions = store.list_sessions(workspace_id=workspace_name, limit=limit_sessions)
+
+    project_ids = {project.id for project in project_rows}
+    jobs = [
+        job
+        for job in queue.list_jobs(limit=200)
+        if (
+            (job.workspace_id == workspace_name)
+            or (job.workspace_id is None and job.project_id in project_ids)
+        )
+    ]
+    workers = queue.list_workers(stale_after_seconds=120.0)
+    sessions_by_project: dict[str, list[dict[str, Any]]] = {}
+    for session in sessions:
+        sessions_by_project.setdefault(session.project_id, []).append(
+            {
+                **session.model_dump(mode="json"),
+                "remaining_iterations": max(
+                    session.max_iterations - session.completed_iterations,
+                    0,
+                ),
+            }
+        )
+
+    project_summaries = []
+    for project in project_rows:
+        project_sessions = sessions_by_project.get(project.id, [])
+        project_jobs = [job for job in jobs if job.project_id == project.id]
+        project_summaries.append(
+            {
+                "project_id": project.id,
+                "enabled": project.enabled,
+                "workflow": (project.workflow or config.run.workflow).value,
+                "dry_run": (
+                    project.dry_run
+                    if project.dry_run is not None
+                    else config.run.dry_run
+                ),
+                "max_iterations": (
+                    project.max_iterations
+                    if project.max_iterations is not None
+                    else config.run.max_iterations
+                ),
+                "session_count": len(project_sessions),
+                "running_sessions": sum(
+                    1
+                    for session in project_sessions
+                    if session["status"] == SessionStatus.RUNNING.value
+                ),
+                "queued_jobs": sum(
+                    1 for job in project_jobs if job.status.value in {"queued", "pending"}
+                ),
+            }
+        )
+
+    return {
+        "workspace": workspace_name,
+        "mode": "workspace" if workspace_config is not None else "project",
+        "default_project_id": project_rows[0].id,
+        "project_count": len(project_rows),
+        "session_count": len(sessions),
+        "running_sessions": sum(
+            1 for session in sessions if session.status is SessionStatus.RUNNING
+        ),
+        "queued_jobs": sum(1 for job in jobs if job.status.value in {"queued", "pending"}),
+        "running_jobs": sum(1 for job in jobs if job.status.value == "running"),
+        "active_workers": sum(1 for worker in workers if worker.status.value != "stopped"),
+        "budget": {
+            "max_iterations": sum(session.max_iterations for session in sessions),
+            "completed_iterations": sum(session.completed_iterations for session in sessions),
+            "remaining_iterations": sum(
+                max(session.max_iterations - session.completed_iterations, 0)
+                for session in sessions
+            ),
+        },
+        "projects": project_summaries,
+        "sessions": [
+            {
+                **session.model_dump(mode="json"),
+                "remaining_iterations": max(
+                    session.max_iterations - session.completed_iterations,
+                    0,
+                ),
+            }
+            for session in sessions
+        ],
+        "workers": [worker.model_dump(mode="json") for worker in workers],
+    }
 
 
 def _summarize_task_graph(task_graph: TaskGraph) -> dict[str, int]:
@@ -394,7 +549,7 @@ def _summarize_workflow_rule(rule: WorkflowRule) -> dict[str, Any]:
     }
 
 
-def render_dashboard_html(project_id: str) -> str:
+def render_dashboard_html(title: str, *, default_project_id: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
   <head>
@@ -758,7 +913,7 @@ def render_dashboard_html(project_id: str) -> str:
     <div class="shell">
       <section class="hero">
         <div class="eyebrow">ArchonLab Control Deck</div>
-        <h1>{project_id}</h1>
+        <h1>{title}</h1>
         <div class="subtitle">
           Watch runs, inspect structured artifacts, pause the project, resume it, or inject a hint
           without dropping back to raw files. This dashboard sits directly on top of the existing
@@ -867,6 +1022,29 @@ def render_dashboard_html(project_id: str) -> str:
 
       <section class="panel" style="margin-top: 18px;">
         <div class="section-head">
+          <h2>Workspace Overview</h2>
+          <div class="meta" id="workspace-overview-meta">
+            Aggregate sessions, queue pressure, and worker health across the workspace.
+          </div>
+        </div>
+        <div class="preview-grid">
+          <section class="preview-card">
+            <h3>Overview</h3>
+            <div class="fact-grid" id="workspace-overview-summary"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Sessions</h3>
+            <div class="rule-list" id="workspace-session-table"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Worker Pool</h3>
+            <div class="rule-list" id="workspace-worker-pool"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="panel" style="margin-top: 18px;">
+        <div class="section-head">
           <h2>Current Preview</h2>
           <div class="meta" id="project-preview-meta">
             Inspect the live supervisor/workflow prediction before launching the next run.
@@ -905,7 +1083,7 @@ def render_dashboard_html(project_id: str) -> str:
     </div>
 
     <script>
-      const projectId = {json.dumps(project_id)};
+      const projectId = {json.dumps(default_project_id)};
       const controlStatus = document.getElementById("control-status");
       const runsList = document.getElementById("runs-list");
       const detailMeta = document.getElementById("detail-meta");
@@ -935,6 +1113,10 @@ def render_dashboard_html(project_id: str) -> str:
       const fleetPlanSummary = document.getElementById("fleet-plan-summary");
       const fleetPlanList = document.getElementById("fleet-plan-list");
       const workersList = document.getElementById("workers-list");
+      const workspaceOverviewMeta = document.getElementById("workspace-overview-meta");
+      const workspaceOverviewSummary = document.getElementById("workspace-overview-summary");
+      const workspaceSessionTable = document.getElementById("workspace-session-table");
+      const workspaceWorkerPool = document.getElementById("workspace-worker-pool");
       let latestJobs = [];
       let selectedQueueJobId = null;
 
@@ -1391,18 +1573,96 @@ def render_dashboard_html(project_id: str) -> str:
         }}
       }}
 
+      function renderWorkspaceOverview(payload) {{
+        const budget = payload.budget || {{}};
+        const sessions = payload.sessions || [];
+        const workers = payload.workers || [];
+        const projects = payload.projects || [];
+        workspaceOverviewMeta.textContent =
+          `${{payload.workspace}} · ${{payload.project_count}} projects · ` +
+          `${{payload.session_count}} sessions`;
+        workspaceOverviewSummary.innerHTML = renderFacts([
+          ["mode", payload.mode || "-"],
+          ["projects", `${{payload.project_count || 0}}`],
+          ["sessions", `${{payload.session_count || 0}}`],
+          ["running_sessions", `${{payload.running_sessions || 0}}`],
+          ["queued_jobs", `${{payload.queued_jobs || 0}}`],
+          ["running_jobs", `${{payload.running_jobs || 0}}`],
+          ["active_workers", `${{payload.active_workers || 0}}`],
+          [
+            "budget",
+            `${{budget.completed_iterations || 0}} / ` +
+            `${{budget.max_iterations || 0}} iter`,
+          ],
+        ]);
+        workspaceSessionTable.innerHTML = sessions.length
+          ? sessions.slice(0, 8).map((session) => `
+              <div class="rule">
+                <strong>${{session.project_id}} · ${{session.status}}</strong>
+                <div class="meta">${{session.session_id}}</div>
+                <div class="meta">
+                  iter=${{session.completed_iterations}}/${{session.max_iterations}}
+                  · remaining=${{session.remaining_iterations}}
+                </div>
+              </div>
+            `).join("")
+          : '<div class="meta">No workspace sessions yet.</div>';
+        workspaceWorkerPool.innerHTML = [
+          projects.length
+            ? projects.slice(0, 8).map((project) => `
+                <div class="rule">
+                  <strong>${{project.project_id}}</strong>
+                  <div class="meta">
+                    workflow=${{project.workflow}} · dry_run=${{project.dry_run}}
+                  </div>
+                  <div class="meta">
+                    sessions=${{project.session_count}} · running=${{project.running_sessions}}
+                    · queued_jobs=${{project.queued_jobs}}
+                  </div>
+                </div>
+              `).join("")
+            : '<div class="meta">No workspace projects.</div>',
+          workers.length
+            ? `
+                <div class="rule">
+                  <strong>Workers</strong>
+                  <div class="meta">
+                    ${{
+                      workers
+                        .map((worker) => `${{worker.worker_id}}:${{worker.status}}`)
+                        .join(" · ")
+                    }}
+                  </div>
+                </div>
+              `
+            : '<div class="meta">No worker pool activity yet.</div>',
+        ].join("");
+      }}
+
+      function renderWorkspaceOverviewError(message) {{
+        workspaceOverviewMeta.textContent = "Workspace overview unavailable.";
+        workspaceOverviewSummary.innerHTML =
+          '<div class="meta">Workspace overview unavailable.</div>';
+        workspaceSessionTable.innerHTML = `<div class="meta">${{message}}</div>`;
+        workspaceWorkerPool.innerHTML = '<div class="meta">Workspace overview unavailable.</div>';
+      }}
+
       async function refresh() {{
         const previewPromise = fetchJson(`/api/projects/${{projectId}}/preview`)
           .catch((error) => ({{ error: error.message }}));
         const fleetPlanPromise = fetchJson(`/api/queue/fleet-plan`)
           .catch((error) => ({{ error: error.message }}));
-        const [control, runs, jobs, workers, projectPreview, fleetPlan] = await Promise.all([
+        const workspaceOverviewPromise = fetchJson(`/api/workspace/overview`)
+          .catch((error) => ({{ error: error.message }}));
+        const [control, runs, jobs, workers, projectPreview, fleetPlan, workspaceOverview] =
+          await Promise.all([
           fetchJson(`/api/projects/${{projectId}}/control`),
           fetchJson(`/api/runs?limit=20`),
           fetchJson(`/api/queue/jobs?limit=20`),
           fetchJson(`/api/queue/workers`),
           previewPromise,
           fleetPlanPromise,
+          workspaceOverviewPromise,
         ]);
         renderControl(control);
         renderRuns(runs);
@@ -1417,6 +1677,11 @@ def render_dashboard_html(project_id: str) -> str:
           renderProjectPreviewError(projectPreview.error);
         }} else {{
           renderProjectPreview(projectPreview);
+        }}
+        if (workspaceOverview.error) {{
+          renderWorkspaceOverviewError(workspaceOverview.error);
+        }} else {{
+          renderWorkspaceOverview(workspaceOverview);
         }}
       }}
 

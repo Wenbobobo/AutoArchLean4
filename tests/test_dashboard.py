@@ -14,10 +14,12 @@ from archonlab.models import (  # noqa: E402
     BatchRunReport,
     EventRecord,
     ExecutorKind,
+    ProjectSession,
     ProviderKind,
     QueueJobPreview,
     RunStatus,
     RunSummary,
+    SessionStatus,
     SupervisorAction,
     SupervisorReason,
     WorkflowMode,
@@ -25,8 +27,8 @@ from archonlab.models import (  # noqa: E402
 from archonlab.queue import QueueStore  # noqa: E402
 
 
-def _make_project(tmp_path: Path) -> Path:
-    project_path = tmp_path / "DemoProject"
+def _make_project(tmp_path: Path, name: str = "DemoProject") -> Path:
+    project_path = tmp_path / name
     state_dir = project_path / ".archon"
     prompts_dir = state_dir / "prompts"
     prompts_dir.mkdir(parents=True)
@@ -351,3 +353,151 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert fleet_payload["worker_ids"] == ["worker-auto-1"]
     assert captured_fleet["plan_driven"] is True
     assert captured_fleet["target_jobs_per_worker"] == 3
+
+
+def test_dashboard_workspace_overview_and_project_switching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alpha_project = _make_project(tmp_path, "AlphaProject")
+    beta_project = _make_project(tmp_path, "BetaProject")
+    archon_path = _make_archon(tmp_path)
+    artifact_root = tmp_path / "artifacts"
+
+    original_connect = sqlite3.connect
+
+    def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        options = dict(kwargs)
+        options.setdefault("check_same_thread", False)
+        return original_connect(*args, **options)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+
+    workspace_config_path = tmp_path / "workspace.toml"
+    workspace_config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 6\n\n"
+        "[[projects]]\n"
+        'id = "alpha"\n'
+        f'project_path = "{alpha_project}"\n'
+        f'archon_path = "{archon_path}"\n\n'
+        "[[projects]]\n"
+        'id = "beta"\n'
+        f'project_path = "{beta_project}"\n'
+        f'archon_path = "{archon_path}"\n'
+        'workflow = "fixed_loop"\n'
+        "dry_run = false\n"
+        "max_iterations = 4\n",
+        encoding="utf-8",
+    )
+
+    store = EventStore(artifact_root / "archonlab.db")
+    store.register_session(
+        ProjectSession(
+            session_id="session-alpha-1",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.RUNNING,
+            workflow=WorkflowMode.ADAPTIVE_LOOP,
+            dry_run=True,
+            max_iterations=6,
+            completed_iterations=2,
+            last_run_id="run-alpha-1",
+        )
+    )
+    store.register_session(
+        ProjectSession(
+            session_id="session-beta-1",
+            workspace_id="demo-workspace",
+            project_id="beta",
+            status=SessionStatus.PENDING,
+            workflow=WorkflowMode.FIXED_LOOP,
+            dry_run=False,
+            max_iterations=4,
+            completed_iterations=1,
+        )
+    )
+
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    queue_store.enqueue(
+        "session_quantum",
+        {
+            "workspace_config_path": str(workspace_config_path),
+            "workspace_id": "demo-workspace",
+            "project_id": "alpha",
+            "session_id": "session-alpha-1",
+            "quantum": 1,
+        },
+        project_id="alpha",
+        workspace_id="demo-workspace",
+        session_id="session-alpha-1",
+        priority=5,
+    )
+    queue_store.enqueue(
+        "session_quantum",
+        {
+            "workspace_config_path": str(workspace_config_path),
+            "workspace_id": "demo-workspace",
+            "project_id": "beta",
+            "session_id": "session-beta-1",
+            "quantum": 1,
+        },
+        project_id="beta",
+        workspace_id="demo-workspace",
+        session_id="session-beta-1",
+        priority=6,
+    )
+    queue_store.register_worker(slot_index=1, worker_id="worker-beta")
+    queue_store.claim_next_job(worker_id="worker-beta")
+    queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": str(tmp_path / "other.toml")},
+        project_id="external",
+        workspace_id="other-workspace",
+        priority=99,
+    )
+
+    app = create_dashboard_app(workspace_config_path)
+    client = TestClient(app)
+
+    index_response = client.get("/")
+    assert index_response.status_code == 200
+    assert 'id="workspace-overview-summary"' in index_response.text
+    assert 'id="workspace-session-table"' in index_response.text
+
+    overview_response = client.get("/api/workspace/overview")
+    assert overview_response.status_code == 200
+    overview = overview_response.json()
+    assert overview["workspace"] == "demo-workspace"
+    assert overview["mode"] == "workspace"
+    assert overview["default_project_id"] == "alpha"
+    assert overview["project_count"] == 2
+    assert overview["session_count"] == 2
+    assert overview["running_sessions"] == 1
+    assert overview["queued_jobs"] == 1
+    assert overview["running_jobs"] == 1
+    assert overview["active_workers"] == 1
+    assert overview["budget"]["max_iterations"] == 10
+    assert overview["budget"]["completed_iterations"] == 3
+    assert overview["budget"]["remaining_iterations"] == 7
+    assert {item["project_id"] for item in overview["projects"]} == {"alpha", "beta"}
+    beta_summary = next(item for item in overview["projects"] if item["project_id"] == "beta")
+    assert beta_summary["workflow"] == "fixed_loop"
+    assert beta_summary["dry_run"] is False
+    assert beta_summary["max_iterations"] == 4
+    assert beta_summary["session_count"] == 1
+    assert beta_summary["queued_jobs"] == 0
+    alpha_session = next(item for item in overview["sessions"] if item["project_id"] == "alpha")
+    assert alpha_session["remaining_iterations"] == 4
+
+    beta_preview_response = client.get("/api/projects/beta/preview")
+    assert beta_preview_response.status_code == 200
+    beta_preview = beta_preview_response.json()
+    assert beta_preview["project_id"] == "beta"
+    assert beta_preview["workflow"] == "fixed_loop"
+    assert beta_preview["configured_workflow"] == "fixed_loop"
+    assert beta_preview["preview"]["action"]["reason"] == "fixed_loop_baseline"
