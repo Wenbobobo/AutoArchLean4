@@ -1101,7 +1101,22 @@ def test_run_loops_command_lists_recent_runs(
         "[run]\n"
         'workflow = "adaptive_loop"\n'
         f'artifact_root = "{artifact_root}"\n'
-        "dry_run = true\n",
+        "dry_run = true\n\n"
+        "[provider]\n"
+        'pool = "lab"\n\n'
+        "[provider_pool.lab]\n"
+        "max_consecutive_failures = 1\n"
+        "quarantine_seconds = 60\n\n"
+        "[[provider_pool.lab.members]]\n"
+        'name = "cheap-member"\n'
+        'model = "gpt-5.4-mini"\n'
+        'cost_tier = "cheap"\n'
+        'endpoint_class = "lab"\n\n'
+        "[[provider_pool.lab.members]]\n"
+        'name = "premium-member"\n'
+        'model = "gpt-5.4"\n'
+        'cost_tier = "premium"\n'
+        'endpoint_class = "lab"\n',
         encoding="utf-8",
     )
     store = EventStore(artifact_root / "archonlab.db")
@@ -1492,7 +1507,22 @@ def test_control_workflow_commands_apply_and_clear_override(
         "[run]\n"
         'workflow = "adaptive_loop"\n'
         f'artifact_root = "{artifact_root}"\n'
-        "dry_run = true\n",
+        "dry_run = true\n\n"
+        "[provider]\n"
+        'pool = "lab"\n\n'
+        "[provider_pool.lab]\n"
+        "max_consecutive_failures = 1\n"
+        "quarantine_seconds = 60\n\n"
+        "[[provider_pool.lab.members]]\n"
+        'name = "cheap-member"\n'
+        'model = "gpt-5.4-mini"\n'
+        'cost_tier = "cheap"\n'
+        'endpoint_class = "lab"\n\n'
+        "[[provider_pool.lab.members]]\n"
+        'name = "premium-member"\n'
+        'model = "gpt-5.4"\n'
+        'cost_tier = "premium"\n'
+        'endpoint_class = "lab"\n',
         encoding="utf-8",
     )
 
@@ -1537,7 +1567,22 @@ def test_queue_worker_command_processes_benchmark_jobs(
         "[run]\n"
         'workflow = "adaptive_loop"\n'
         f'artifact_root = "{artifact_root}"\n'
-        "dry_run = true\n",
+        "dry_run = true\n\n"
+        "[provider]\n"
+        'pool = "lab"\n\n'
+        "[provider_pool.lab]\n"
+        "max_consecutive_failures = 1\n"
+        "quarantine_seconds = 60\n\n"
+        "[[provider_pool.lab.members]]\n"
+        'name = "cheap-member"\n'
+        'model = "gpt-5.4-mini"\n'
+        'cost_tier = "cheap"\n'
+        'endpoint_class = "lab"\n\n'
+        "[[provider_pool.lab.members]]\n"
+        'name = "premium-member"\n'
+        'model = "gpt-5.4"\n'
+        'cost_tier = "premium"\n'
+        'endpoint_class = "lab"\n',
         encoding="utf-8",
     )
     manifest_path = tmp_path / "benchmark.toml"
@@ -1615,7 +1660,22 @@ def test_queue_worker_command_can_auto_assign_slot(
         "[run]\n"
         'workflow = "adaptive_loop"\n'
         f'artifact_root = "{artifact_root}"\n'
-        "dry_run = true\n",
+        "dry_run = true\n\n"
+        "[provider]\n"
+        'pool = "lab"\n\n'
+        "[provider_pool.lab]\n"
+        "max_consecutive_failures = 1\n"
+        "quarantine_seconds = 60\n\n"
+        "[[provider_pool.lab.members]]\n"
+        'name = "cheap-member"\n'
+        'model = "gpt-5.4-mini"\n'
+        'cost_tier = "cheap"\n'
+        'endpoint_class = "lab"\n\n'
+        "[[provider_pool.lab.members]]\n"
+        'name = "premium-member"\n'
+        'model = "gpt-5.4"\n'
+        'cost_tier = "premium"\n'
+        'endpoint_class = "lab"\n',
         encoding="utf-8",
     )
     manifest_path = tmp_path / "benchmark.toml"
@@ -2738,7 +2798,22 @@ def test_queue_plan_fleet_command_summarizes_recommended_worker_profiles(
         "[run]\n"
         'workflow = "adaptive_loop"\n'
         f'artifact_root = "{artifact_root}"\n'
-        "dry_run = true\n",
+        "dry_run = true\n\n"
+        "[provider]\n"
+        'pool = "lab"\n\n'
+        "[provider_pool.lab]\n"
+        "max_consecutive_failures = 1\n"
+        "quarantine_seconds = 60\n\n"
+        "[[provider_pool.lab.members]]\n"
+        'name = "cheap-member"\n'
+        'model = "gpt-5.4-mini"\n'
+        'cost_tier = "cheap"\n'
+        'endpoint_class = "lab"\n\n'
+        "[[provider_pool.lab.members]]\n"
+        'name = "premium-member"\n'
+        'model = "gpt-5.4"\n'
+        'cost_tier = "premium"\n'
+        'endpoint_class = "lab"\n',
         encoding="utf-8",
     )
 
@@ -2822,6 +2897,7 @@ def test_queue_plan_fleet_command_summarizes_recommended_worker_profiles(
     assert "Additional workers: 1" in result.output
     assert "matching=1" in result.output
     assert "matching=0" in result.output
+    assert "provider=healthy/1" in result.output
     assert "model=gpt-5.4-mini" in result.output
     assert "model=gpt-5.4" in result.output
 

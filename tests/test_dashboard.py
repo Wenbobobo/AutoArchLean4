@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -89,6 +90,31 @@ def _seed_run(artifact_root: Path) -> None:
     )
 
 
+def _write_experiment_ledger(
+    path: Path,
+    *,
+    benchmark_name: str,
+    benchmark_run_id: str,
+    outcomes: list[dict[str, object]],
+    summary: dict[str, object],
+) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "benchmark_name": benchmark_name,
+                "benchmark_run_id": benchmark_run_id,
+                "generated_at": datetime.now(UTC).isoformat(),
+                "summary": summary,
+                "outcomes": outcomes,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_dashboard_api_lists_runs_and_supports_control_actions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -130,7 +156,17 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
         "[run]\n"
         'workflow = "adaptive_loop"\n'
         f'artifact_root = "{artifact_root}"\n'
-        "dry_run = true\n",
+        "dry_run = true\n\n"
+        "[provider]\n"
+        'pool = "lab"\n\n'
+        "[provider_pool.lab]\n"
+        "max_consecutive_failures = 1\n"
+        "quarantine_seconds = 60\n\n"
+        "[[provider_pool.lab.members]]\n"
+        'name = "member-a"\n'
+        'model = "gpt-5.4"\n'
+        'cost_tier = "premium"\n'
+        'endpoint_class = "lab"\n',
         encoding="utf-8",
     )
 
@@ -347,6 +383,8 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert fleet_plan["profiles"][0]["dominant_phase"] == "prover"
     assert fleet_plan["profiles"][0]["dedicated_workers"] == 1
     assert fleet_plan["profiles"][0]["matching_workers"] == 1
+    assert fleet_plan["profiles"][0]["available_provider_members"] == 1
+    assert fleet_plan["profiles"][0]["provider_capacity_status"] == "healthy"
     assert fleet_plan["profiles"][0]["recommended_total_workers"] == 1
 
     job_detail_response = client.get(f"/api/queue/jobs/{queued_job.id}")
@@ -751,3 +789,218 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert project_loops_payload["workspace"] == "demo-workspace"
     assert len(project_loops_payload["loops"]) == 1
     assert project_loops_payload["loops"][0]["loop_run_id"] == "run-loop-alpha-dashboard-1"
+
+
+def test_dashboard_benchmark_lab_supports_ledger_compare_and_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_path = _make_project(tmp_path)
+    archon_path = _make_archon(tmp_path)
+    artifact_root = tmp_path / "artifacts"
+
+    original_connect = sqlite3.connect
+
+    def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        options = dict(kwargs)
+        options.setdefault("check_same_thread", False)
+        return original_connect(*args, **options)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+
+    config_path = tmp_path / "archonlab.toml"
+    config_path.write_text(
+        "[project]\n"
+        'name = "DemoProject"\n'
+        f'project_path = "{project_path}"\n'
+        f'archon_path = "{archon_path}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+
+    baseline_ledger = _write_experiment_ledger(
+        tmp_path / "baseline-ledger.json",
+        benchmark_name="baseline-smoke",
+        benchmark_run_id="baseline-run",
+        summary={
+            "total_projects": 1,
+            "total_theorems": 2,
+            "unchanged": 2,
+            "improved": 0,
+            "regressed": 0,
+            "new": 0,
+            "removed": 0,
+            "failure_taxonomy": [],
+        },
+        outcomes=[
+            {
+                "project_id": "demo",
+                "run_id": "baseline-run",
+                "run_status": "completed",
+                "theorem_outcomes": [
+                    {
+                        "theorem_name": "foo",
+                        "file_path": "Core.lean",
+                        "declaration_kind": "theorem",
+                        "before_state": "contains_sorry",
+                        "after_state": "contains_sorry",
+                        "outcome": "unchanged",
+                        "failure_categories": ["contains_sorry"],
+                    },
+                    {
+                        "theorem_name": "helper",
+                        "file_path": "Core.lean",
+                        "declaration_kind": "theorem",
+                        "before_state": "proved",
+                        "after_state": "proved",
+                        "outcome": "unchanged",
+                        "failure_categories": [],
+                    },
+                ],
+                "failure_taxonomy": [
+                    {
+                        "category": "contains_sorry",
+                        "count": 1,
+                        "samples": ["foo"],
+                    }
+                ],
+            }
+        ],
+    )
+    candidate_ledger = _write_experiment_ledger(
+        tmp_path / "candidate-ledger.json",
+        benchmark_name="candidate-smoke",
+        benchmark_run_id="candidate-run",
+        summary={
+            "total_projects": 1,
+            "total_theorems": 3,
+            "unchanged": 1,
+            "improved": 1,
+            "regressed": 0,
+            "new": 1,
+            "removed": 0,
+            "failure_taxonomy": [
+                {
+                    "category": "contains_sorry",
+                    "count": 1,
+                    "samples": ["bar"],
+                }
+            ],
+        },
+        outcomes=[
+            {
+                "project_id": "demo",
+                "run_id": "candidate-run",
+                "run_status": "completed",
+                "artifact_dir": str(tmp_path / "candidate-artifact"),
+                "theorem_outcomes": [
+                    {
+                        "theorem_name": "foo",
+                        "file_path": "Core.lean",
+                        "declaration_kind": "theorem",
+                        "before_state": "contains_sorry",
+                        "after_state": "proved",
+                        "outcome": "improved",
+                        "failure_categories": [],
+                    },
+                    {
+                        "theorem_name": "helper",
+                        "file_path": "Core.lean",
+                        "declaration_kind": "theorem",
+                        "before_state": "proved",
+                        "after_state": "proved",
+                        "outcome": "unchanged",
+                        "failure_categories": [],
+                    },
+                    {
+                        "theorem_name": "bar",
+                        "file_path": "Extra.lean",
+                        "declaration_kind": "lemma",
+                        "before_state": "missing",
+                        "after_state": "contains_sorry",
+                        "outcome": "new",
+                        "failure_categories": ["contains_sorry"],
+                    },
+                ],
+                "failure_taxonomy": [
+                    {
+                        "category": "contains_sorry",
+                        "count": 1,
+                        "samples": ["bar"],
+                    }
+                ],
+            }
+        ],
+    )
+
+    app = create_dashboard_app(config_path)
+    client = TestClient(app)
+
+    index_response = client.get("/")
+    assert index_response.status_code == 200
+    assert 'id="benchmark-ledger-summary"' in index_response.text
+    assert 'id="benchmark-compare-summary"' in index_response.text
+    assert 'id="benchmark-replay-detail"' in index_response.text
+
+    ledger_response = client.post(
+        "/api/benchmark/experiment-ledger",
+        json={"ledger_path": baseline_ledger.name},
+    )
+    assert ledger_response.status_code == 200
+    ledger_payload = ledger_response.json()
+    assert ledger_payload["benchmark_name"] == "baseline-smoke"
+    assert ledger_payload["summary"]["total_theorems"] == 2
+
+    compare_response = client.post(
+        "/api/benchmark/compare",
+        json={
+            "baseline_ledger_path": baseline_ledger.name,
+            "candidate_ledger_path": candidate_ledger.name,
+        },
+    )
+    assert compare_response.status_code == 200
+    compare_payload = compare_response.json()
+    assert compare_payload["baseline_benchmark"] == "baseline-smoke"
+    assert compare_payload["candidate_benchmark"] == "candidate-smoke"
+    assert compare_payload["summary"]["improved"] == 1
+    assert compare_payload["summary"]["new"] == 1
+    change_map = {
+        (item["project_id"], item["theorem_name"]): item
+        for item in compare_payload["changes"]
+    }
+    assert change_map[("demo", "foo")]["change"] == "improved"
+
+    replay_response = client.post(
+        "/api/benchmark/replay",
+        json={
+            "ledger_path": candidate_ledger.name,
+            "project_id": "demo",
+            "theorem_name": "foo",
+        },
+    )
+    assert replay_response.status_code == 200
+    replay_payload = replay_response.json()
+    assert replay_payload["project_id"] == "demo"
+    assert replay_payload["theorem_outcomes"][0]["theorem_name"] == "foo"
+    assert len(replay_payload["theorem_outcomes"]) == 1
+
+    invalid_source_response = client.post(
+        "/api/benchmark/experiment-ledger",
+        json={
+            "summary_path": baseline_ledger.name,
+            "ledger_path": baseline_ledger.name,
+        },
+    )
+    assert invalid_source_response.status_code == 400
+
+    missing_theorem_response = client.post(
+        "/api/benchmark/replay",
+        json={
+            "ledger_path": candidate_ledger.name,
+            "project_id": "demo",
+            "theorem_name": "missing",
+        },
+    )
+    assert missing_theorem_response.status_code == 404

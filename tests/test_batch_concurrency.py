@@ -373,7 +373,7 @@ def test_batch_runner_plan_driven_fleet_skips_profiles_without_available_provide
     )
 
     monkeypatch.setattr(
-        "archonlab.batch.snapshot_provider_pool_health",
+        "archonlab.queue.snapshot_provider_pool_health",
         lambda provider_pools, *, db_path=None: [
             ProviderPoolHealthReport(
                 pool_name="lab",

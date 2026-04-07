@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 from archonlab.batch import BatchRunner
@@ -12,8 +13,20 @@ from archonlab.fleet import (
     InProcessWorkerLauncher,
     SubprocessWorkerLauncher,
     WorkerLaunchRequest,
+    persist_batch_fleet_run,
 )
-from archonlab.models import BatchRunReport, QueueJobStatus
+from archonlab.models import (
+    BatchRunReport,
+    ExecutorKind,
+    ProviderKind,
+    ProviderPoolConfig,
+    ProviderPoolHealthReport,
+    ProviderPoolHealthStatus,
+    ProviderPoolMemberConfig,
+    ProviderPoolMemberHealth,
+    ProviderPoolMemberHealthStatus,
+    QueueJobStatus,
+)
 from archonlab.queue import QueueStore
 
 
@@ -45,6 +58,29 @@ class FakeWorkerLauncher:
             processed_job_ids=processed,
             worker_ids=["worker-fake"] if processed else [],
         )
+
+
+def _healthy_provider_report() -> list[ProviderPoolHealthReport]:
+    return [
+        ProviderPoolHealthReport(
+            pool_name="lab",
+            status=ProviderPoolHealthStatus.HEALTHY,
+            strategy="ordered_failover",
+            total_members=1,
+            available_members=1,
+            quarantined_members=0,
+            members=[
+                ProviderPoolMemberHealth(
+                    pool_name="lab",
+                    member_name="premium-a",
+                    status=ProviderPoolMemberHealthStatus.HEALTHY,
+                    model="gpt-5.4",
+                    cost_tier="premium",
+                    endpoint_class="lab",
+                )
+            ],
+        )
+    ]
 
 
 def test_fleet_controller_runs_plan_driven_waves_until_queue_drains(tmp_path: Path) -> None:
@@ -165,6 +201,122 @@ def test_fleet_controller_persists_run_artifacts_and_event_store(tmp_path: Path)
     assert persisted is not None
     assert persisted.total_processed_jobs == 1
     assert persisted.stop_reason == "queue_drained"
+
+
+def test_fleet_controller_final_plan_includes_provider_capacity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "premium.toml"},
+        project_id="premium-project",
+        required_executor_kinds=[ExecutorKind.DRY_RUN],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4"],
+        required_cost_tiers=["premium"],
+        required_endpoint_classes=["lab"],
+    )
+    monkeypatch.setattr(
+        "archonlab.queue.snapshot_provider_pool_health",
+        lambda provider_pools, *, db_path=None: _healthy_provider_report(),
+    )
+
+    class NoOpLauncher:
+        def launch(
+            self,
+            *,
+            batch_runner: BatchRunner,
+            request: WorkerLaunchRequest,
+        ) -> BatchRunReport:
+            del batch_runner, request
+            return BatchRunReport()
+
+    batch_runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(tmp_path / "control"),
+        artifact_root=tmp_path / "artifacts",
+        slot_limit=1,
+        provider_pools={
+            "lab": ProviderPoolConfig(
+                name="lab",
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="premium-a",
+                        model="gpt-5.4",
+                        cost_tier="premium",
+                        endpoint_class="lab",
+                    )
+                ],
+            )
+        },
+    )
+    controller = FleetController(
+        queue_store=queue_store,
+        batch_runner=batch_runner,
+        worker_launcher=NoOpLauncher(),
+    )
+
+    result = controller.run(
+        max_cycles=1,
+        idle_cycles=1,
+        poll_seconds=0.01,
+        idle_timeout_seconds=0.01,
+    )
+
+    assert result.stop_reason == "idle_cycles_exhausted"
+    assert result.final_plan.profiles[0].provider_capacity_status == "healthy"
+    assert result.final_plan.profiles[0].available_provider_members == 1
+
+
+def test_persist_batch_fleet_run_uses_provider_aware_final_plan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "premium.toml"},
+        project_id="premium-project",
+        required_executor_kinds=[ExecutorKind.DRY_RUN],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4"],
+        required_cost_tiers=["premium"],
+        required_endpoint_classes=["lab"],
+    )
+    monkeypatch.setattr(
+        "archonlab.queue.snapshot_provider_pool_health",
+        lambda provider_pools, *, db_path=None: _healthy_provider_report(),
+    )
+
+    initial_plan = queue_store.plan_fleet(target_jobs_per_worker=1)
+    result = persist_batch_fleet_run(
+        queue_store=queue_store,
+        artifact_root=tmp_path / "artifacts",
+        initial_plan=initial_plan,
+        report=BatchRunReport(),
+        started_at=datetime.now(UTC),
+        target_jobs_per_worker=1,
+        stale_after_seconds=60.0,
+        provider_pools={
+            "lab": ProviderPoolConfig(
+                name="lab",
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="premium-a",
+                        model="gpt-5.4",
+                        cost_tier="premium",
+                        endpoint_class="lab",
+                    )
+                ],
+            )
+        },
+        provider_health_db_path=tmp_path / "queue.db",
+    )
+
+    assert result.final_plan.profiles[0].provider_capacity_status == "healthy"
+    assert result.final_plan.profiles[0].available_provider_members == 1
 
 
 def test_in_process_worker_launcher_delegates_to_batch_runner(tmp_path: Path, monkeypatch) -> None:
@@ -300,8 +452,8 @@ def test_subprocess_worker_launcher_spawns_json_queue_workers_and_merges_reports
         ),
     )
 
-    assert report.processed_job_ids == ["job-1", "job-2"]
-    assert report.worker_ids == ["worker-1", "worker-2"]
+    assert sorted(report.processed_job_ids) == ["job-1", "job-2"]
+    assert sorted(report.worker_ids) == ["worker-1", "worker-2"]
     assert len(calls) == 2
     assert calls[0][:6] == [
         "/usr/bin/python3",

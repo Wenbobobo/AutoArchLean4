@@ -14,11 +14,17 @@ from .config import build_workspace_project_app_config, load_config, load_worksp
 from .control import ControlService
 from .events import EventStore
 from .executors import snapshot_provider_pool_health
+from .experiment_ledger import (
+    build_experiment_ledger_comparison,
+    build_experiment_replay,
+    load_experiment_ledger,
+)
 from .fleet import persist_batch_fleet_run
 from .models import (
     ActionPhase,
     AppConfig,
     ExecutorKind,
+    ExperimentLedger,
     LeanAnalysisSnapshot,
     ProviderKind,
     QueueJob,
@@ -99,6 +105,25 @@ class WorkflowOverrideRequest(BaseModel):
     workflow: WorkflowMode | None = None
     workflow_spec_path: Path | None = None
     clear_workflow_spec: bool = False
+
+
+class BenchmarkLedgerRequest(BaseModel):
+    summary_path: Path | None = None
+    ledger_path: Path | None = None
+
+
+class BenchmarkCompareRequest(BaseModel):
+    baseline_summary_path: Path | None = None
+    baseline_ledger_path: Path | None = None
+    candidate_summary_path: Path | None = None
+    candidate_ledger_path: Path | None = None
+
+
+class BenchmarkReplayRequest(BaseModel):
+    summary_path: Path | None = None
+    ledger_path: Path | None = None
+    project_id: str = Field(min_length=1)
+    theorem_name: str | None = None
 
 
 def create_dashboard_app(config_path: Path) -> FastAPI:
@@ -390,6 +415,10 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             plan = queue.plan_fleet(
                 target_jobs_per_worker=target_jobs_per_worker,
                 stale_after_seconds=stale_after_seconds,
+                provider_pools=(
+                    config.provider_pools if config.provider.pool is not None else None
+                ),
+                provider_health_db_path=config.run.artifact_root / "archonlab.db",
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -422,6 +451,10 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
         initial_plan = queue.plan_fleet(
             target_jobs_per_worker=body.target_jobs_per_worker,
             stale_after_seconds=body.stale_after_seconds,
+            provider_pools=(
+                config.provider_pools if config.provider.pool is not None else None
+            ),
+            provider_health_db_path=config.run.artifact_root / "archonlab.db",
         )
         started_at = datetime.now(UTC)
         runner = BatchRunner(
@@ -462,6 +495,10 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             workspace_id=workspace_config.name if workspace_config is not None else "standalone",
             config_path=resolved_config_path,
             launcher="dashboard_batch_runner",
+            provider_pools=(
+                config.provider_pools if config.provider.pool is not None else None
+            ),
+            provider_health_db_path=config.run.artifact_root / "archonlab.db",
             request_payload=body.model_dump(mode="json"),
         )
         return {
@@ -499,6 +536,73 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
         )
         return [worker.model_dump(mode="json") for worker in workers]
 
+    @app.post("/api/benchmark/experiment-ledger")
+    def benchmark_experiment_ledger(body: BenchmarkLedgerRequest) -> dict[str, Any]:
+        try:
+            ledger = _load_dashboard_experiment_ledger(
+                base_dir=resolved_config_path.parent,
+                summary_path=body.summary_path,
+                ledger_path=body.ledger_path,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Experiment ledger not found: {exc}",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return ledger.model_dump(mode="json")
+
+    @app.post("/api/benchmark/compare")
+    def benchmark_compare(body: BenchmarkCompareRequest) -> dict[str, Any]:
+        try:
+            baseline = _load_dashboard_experiment_ledger(
+                base_dir=resolved_config_path.parent,
+                summary_path=body.baseline_summary_path,
+                ledger_path=body.baseline_ledger_path,
+            )
+            candidate = _load_dashboard_experiment_ledger(
+                base_dir=resolved_config_path.parent,
+                summary_path=body.candidate_summary_path,
+                ledger_path=body.candidate_ledger_path,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Experiment ledger not found: {exc}",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        comparison = build_experiment_ledger_comparison(
+            baseline_ledger=baseline,
+            candidate_ledger=candidate,
+        )
+        return comparison.model_dump(mode="json")
+
+    @app.post("/api/benchmark/replay")
+    def benchmark_replay(body: BenchmarkReplayRequest) -> dict[str, Any]:
+        try:
+            ledger = _load_dashboard_experiment_ledger(
+                base_dir=resolved_config_path.parent,
+                summary_path=body.summary_path,
+                ledger_path=body.ledger_path,
+            )
+            replay = build_experiment_replay(
+                experiment_ledger=ledger,
+                project_id=body.project_id,
+                theorem_name=body.theorem_name,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Experiment ledger not found: {exc}",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return replay.model_dump(mode="json")
+
     return app
 
 
@@ -518,6 +622,25 @@ def _resolve_dashboard_path(base_dir: Path, raw_path: Path) -> Path:
     if raw_path.is_absolute():
         return raw_path.resolve()
     return (base_dir / raw_path).resolve()
+
+
+def _load_dashboard_experiment_ledger(
+    *,
+    base_dir: Path,
+    summary_path: Path | None,
+    ledger_path: Path | None,
+) -> ExperimentLedger:
+    if summary_path is not None and ledger_path is not None:
+        raise ValueError("Specify either summary_path or ledger_path, not both.")
+    if summary_path is None and ledger_path is None:
+        raise ValueError("Specify summary_path or ledger_path.")
+    raw_path = summary_path if summary_path is not None else ledger_path
+    if raw_path is None:
+        raise ValueError("Specify summary_path or ledger_path.")
+    resolved_path = _resolve_dashboard_path(base_dir, raw_path)
+    if not resolved_path.exists():
+        raise FileNotFoundError(resolved_path)
+    return load_experiment_ledger(resolved_path)
 
 
 def _require_workspace_mode(workspace_config: WorkspaceConfig | None) -> WorkspaceConfig:
@@ -1385,6 +1508,88 @@ def render_dashboard_html(
           <pre id="project-preview-json">{{}}</pre>
         </details>
       </section>
+
+      <section class="panel" style="margin-top: 18px;">
+        <div class="section-head">
+          <div>
+            <h2>Benchmark Lab</h2>
+            <div class="meta">
+              Load experiment ledgers, compare theorem-level changes, and replay specific outcomes.
+            </div>
+          </div>
+        </div>
+        <div class="preview-grid">
+          <section class="preview-card">
+            <h3>Ledger</h3>
+            <label>
+              Summary Path
+              <input
+                id="benchmark-summary-input"
+                type="text"
+                placeholder="benchmark-summary.json"
+              />
+            </label>
+            <label>
+              Ledger Path
+              <input
+                id="benchmark-ledger-input"
+                type="text"
+                placeholder="experiment-ledger.json"
+              />
+            </label>
+            <div class="compact-controls">
+              <button class="secondary" id="benchmark-ledger-button">Load Ledger</button>
+            </div>
+            <div class="fact-grid" id="benchmark-ledger-summary"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Compare</h3>
+            <label>
+              Baseline Ledger
+              <input
+                id="benchmark-baseline-ledger-input"
+                type="text"
+                placeholder="baseline-ledger.json"
+              />
+            </label>
+            <label>
+              Candidate Ledger
+              <input
+                id="benchmark-candidate-ledger-input"
+                type="text"
+                placeholder="candidate-ledger.json"
+              />
+            </label>
+            <div class="compact-controls">
+              <button class="secondary" id="benchmark-compare-button">Compare</button>
+            </div>
+            <div class="rule-list" id="benchmark-compare-summary"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Replay</h3>
+            <label>
+              Ledger Path
+              <input
+                id="benchmark-replay-ledger-input"
+                type="text"
+                placeholder="candidate-ledger.json"
+              />
+            </label>
+            <label>
+              Project ID
+              <input id="benchmark-project-input" type="text" placeholder="demo" />
+            </label>
+            <label>
+              Theorem Name
+              <input id="benchmark-theorem-input" type="text" placeholder="foo" />
+            </label>
+            <div class="compact-controls">
+              <button class="secondary" id="benchmark-replay-button">Replay</button>
+            </div>
+            <div class="rule-list" id="benchmark-replay-detail"></div>
+          </section>
+        </div>
+      </section>
     </div>
 
     <script>
@@ -1437,6 +1642,23 @@ def render_dashboard_html(
       const workspaceTagInput = document.getElementById("workspace-tag-input");
       const workspaceEnqueueButton = document.getElementById("workspace-enqueue-button");
       const workspaceResumeButton = document.getElementById("workspace-resume-button");
+      const benchmarkSummaryInput = document.getElementById("benchmark-summary-input");
+      const benchmarkLedgerInput = document.getElementById("benchmark-ledger-input");
+      const benchmarkLedgerButton = document.getElementById("benchmark-ledger-button");
+      const benchmarkLedgerSummary = document.getElementById("benchmark-ledger-summary");
+      const benchmarkBaselineLedgerInput = document.getElementById(
+        "benchmark-baseline-ledger-input",
+      );
+      const benchmarkCandidateLedgerInput = document.getElementById(
+        "benchmark-candidate-ledger-input",
+      );
+      const benchmarkCompareButton = document.getElementById("benchmark-compare-button");
+      const benchmarkCompareSummary = document.getElementById("benchmark-compare-summary");
+      const benchmarkReplayLedgerInput = document.getElementById("benchmark-replay-ledger-input");
+      const benchmarkProjectInput = document.getElementById("benchmark-project-input");
+      const benchmarkTheoremInput = document.getElementById("benchmark-theorem-input");
+      const benchmarkReplayButton = document.getElementById("benchmark-replay-button");
+      const benchmarkReplayDetail = document.getElementById("benchmark-replay-detail");
       let latestJobs = [];
       let selectedQueueJobId = null;
 
@@ -1666,6 +1888,8 @@ def render_dashboard_html(
             .join(" · ") || "-";
           const projects = (profile.project_ids || []).join(", ") || "-";
           const focus = (profile.focus_examples || []).join(", ") || "-";
+          const providerCapacityStatus = profile.provider_capacity_status || "unknown";
+          const availableProviderMembers = profile.available_provider_members ?? "-";
           return `
             <div class="rule">
               <strong>${{dominantPhase}} · model=${{models}} · cost=${{costTiers}}</strong>
@@ -1678,6 +1902,10 @@ def render_dashboard_html(
                 · matching=${{profile.matching_workers || 0}}
                 · recommend=${{profile.recommended_total_workers}} total
                 / +${{profile.recommended_additional_workers}}
+              </div>
+              <div class="meta">
+                provider_capacity=${{providerCapacityStatus}}
+                · available_members=${{availableProviderMembers}}
               </div>
               <div class="meta">
                 executor=${{executors}} · provider=${{providers}} · endpoint=${{endpoints}}
@@ -1904,6 +2132,93 @@ def render_dashboard_html(
         projectRunLoopHistory.innerHTML = `<div class="meta">${{message}}</div>`;
       }}
 
+      function renderBenchmarkLedger(payload) {{
+        const summary = payload.summary || {{}};
+        benchmarkLedgerSummary.innerHTML = renderFacts([
+          ["benchmark", payload.benchmark_name || "-"],
+          ["run", payload.benchmark_run_id || "-"],
+          ["projects", `${{summary.total_projects || 0}}`],
+          ["theorems", `${{summary.total_theorems || 0}}`],
+          ["improved", `${{summary.improved || 0}}`],
+          ["regressed", `${{summary.regressed || 0}}`],
+          ["new", `${{summary.new || 0}}`],
+          ["removed", `${{summary.removed || 0}}`],
+        ]);
+      }}
+
+      function renderBenchmarkCompare(payload) {{
+        const summary = payload.summary || {{}};
+        const changes = payload.changes || [];
+        benchmarkCompareSummary.innerHTML = [
+          renderFacts([
+            ["baseline", payload.baseline_benchmark || "-"],
+            ["candidate", payload.candidate_benchmark || "-"],
+            ["theorems", `${{summary.total_theorems || 0}}`],
+            ["improved", `${{summary.improved || 0}}`],
+            ["regressed", `${{summary.regressed || 0}}`],
+            ["new", `${{summary.new || 0}}`],
+            ["removed", `${{summary.removed || 0}}`],
+          ]),
+          changes.length
+            ? changes.slice(0, 6).map((change) => `
+                <div class="rule">
+                  <strong>${{change.project_id}} · ${{change.theorem_name}}</strong>
+                  <div class="meta">
+                    ${{change.baseline_state}} -> ${{change.candidate_state}}
+                    · ${{change.change}}
+                  </div>
+                  <div class="meta">${{change.file_path || "-"}}</div>
+                </div>
+              `).join("")
+            : '<div class="meta">No theorem-level changes.</div>',
+        ].join("");
+      }}
+
+      function renderBenchmarkReplay(payload) {{
+        const theoremOutcomes = payload.theorem_outcomes || [];
+        const taxonomy = payload.failure_taxonomy || [];
+        benchmarkReplayDetail.innerHTML = [
+          renderFacts([
+            ["benchmark", payload.benchmark_name || "-"],
+            ["project", payload.project_id || "-"],
+            ["run", payload.run_id || "-"],
+            ["status", payload.run_status || "-"],
+            ["outcomes", `${{theoremOutcomes.length}}`],
+            ["artifact", payload.artifact_dir || "-"],
+          ]),
+          theoremOutcomes.length
+            ? theoremOutcomes.slice(0, 6).map((outcome) => `
+                <div class="rule">
+                  <strong>${{outcome.theorem_name}}</strong>
+                  <div class="meta">
+                    ${{outcome.before_state}} -> ${{outcome.after_state}}
+                    · ${{outcome.outcome}}
+                  </div>
+                  <div class="meta">${{outcome.file_path || "-"}}</div>
+                </div>
+              `).join("")
+            : '<div class="meta">No theorem outcomes matched.</div>',
+          taxonomy.length
+            ? `
+                <div class="rule">
+                  <strong>Failure Taxonomy</strong>
+                  <div class="meta">
+                    ${{
+                      taxonomy
+                        .map((entry) => `${{entry.category}}:${{entry.count}}`)
+                        .join(" · ")
+                    }}
+                  </div>
+                </div>
+              `
+            : '<div class="meta">No failure taxonomy entries.</div>',
+        ].join("");
+      }}
+
+      function renderBenchmarkError(target, message) {{
+        target.innerHTML = `<div class="meta">${{message}}</div>`;
+      }}
+
       function renderFacts(entries) {{
         return entries.map(([label, value]) => `
           <div class="fact">
@@ -1918,6 +2233,11 @@ def render_dashboard_html(
           return "-";
         }}
         return Number(value).toFixed(3);
+      }}
+
+      function trimOrNull(value) {{
+        const trimmed = (value || "").trim();
+        return trimmed || null;
       }}
 
       function parseWorkspaceTags() {{
@@ -2363,6 +2683,55 @@ def render_dashboard_html(
           }}),
         }});
         await refresh();
+      }});
+
+      benchmarkLedgerButton.addEventListener("click", async () => {{
+        try {{
+          const payload = await fetchJson(`/api/benchmark/experiment-ledger`, {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{
+              summary_path: trimOrNull(benchmarkSummaryInput.value),
+              ledger_path: trimOrNull(benchmarkLedgerInput.value),
+            }}),
+          }});
+          renderBenchmarkLedger(payload);
+        }} catch (error) {{
+          renderBenchmarkError(benchmarkLedgerSummary, error.message);
+        }}
+      }});
+
+      benchmarkCompareButton.addEventListener("click", async () => {{
+        try {{
+          const payload = await fetchJson(`/api/benchmark/compare`, {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{
+              baseline_ledger_path: trimOrNull(benchmarkBaselineLedgerInput.value),
+              candidate_ledger_path: trimOrNull(benchmarkCandidateLedgerInput.value),
+            }}),
+          }});
+          renderBenchmarkCompare(payload);
+        }} catch (error) {{
+          renderBenchmarkError(benchmarkCompareSummary, error.message);
+        }}
+      }});
+
+      benchmarkReplayButton.addEventListener("click", async () => {{
+        try {{
+          const payload = await fetchJson(`/api/benchmark/replay`, {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{
+              ledger_path: trimOrNull(benchmarkReplayLedgerInput.value),
+              project_id: (benchmarkProjectInput.value || "").trim(),
+              theorem_name: trimOrNull(benchmarkTheoremInput.value),
+            }}),
+          }});
+          renderBenchmarkReplay(payload);
+        }} catch (error) {{
+          renderBenchmarkError(benchmarkReplayDetail, error.message);
+        }}
       }});
 
       refresh().catch((error) => {{

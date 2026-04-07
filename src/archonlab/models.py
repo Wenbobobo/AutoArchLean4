@@ -1279,6 +1279,8 @@ class QueueFleetProfile(BaseModel):
     active_jobs: int = 0
     dedicated_workers: int = 0
     matching_workers: int = 0
+    available_provider_members: int | None = None
+    provider_capacity_status: str | None = None
     recommended_total_workers: int = 0
     recommended_additional_workers: int = 0
     dominant_phase: ActionPhase | None = None

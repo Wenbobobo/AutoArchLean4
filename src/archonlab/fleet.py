@@ -13,7 +13,13 @@ from typing import Protocol, cast
 
 from .batch import BatchRunner
 from .events import EventStore
-from .models import BatchRunReport, FleetControllerCycle, FleetControllerResult, QueueFleetPlan
+from .models import (
+    BatchRunReport,
+    FleetControllerCycle,
+    FleetControllerResult,
+    ProviderPoolConfig,
+    QueueFleetPlan,
+)
 from .queue import QueueStore
 
 
@@ -203,6 +209,22 @@ def create_worker_launcher(kind: str, config_path: Path) -> WorkerLauncher:
     raise ValueError(f"Unsupported worker launcher: {kind}")
 
 
+def _plan_fleet(
+    *,
+    queue_store: QueueStore,
+    target_jobs_per_worker: int,
+    stale_after_seconds: float | None,
+    provider_pools: dict[str, ProviderPoolConfig] | None = None,
+    provider_health_db_path: Path | None = None,
+) -> QueueFleetPlan:
+    return queue_store.plan_fleet(
+        target_jobs_per_worker=target_jobs_per_worker,
+        stale_after_seconds=stale_after_seconds,
+        provider_pools=provider_pools,
+        provider_health_db_path=provider_health_db_path,
+    )
+
+
 def persist_batch_fleet_run(
     *,
     queue_store: QueueStore,
@@ -216,6 +238,8 @@ def persist_batch_fleet_run(
     config_path: Path | None = None,
     launcher: str = "batch_runner",
     note: str | None = None,
+    provider_pools: dict[str, ProviderPoolConfig] | None = None,
+    provider_health_db_path: Path | None = None,
     request_payload: dict[str, object] | None = None,
 ) -> FleetControllerResult:
     fleet_run_id = FleetController._new_fleet_run_id()
@@ -245,9 +269,12 @@ def persist_batch_fleet_run(
         artifact_dir / "cycle-001.json",
         cycle.model_dump(mode="json"),
     )
-    final_plan = queue_store.plan_fleet(
+    final_plan = _plan_fleet(
+        queue_store=queue_store,
         target_jobs_per_worker=target_jobs_per_worker,
         stale_after_seconds=stale_after_seconds,
+        provider_pools=provider_pools,
+        provider_health_db_path=provider_health_db_path,
     )
     stop_reason = "queue_drained" if final_plan.active_jobs == 0 else "manual_fleet_complete"
     result = FleetControllerResult(
@@ -355,9 +382,12 @@ class FleetController:
         try:
             for cycle_index in range(1, max_cycles + 1):
                 cycle_started_at = datetime.now(UTC)
-                plan = self.queue_store.plan_fleet(
+                plan = _plan_fleet(
+                    queue_store=self.queue_store,
                     target_jobs_per_worker=target_jobs_per_worker,
                     stale_after_seconds=stale_after_seconds,
+                    provider_pools=self.batch_runner.provider_pools or None,
+                    provider_health_db_path=self.batch_runner.provider_health_db_path,
                 )
                 if plan.active_jobs == 0:
                     stop_reason = "queue_drained"
@@ -412,9 +442,12 @@ class FleetController:
         except Exception as exc:  # noqa: BLE001
             result.finished_at = datetime.now(UTC)
             result.stop_reason = "fleet_failed"
-            result.final_plan = self.queue_store.plan_fleet(
+            result.final_plan = _plan_fleet(
+                queue_store=self.queue_store,
                 target_jobs_per_worker=target_jobs_per_worker,
                 stale_after_seconds=stale_after_seconds,
+                provider_pools=self.batch_runner.provider_pools or None,
+                provider_health_db_path=self.batch_runner.provider_health_db_path,
             )
             self._write_json(
                 artifact_dir / "error.json",
@@ -428,9 +461,12 @@ class FleetController:
 
         result.finished_at = datetime.now(UTC)
         result.stop_reason = stop_reason
-        result.final_plan = self.queue_store.plan_fleet(
+        result.final_plan = _plan_fleet(
+            queue_store=self.queue_store,
             target_jobs_per_worker=target_jobs_per_worker,
             stale_after_seconds=stale_after_seconds,
+            provider_pools=self.batch_runner.provider_pools or None,
+            provider_health_db_path=self.batch_runner.provider_health_db_path,
         )
         self._persist_result(event_store, artifact_dir, result)
         return result

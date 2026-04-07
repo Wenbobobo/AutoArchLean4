@@ -1992,9 +1992,12 @@ def queue_fleet(
 ) -> None:
     artifact_root, max_parallel = _resolve_queue_runtime(config)
     queue_store = QueueStore(artifact_root / "archonlab.db")
+    provider_pools = _resolve_batch_provider_pools(config)
     initial_plan = queue_store.plan_fleet(
         target_jobs_per_worker=target_jobs_per_worker,
         stale_after_seconds=stale_after_seconds,
+        provider_pools=provider_pools or None,
+        provider_health_db_path=artifact_root / "archonlab.db",
     )
     started_at = datetime.now(UTC)
     runner = BatchRunner(
@@ -2002,7 +2005,7 @@ def queue_fleet(
         control_service=ControlService(artifact_root),
         artifact_root=artifact_root,
         slot_limit=workers or max_parallel,
-        provider_pools=_resolve_batch_provider_pools(config),
+        provider_pools=provider_pools,
     )
     report = runner.run_fleet(
         worker_count=workers if plan_driven else (workers or max_parallel),
@@ -2029,6 +2032,8 @@ def queue_fleet(
         workspace_id=_resolve_workspace_name(config),
         config_path=config,
         launcher="batch_runner",
+        provider_pools=provider_pools or None,
+        provider_health_db_path=artifact_root / "archonlab.db",
         request_payload={
             "worker_count": workers,
             "plan_driven": plan_driven,
@@ -2081,9 +2086,12 @@ def queue_plan_fleet(
     ] = False,
 ) -> None:
     artifact_root, _ = _resolve_queue_runtime(config)
+    provider_pools = _resolve_batch_provider_pools(config)
     plan = QueueStore(artifact_root / "archonlab.db").plan_fleet(
         target_jobs_per_worker=target_jobs_per_worker,
         stale_after_seconds=stale_after_seconds,
+        provider_pools=provider_pools or None,
+        provider_health_db_path=artifact_root / "archonlab.db",
     )
     if json_output:
         typer.echo(json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, indent=2))
@@ -2111,12 +2119,20 @@ def queue_plan_fleet(
         models = ",".join(profile.required_models) or "-"
         cost_tiers = ",".join(profile.required_cost_tiers) or "-"
         endpoints = ",".join(profile.required_endpoint_classes) or "-"
+        provider_capacity_status = profile.provider_capacity_status or "unknown"
+        available_provider_members = (
+            str(profile.available_provider_members)
+            if profile.available_provider_members is not None
+            else "-"
+        )
         typer.echo(
             f"{profile.profile_id} | phase={dominant_phase} | jobs={profile.active_jobs} | "
             f"dedicated={profile.dedicated_workers} | matching={profile.matching_workers} | "
             f"total={profile.recommended_total_workers} | "
             f"add={profile.recommended_additional_workers} | executor={executor_kinds} | "
-            f"provider={provider_kinds} | model={models} | cost={cost_tiers} | endpoint={endpoints}"
+            f"provider_kind={provider_kinds} | provider={provider_capacity_status}/"
+            f"{available_provider_members} | model={models} | cost={cost_tiers} | "
+            f"endpoint={endpoints}"
         )
 
 

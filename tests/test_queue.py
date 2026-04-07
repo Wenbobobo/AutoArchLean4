@@ -6,6 +6,8 @@ from archonlab.models import (
     ActionPhase,
     ExecutorKind,
     ProviderKind,
+    ProviderPoolConfig,
+    ProviderPoolMemberConfig,
     QueueJobPreview,
     SupervisorAction,
     SupervisorReason,
@@ -179,7 +181,30 @@ def test_queue_store_builds_fleet_plan_from_active_jobs_and_dedicated_workers(
     )
     store.register_worker(slot_index=2, worker_id="worker-generic")
 
-    plan = store.plan_fleet(target_jobs_per_worker=2, stale_after_seconds=60.0)
+    plan = store.plan_fleet(
+        target_jobs_per_worker=2,
+        stale_after_seconds=60.0,
+        provider_pools={
+            "lab": ProviderPoolConfig(
+                name="lab",
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="cheap-member",
+                        model="gpt-5.4-mini",
+                        cost_tier="cheap",
+                        endpoint_class="lab",
+                    ),
+                    ProviderPoolMemberConfig(
+                        name="premium-member",
+                        model="gpt-5.4",
+                        cost_tier="premium",
+                        endpoint_class="lab",
+                    ),
+                ],
+            )
+        },
+        provider_health_db_path=tmp_path / "queue.db",
+    )
 
     assert cheap_job.id != premium_job.id
     assert plan.active_jobs == 3
@@ -200,6 +225,8 @@ def test_queue_store_builds_fleet_plan_from_active_jobs_and_dedicated_workers(
     assert cheap_profile.active_jobs == 2
     assert cheap_profile.dedicated_workers == 1
     assert cheap_profile.matching_workers == 2
+    assert cheap_profile.available_provider_members == 1
+    assert cheap_profile.provider_capacity_status == "healthy"
     assert cheap_profile.recommended_total_workers == 1
     assert cheap_profile.recommended_additional_workers == 0
     assert cheap_profile.dominant_phase is ActionPhase.PLAN
@@ -214,7 +241,56 @@ def test_queue_store_builds_fleet_plan_from_active_jobs_and_dedicated_workers(
     assert premium_profile.active_jobs == 1
     assert premium_profile.dedicated_workers == 0
     assert premium_profile.matching_workers == 1
+    assert premium_profile.available_provider_members == 1
+    assert premium_profile.provider_capacity_status == "healthy"
     assert premium_profile.recommended_total_workers == 1
     assert premium_profile.recommended_additional_workers == 0
     assert premium_profile.dominant_phase is ActionPhase.PROVER
     assert premium_profile.project_ids == ["demo-c"]
+
+
+def test_queue_store_marks_provider_capacity_unavailable_when_no_healthy_members(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = QueueStore(tmp_path / "queue.db")
+    store.enqueue(
+        "benchmark",
+        {"manifest_path": "premium.toml"},
+        project_id="demo-premium",
+        priority=9,
+        required_executor_kinds=[ExecutorKind.DRY_RUN],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4"],
+        required_cost_tiers=["premium"],
+        required_endpoint_classes=["lab"],
+    )
+
+    monkeypatch.setattr(
+        "archonlab.queue.snapshot_provider_pool_health",
+        lambda provider_pools, *, db_path=None: [],
+    )
+
+    plan = store.plan_fleet(
+        target_jobs_per_worker=1,
+        stale_after_seconds=60.0,
+        provider_pools={
+            "lab": ProviderPoolConfig(
+                name="lab",
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="premium-member",
+                        model="gpt-5.4",
+                        cost_tier="premium",
+                        endpoint_class="lab",
+                    )
+                ],
+            )
+        },
+        provider_health_db_path=tmp_path / "queue.db",
+    )
+
+    assert len(plan.profiles) == 1
+    assert plan.recommended_additional_workers == 0
+    assert plan.profiles[0].available_provider_members == 0
+    assert plan.profiles[0].provider_capacity_status == "unavailable"

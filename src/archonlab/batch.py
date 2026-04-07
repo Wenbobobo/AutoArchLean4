@@ -19,7 +19,7 @@ from .benchmark import (
 from .config import build_workspace_project_app_config, load_workspace_config
 from .control import ControlService
 from .events import EventStore
-from .executors import snapshot_provider_pool_health
+from .executors import snapshot_provider_pool_health as _snapshot_provider_pool_health
 from .models import (
     ActionPhase,
     BatchRunReport,
@@ -29,8 +29,6 @@ from .models import (
     ProjectConfig,
     ProviderKind,
     ProviderPoolConfig,
-    ProviderPoolHealthReport,
-    ProviderPoolMemberHealthStatus,
     QueueBenchmarkPayload,
     QueueFleetProfile,
     QueueJob,
@@ -44,6 +42,8 @@ from .models import (
 )
 from .queue import QueueStore
 from .services import RunService
+
+snapshot_provider_pool_health = _snapshot_provider_pool_health
 
 
 class BenchmarkRunnerResult(Protocol):
@@ -496,24 +496,13 @@ class BatchRunner:
         plan = self.queue_store.plan_fleet(
             target_jobs_per_worker=target_jobs_per_worker,
             stale_after_seconds=stale_after_seconds,
-        )
-        provider_health = (
-            snapshot_provider_pool_health(
-                self.provider_pools,
-                db_path=self.provider_health_db_path,
-            )
-            if self.provider_pools
-            else []
+            provider_pools=self.provider_pools or None,
+            provider_health_db_path=self.provider_health_db_path,
         )
         launch_specs: list[dict[str, Any]] = []
         generic_workers_needed = 0
         for profile in plan.profiles:
             if profile.recommended_additional_workers < 1:
-                continue
-            if not self._profile_has_provider_capacity(
-                profile,
-                provider_health=provider_health,
-            ):
                 continue
             if self._profile_is_generic(profile):
                 generic_workers_needed += profile.recommended_additional_workers
@@ -557,54 +546,6 @@ class BatchRunner:
             or profile.required_models
             or profile.required_cost_tiers
             or profile.required_endpoint_classes
-        )
-
-    @staticmethod
-    def _profile_has_provider_capacity(
-        profile: QueueFleetProfile,
-        *,
-        provider_health: list[ProviderPoolHealthReport],
-    ) -> bool:
-        if not provider_health:
-            return True
-        if (
-            profile.required_provider_kinds
-            and ProviderKind.OPENAI_COMPATIBLE not in profile.required_provider_kinds
-        ):
-            return False
-        if not (
-            profile.required_provider_kinds
-            or profile.required_models
-            or profile.required_cost_tiers
-            or profile.required_endpoint_classes
-        ):
-            return True
-        return any(
-            member.status
-            in {
-                ProviderPoolMemberHealthStatus.HEALTHY,
-                ProviderPoolMemberHealthStatus.DEGRADED,
-            }
-            and (
-                not profile.required_models
-                or (member.model is not None and member.model in profile.required_models)
-            )
-            and (
-                not profile.required_cost_tiers
-                or (
-                    member.cost_tier is not None
-                    and member.cost_tier in profile.required_cost_tiers
-                )
-            )
-            and (
-                not profile.required_endpoint_classes
-                or (
-                    member.endpoint_class is not None
-                    and member.endpoint_class in profile.required_endpoint_classes
-                )
-            )
-            for report in provider_health
-            for member in report.members
         )
 
     @staticmethod

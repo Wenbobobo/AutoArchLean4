@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from .benchmark import load_benchmark_manifest
 from .events import EventStore
+from .executors import snapshot_provider_pool_health
 from .models import (
     ActionPhase,
     ExecutionCapability,
@@ -27,6 +28,9 @@ from .models import (
     ProjectSession,
     ProviderConfig,
     ProviderKind,
+    ProviderPoolConfig,
+    ProviderPoolHealthReport,
+    ProviderPoolMemberHealthStatus,
     QueueBenchmarkPayload,
     QueueFleetPlan,
     QueueFleetProfile,
@@ -1058,6 +1062,8 @@ class QueueStore:
         *,
         target_jobs_per_worker: int = 2,
         stale_after_seconds: float | None = 120.0,
+        provider_pools: dict[str, ProviderPoolConfig] | None = None,
+        provider_health_db_path: Path | None = None,
     ) -> QueueFleetPlan:
         if target_jobs_per_worker < 1:
             raise ValueError("target_jobs_per_worker must be >= 1")
@@ -1093,6 +1099,16 @@ class QueueStore:
             stale_after_seconds=stale_after_seconds,
         )
         active_workers = [worker for worker in workers if not worker.stale]
+        provider_health = (
+            snapshot_provider_pool_health(
+                provider_pools,
+                db_path=provider_health_db_path.resolve()
+                if provider_health_db_path is not None
+                else self.db_path.resolve(),
+            )
+            if provider_pools
+            else []
+        )
 
         queued_jobs = sum(1 for job in jobs if job.status is QueueJobStatus.QUEUED)
         pending_jobs = sum(1 for job in jobs if job.status is QueueJobStatus.PENDING)
@@ -1159,11 +1175,25 @@ class QueueStore:
                 for worker in active_workers
                 if self._job_matches_worker(exemplar, worker)
             ]
+            (
+                available_provider_members,
+                provider_capacity_status,
+            ) = self._summarize_provider_capacity(
+                exemplar,
+                provider_health=provider_health,
+                provider_pools_configured=provider_pools is not None,
+            )
             dedicated_worker_ids.update(worker.worker_id for worker in dedicated_workers)
             recommended_total_workers = max(
                 profile_running,
                 ceil(profile_active / target_jobs_per_worker),
             )
+            recommended_additional_workers = max(
+                recommended_total_workers - len(matching_workers),
+                0,
+            )
+            if provider_capacity_status == "unavailable":
+                recommended_additional_workers = 0
             profiles.append(
                 QueueFleetProfile(
                     profile_id=exemplar.execution_requirement.profile_id,
@@ -1178,11 +1208,10 @@ class QueueStore:
                     active_jobs=profile_active,
                     dedicated_workers=len(dedicated_workers),
                     matching_workers=len(matching_workers),
+                    available_provider_members=available_provider_members,
+                    provider_capacity_status=provider_capacity_status,
                     recommended_total_workers=recommended_total_workers,
-                    recommended_additional_workers=max(
-                        recommended_total_workers - len(matching_workers),
-                        0,
-                    ),
+                    recommended_additional_workers=recommended_additional_workers,
                     dominant_phase=self._dominant_phase(aggregate["phase_counts"]),
                     phase_counts=aggregate["phase_counts"],
                     stage_counts=aggregate["stage_counts"],
@@ -1635,6 +1664,76 @@ class QueueStore:
     @staticmethod
     def _worker_matches_profile_exact(worker: QueueWorkerLease, job: QueueJob) -> bool:
         return worker.execution_requirement.profile_key == job.execution_requirement.profile_key
+
+    @staticmethod
+    def _summarize_provider_capacity(
+        job: QueueJob,
+        *,
+        provider_health: list[ProviderPoolHealthReport],
+        provider_pools_configured: bool,
+    ) -> tuple[int | None, str | None]:
+        requirement = job.execution_requirement
+        if not provider_health:
+            if not provider_pools_configured:
+                return None, None
+            if not (
+                requirement.provider_kinds
+                or requirement.models
+                or requirement.cost_tiers
+                or requirement.endpoint_classes
+            ):
+                return None, "unconstrained"
+            return 0, "unavailable"
+        if not provider_pools_configured:
+            return None, None
+        if not (
+            requirement.provider_kinds
+            or requirement.models
+            or requirement.cost_tiers
+            or requirement.endpoint_classes
+        ):
+            return None, "unconstrained"
+        if requirement.provider_kinds and ProviderKind.OPENAI_COMPATIBLE not in set(
+            requirement.provider_kinds
+        ):
+            return 0, "unavailable"
+
+        matching_members = [
+            member
+            for report in provider_health
+            for member in report.members
+            if member.status
+            in {
+                ProviderPoolMemberHealthStatus.HEALTHY,
+                ProviderPoolMemberHealthStatus.DEGRADED,
+            }
+            and (
+                not requirement.models
+                or (member.model is not None and member.model in requirement.models)
+            )
+            and (
+                not requirement.cost_tiers
+                or (
+                    member.cost_tier is not None
+                    and member.cost_tier in requirement.cost_tiers
+                )
+            )
+            and (
+                not requirement.endpoint_classes
+                or (
+                    member.endpoint_class is not None
+                    and member.endpoint_class in requirement.endpoint_classes
+                )
+            )
+        ]
+        if not matching_members:
+            return 0, "unavailable"
+        if any(
+            member.status is ProviderPoolMemberHealthStatus.DEGRADED
+            for member in matching_members
+        ):
+            return len(matching_members), "degraded"
+        return len(matching_members), "healthy"
 
     @staticmethod
     def _fleet_profile_key(job: QueueJob) -> tuple[tuple[str, ...], ...]:
