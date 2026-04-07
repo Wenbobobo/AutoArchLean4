@@ -1,5 +1,9 @@
 # Phase Roadmap 1-5
 
+后续阶段路线图见：
+- [Phase 6+: Workspace, Session Loop, and Autonomous Scale](./phase6-autonomous-workspace.md)
+- [Continuous Execution Playbook](./continuous-execution.md)
+
 这份路线图是 ArchonLab 的主计划。默认假设你是 Lean 和 Archon 的新手，所以顺序是：
 先让环境能跑，再让你看懂，再让系统可控，最后才做规模化。
 
