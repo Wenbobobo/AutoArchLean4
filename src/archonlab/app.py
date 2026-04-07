@@ -26,7 +26,7 @@ from .experiment_ledger import (
     compare_experiment_ledgers,
     load_experiment_ledger,
 )
-from .fleet import FleetController, create_worker_launcher
+from .fleet import FleetController, create_worker_launcher, persist_batch_fleet_run
 from .ledger import load_benchmark_ledger
 from .models import (
     ExecutorConfig,
@@ -373,6 +373,10 @@ def workspace_status(
         iter(store.list_workspace_loop_runs(workspace_id=workspace_config.name, limit=1)),
         None,
     )
+    latest_fleet = next(
+        iter(store.list_fleet_runs(workspace_id=workspace_config.name, limit=1)),
+        None,
+    )
     project_rows = []
     for project in workspace_config.projects:
         project_sessions = [item for item in sessions if item.project_id == project.id]
@@ -404,6 +408,9 @@ def workspace_status(
         "latest_loop": (
             latest_loop.model_dump(mode="json") if latest_loop is not None else None
         ),
+        "latest_fleet": (
+            latest_fleet.model_dump(mode="json") if latest_fleet is not None else None
+        ),
     }
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -419,6 +426,12 @@ def workspace_status(
             f"Latest loop: {loop_id} | stop={latest_loop.stop_reason} | "
             f"cycles={latest_loop.cycles_completed} | "
             f"processed={latest_loop.total_processed_jobs}"
+        )
+    if latest_fleet is not None:
+        typer.echo(
+            f"Latest fleet: {latest_fleet.fleet_run_id} | stop={latest_fleet.stop_reason} | "
+            f"cycles={latest_fleet.cycles_completed} | "
+            f"processed={latest_fleet.total_processed_jobs}"
         )
     for row in project_rows:
         typer.echo(
@@ -461,6 +474,42 @@ def workspace_loops(
         typer.echo(
             f"{loop_id} | project={loop.project_id or '-'} | stop={loop.stop_reason} | "
             f"cycles={loop.cycles_completed} | processed={loop.total_processed_jobs}"
+        )
+
+
+@workspace_app.command("fleets")
+def workspace_fleets(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, max=200, help="Number of fleet runs to show."),
+    ] = 20,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable JSON."),
+    ] = False,
+) -> None:
+    workspace_config = load_workspace_config(config)
+    store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+    fleets = store.list_fleet_runs(workspace_id=workspace_config.name, limit=limit)
+    payload = {
+        "workspace": workspace_config.name,
+        "fleets": [fleet.model_dump(mode="json") for fleet in fleets],
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    if not fleets:
+        typer.echo("No workspace fleets.")
+        return
+    for fleet in fleets:
+        typer.echo(
+            f"{fleet.fleet_run_id} | launcher={fleet.launcher or '-'} | "
+            f"stop={fleet.stop_reason} | cycles={fleet.cycles_completed} | "
+            f"processed={fleet.total_processed_jobs}"
         )
 
 
@@ -1690,8 +1739,14 @@ def queue_fleet(
     ] = None,
 ) -> None:
     artifact_root, max_parallel = _resolve_queue_runtime(config)
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    initial_plan = queue_store.plan_fleet(
+        target_jobs_per_worker=target_jobs_per_worker,
+        stale_after_seconds=stale_after_seconds,
+    )
+    started_at = datetime.now(UTC)
     runner = BatchRunner(
-        queue_store=QueueStore(artifact_root / "archonlab.db"),
+        queue_store=queue_store,
         control_service=ControlService(artifact_root),
         artifact_root=artifact_root,
         slot_limit=workers or max_parallel,
@@ -1710,6 +1765,35 @@ def queue_fleet(
         cost_tiers=_parse_csv_strings(cost_tiers),
         endpoint_classes=_parse_csv_strings(endpoint_classes),
     )
+    fleet_run = persist_batch_fleet_run(
+        queue_store=queue_store,
+        artifact_root=artifact_root,
+        initial_plan=initial_plan,
+        report=report,
+        started_at=started_at,
+        target_jobs_per_worker=target_jobs_per_worker,
+        stale_after_seconds=stale_after_seconds,
+        workspace_id=_resolve_workspace_name(config),
+        config_path=config,
+        launcher="batch_runner",
+        request_payload={
+            "worker_count": workers,
+            "plan_driven": plan_driven,
+            "target_jobs_per_worker": target_jobs_per_worker,
+            "max_jobs_per_worker": max_jobs_per_worker,
+            "poll_seconds": poll_seconds,
+            "idle_timeout_seconds": idle_timeout_seconds,
+            "stale_after_seconds": stale_after_seconds,
+            "executor_kinds": _parse_executor_kinds(executor_kinds),
+            "provider_kinds": _parse_provider_kinds(provider_kinds),
+            "models": _parse_csv_strings(models),
+            "cost_tiers": _parse_csv_strings(cost_tiers),
+            "endpoint_classes": _parse_csv_strings(endpoint_classes),
+        },
+    )
+    typer.echo(f"Fleet: {fleet_run.fleet_run_id}")
+    if fleet_run.artifact_dir is not None:
+        typer.echo(f"Artifacts: {fleet_run.artifact_dir}")
     typer.echo(f"Processed: {len(report.processed_job_ids)}")
     typer.echo(f"Paused: {len(report.paused_job_ids)}")
     typer.echo(f"Failed: {len(report.failed_job_ids)}")

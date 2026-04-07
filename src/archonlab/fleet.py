@@ -448,7 +448,6 @@ class FleetController:
 
     @staticmethod
     def _persist_result(
-        self,
         event_store: EventStore,
         artifact_dir: Path,
         result: FleetControllerResult,

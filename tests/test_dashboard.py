@@ -362,10 +362,17 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     )
     assert fleet_response.status_code == 200
     fleet_payload = fleet_response.json()
+    assert fleet_payload["fleet_run_id"].startswith("fleet-run-")
     assert fleet_payload["processed_job_ids"] == ["job-1"]
     assert fleet_payload["worker_ids"] == ["worker-auto-1"]
+    assert fleet_payload["stop_reason"] in {"queue_drained", "manual_fleet_complete"}
     assert captured_fleet["plan_driven"] is True
     assert captured_fleet["target_jobs_per_worker"] == 3
+    persisted_fleet = EventStore(artifact_root / "archonlab.db").get_fleet_run(
+        fleet_payload["fleet_run_id"]
+    )
+    assert persisted_fleet is not None
+    assert persisted_fleet.total_processed_jobs == 1
 
 
 def test_dashboard_workspace_overview_and_project_switching(

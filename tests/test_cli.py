@@ -218,6 +218,17 @@ def test_workspace_status_and_start_session_commands(
             total_processed_jobs=2,
         )
     )
+    store.upsert_fleet_run(
+        FleetControllerResult(
+            fleet_run_id="fleet-demo-1",
+            workspace_id="demo-workspace",
+            launcher="subprocess",
+            stop_reason="queue_drained",
+            cycles_completed=2,
+            total_processed_jobs=2,
+            total_workers_launched=1,
+        )
+    )
 
     status_result = runner.invoke(
         app,
@@ -248,10 +259,15 @@ def test_workspace_status_and_start_session_commands(
     assert "Latest loop: loop-demo-1 | stop=idle_cycles_exhausted | cycles=3 | processed=2" in (
         status_result.output
     )
+    assert "Latest fleet: fleet-demo-1 | stop=queue_drained | cycles=2 | processed=2" in (
+        status_result.output
+    )
     assert status_json_result.exit_code == 0
     status_payload = json.loads(status_json_result.output)
     assert status_payload["latest_loop"]["loop_run_id"] == "loop-demo-1"
     assert status_payload["latest_loop"]["stop_reason"] == "idle_cycles_exhausted"
+    assert status_payload["latest_fleet"]["fleet_run_id"] == "fleet-demo-1"
+    assert status_payload["latest_fleet"]["launcher"] == "subprocess"
     assert start_result.exit_code == 0
     assert "Session: session-demo-project-" in start_result.output
 
@@ -300,6 +316,52 @@ def test_workspace_loops_command_lists_recent_runs(
     assert len(payload["loops"]) == 1
     assert payload["loops"][0]["loop_run_id"] == "loop-demo-2"
     assert payload["loops"][0]["cycles_completed"] == 2
+
+
+def test_workspace_fleets_command_lists_recent_runs(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 10\n\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    store.upsert_fleet_run(
+        FleetControllerResult(
+            fleet_run_id="fleet-demo-2",
+            workspace_id="demo-workspace",
+            launcher="in_process",
+            stop_reason="idle_cycles_exhausted",
+            cycles_completed=1,
+            total_processed_jobs=0,
+            total_workers_launched=1,
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        ["workspace", "fleets", "--config", str(config_path), "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert len(payload["fleets"]) == 1
+    assert payload["fleets"][0]["fleet_run_id"] == "fleet-demo-2"
+    assert payload["fleets"][0]["launcher"] == "in_process"
 
 
 def test_workspace_stop_loop_command_requests_stop(

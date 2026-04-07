@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from .config import build_workspace_project_app_config, load_config, load_worksp
 from .control import ControlService
 from .events import EventStore
 from .executors import snapshot_provider_pool_health
+from .fleet import persist_batch_fleet_run
 from .models import (
     ActionPhase,
     AppConfig,
@@ -395,13 +397,18 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
 
     @app.post("/api/queue/fleet")
     def run_queue_fleet(body: QueueFleetRequest) -> dict[str, Any]:
+        initial_plan = queue.plan_fleet(
+            target_jobs_per_worker=body.target_jobs_per_worker,
+            stale_after_seconds=body.stale_after_seconds,
+        )
+        started_at = datetime.now(UTC)
         runner = BatchRunner(
             queue_store=queue,
             control_service=control,
             artifact_root=config.run.artifact_root,
             slot_limit=body.workers or config.run.max_parallel,
         )
-        return runner.run_fleet(
+        report = runner.run_fleet(
             worker_count=(
                 body.workers
                 if body.plan_driven
@@ -418,7 +425,31 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             models=body.models,
             cost_tiers=body.cost_tiers,
             endpoint_classes=body.endpoint_classes,
-        ).model_dump(mode="json")
+        )
+        result = persist_batch_fleet_run(
+            queue_store=queue,
+            artifact_root=config.run.artifact_root,
+            initial_plan=initial_plan,
+            report=report,
+            started_at=started_at,
+            target_jobs_per_worker=body.target_jobs_per_worker,
+            stale_after_seconds=body.stale_after_seconds,
+            workspace_id=workspace_config.name if workspace_config is not None else "standalone",
+            config_path=resolved_config_path,
+            launcher="dashboard_batch_runner",
+            request_payload=body.model_dump(mode="json"),
+        )
+        return {
+            **report.model_dump(mode="json"),
+            "fleet_run_id": result.fleet_run_id,
+            "artifact_dir": str(result.artifact_dir) if result.artifact_dir is not None else None,
+            "stop_reason": result.stop_reason,
+            "cycles_completed": result.cycles_completed,
+            "total_processed_jobs": result.total_processed_jobs,
+            "total_paused_jobs": result.total_paused_jobs,
+            "total_failed_jobs": result.total_failed_jobs,
+            "total_workers_launched": result.total_workers_launched,
+        }
 
     @app.post("/api/queue/jobs/{job_id}/cancel")
     def cancel_queue_job(job_id: str, body: QueueCancelRequest) -> dict[str, Any]:
