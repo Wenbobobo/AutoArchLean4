@@ -295,6 +295,27 @@ class QueueStore:
                 )
                 continue
 
+            if latest_session.status is SessionStatus.FAILED:
+                session = self._update_workspace_session_defaults(
+                    latest_session,
+                    event_store=event_store,
+                    max_iterations=max_iterations,
+                    note=note,
+                )
+                if self._session_failure_gate_reason(session) is not None:
+                    continue
+                _, resumed_job = self.resume_session(
+                    resolved_workspace_config_path,
+                    session_id=session.session_id,
+                    max_iterations=max_iterations,
+                    priority=priority,
+                    resume_reason="workspace_enqueue_resume",
+                    note=note,
+                    reset_failure_state=False,
+                )
+                jobs.append(resumed_job)
+                continue
+
             if (
                 latest_session.status is SessionStatus.PAUSED
                 and latest_session.last_stop_reason == "stop:control_paused"
@@ -330,6 +351,7 @@ class QueueStore:
         priority: int = 0,
         resume_reason: str | None = None,
         note: str | None = None,
+        reset_failure_state: bool = True,
     ) -> tuple[ProjectSession, QueueJob]:
         from .config import load_workspace_config
 
@@ -371,13 +393,14 @@ class QueueStore:
                 else SessionStatus.PENDING
             ),
             max_iterations=max_iterations,
-            clear_error_message=(
-                active_job is None or session.status is not SessionStatus.RUNNING
-            ),
+            clear_error_message=True,
             clear_stop_reason=(
                 active_job is None or session.status is not SessionStatus.RUNNING
             ),
             resume_reason=resume_reason or "queue_resume_session",
+            reset_consecutive_failures=reset_failure_state,
+            clear_last_failure_at=reset_failure_state,
+            clear_cooldown_until=True,
             note=note,
         )
         job = self.enqueue_session_quantum(
@@ -1707,6 +1730,16 @@ class QueueStore:
             seen.add(session_id)
             normalized.append(session_id)
         return tuple(normalized)
+
+    @staticmethod
+    def _session_failure_gate_reason(session: ProjectSession) -> str | None:
+        if session.status is not SessionStatus.FAILED:
+            return None
+        if session.consecutive_failures >= session.max_consecutive_failures:
+            return "failure_budget_exhausted"
+        if session.cooldown_until is not None and session.cooldown_until > datetime.now(UTC):
+            return "failure_cooldown_active"
+        return None
 
     @staticmethod
     def _worker_matches_profile_exact(worker: QueueWorkerLease, job: QueueJob) -> bool:

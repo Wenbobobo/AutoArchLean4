@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from archonlab.config import load_config
 from archonlab.control import ControlService
 from archonlab.models import (
@@ -542,6 +544,63 @@ def test_run_service_session_quantum_control_pause_is_resumable_and_budget_neutr
     assert stored.completed_iterations == 0
     assert stored.last_stop_reason == "stop:control_paused"
     assert stored.last_run_id == result.run_id
+    assert iterations == []
+
+
+def test_run_service_session_quantum_failure_sets_cooldown_and_failure_streak(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 3\n",
+        encoding="utf-8",
+    )
+
+    service = RunService(load_config(config_path))
+    session = ProjectSession(
+        session_id="session-demo-failure",
+        workspace_id="standalone",
+        project_id="demo",
+        dry_run=True,
+        max_iterations=3,
+        max_consecutive_failures=2,
+        failure_cooldown_seconds=60,
+    )
+    service.event_store.register_session(session)
+
+    def fail_start(*, dry_run: bool | None = None) -> object:
+        del dry_run
+        raise RuntimeError("quantum exploded")
+
+    monkeypatch.setattr(service, "start", fail_start)
+
+    with pytest.raises(RuntimeError, match="quantum exploded"):
+        service.run_session_quantum(session.session_id)
+
+    stored = service.event_store.get_session(session.session_id)
+    iterations = service.event_store.list_session_iterations(session.session_id)
+
+    assert stored is not None
+    assert stored.status is SessionStatus.FAILED
+    assert stored.consecutive_failures == 1
+    assert stored.max_consecutive_failures == 2
+    assert stored.failure_cooldown_seconds == 60
+    assert stored.error_message == "quantum exploded"
+    assert stored.last_failure_at is not None
+    assert stored.cooldown_until is not None
+    assert stored.cooldown_until > stored.last_failure_at
     assert iterations == []
 
 

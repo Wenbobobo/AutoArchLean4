@@ -1121,6 +1121,11 @@ class ProjectSession(BaseModel):
     error_message: str | None = None
     last_stop_reason: str | None = None
     last_resume_reason: str | None = None
+    consecutive_failures: int = 0
+    max_consecutive_failures: int = 3
+    failure_cooldown_seconds: int = 300
+    last_failure_at: datetime | None = None
+    cooldown_until: datetime | None = None
     owner_worker_id: str | None = None
     owner_job_id: str | None = None
     owner_claimed_at: datetime | None = None

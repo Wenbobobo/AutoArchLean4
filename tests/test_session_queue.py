@@ -386,6 +386,11 @@ def test_queue_store_resume_workspace_sessions_resumes_paused_and_failed_session
             completed_iterations=1,
             error_message="executor failed",
             last_stop_reason="run_failed",
+            consecutive_failures=2,
+            max_consecutive_failures=3,
+            failure_cooldown_seconds=60,
+            last_failure_at=datetime.now(UTC) - timedelta(seconds=120),
+            cooldown_until=datetime.now(UTC) + timedelta(seconds=60),
         )
     )
     queue_store = QueueStore(artifact_root / "archonlab.db")
@@ -412,6 +417,8 @@ def test_queue_store_resume_workspace_sessions_resumes_paused_and_failed_session
     assert resumed_alpha.last_stop_reason is None
     assert resumed_beta.last_stop_reason is None
     assert resumed_beta.error_message is None
+    assert resumed_beta.consecutive_failures == 0
+    assert resumed_beta.cooldown_until is None
 
     jobs = queue_store.list_jobs(limit=10)
     assert len(jobs) == 2
@@ -441,6 +448,11 @@ def test_queue_store_enqueue_workspace_sessions_resumes_failed_session_instead_o
             completed_iterations=1,
             error_message="executor failed",
             last_stop_reason="run_failed",
+            consecutive_failures=1,
+            max_consecutive_failures=3,
+            failure_cooldown_seconds=60,
+            last_failure_at=datetime.now(UTC) - timedelta(seconds=180),
+            cooldown_until=datetime.now(UTC) - timedelta(seconds=120),
         )
     )
     queue_store = QueueStore(artifact_root / "archonlab.db")
@@ -453,9 +465,95 @@ def test_queue_store_enqueue_workspace_sessions_resumes_failed_session_instead_o
     assert updated is not None
     assert updated.status is SessionStatus.PENDING
     assert updated.error_message is None
+    assert updated.consecutive_failures == 1
+    assert updated.cooldown_until is None
     assert updated.last_resume_reason == "workspace_enqueue_resume"
     sessions = event_store.list_sessions(workspace_id="demo-workspace")
     assert len(sessions) == 1
+
+
+def test_queue_store_enqueue_workspace_sessions_skips_failed_session_during_cooldown(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    workspace_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        archon_path=fake_archon_root,
+        projects=[("demo-project", fake_archon_project)],
+    )
+    event_store = EventStore(artifact_root / "archonlab.db")
+    event_store.register_session(
+        ProjectSession(
+            session_id="session-demo-project-cooling",
+            workspace_id="demo-workspace",
+            project_id="demo-project",
+            status=SessionStatus.FAILED,
+            max_iterations=3,
+            completed_iterations=1,
+            error_message="executor failed",
+            last_stop_reason="run_failed",
+            consecutive_failures=1,
+            max_consecutive_failures=3,
+            failure_cooldown_seconds=60,
+            last_failure_at=datetime.now(UTC) - timedelta(seconds=5),
+            cooldown_until=datetime.now(UTC) + timedelta(seconds=60),
+        )
+    )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+
+    jobs = queue_store.enqueue_workspace_sessions(workspace_path)
+
+    assert jobs == []
+    updated = event_store.get_session("session-demo-project-cooling")
+    assert updated is not None
+    assert updated.status is SessionStatus.FAILED
+    assert updated.consecutive_failures == 1
+    assert queue_store.list_jobs(limit=10) == []
+
+
+def test_queue_store_enqueue_workspace_sessions_skips_failed_session_after_retry_budget_exhausted(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    workspace_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        archon_path=fake_archon_root,
+        projects=[("demo-project", fake_archon_project)],
+    )
+    event_store = EventStore(artifact_root / "archonlab.db")
+    event_store.register_session(
+        ProjectSession(
+            session_id="session-demo-project-exhausted",
+            workspace_id="demo-workspace",
+            project_id="demo-project",
+            status=SessionStatus.FAILED,
+            max_iterations=3,
+            completed_iterations=1,
+            error_message="executor failed",
+            last_stop_reason="run_failed",
+            consecutive_failures=3,
+            max_consecutive_failures=3,
+            failure_cooldown_seconds=60,
+            last_failure_at=datetime.now(UTC) - timedelta(seconds=180),
+            cooldown_until=datetime.now(UTC) - timedelta(seconds=120),
+        )
+    )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+
+    jobs = queue_store.enqueue_workspace_sessions(workspace_path)
+
+    assert jobs == []
+    updated = event_store.get_session("session-demo-project-exhausted")
+    assert updated is not None
+    assert updated.status is SessionStatus.FAILED
+    assert updated.consecutive_failures == 3
+    assert queue_store.list_jobs(limit=10) == []
 
 
 def test_queue_store_enqueue_workspace_sessions_skips_control_paused_session(

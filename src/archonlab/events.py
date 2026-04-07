@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .models import (
@@ -88,6 +88,11 @@ class EventStore:
                 error_message TEXT,
                 last_stop_reason TEXT,
                 last_resume_reason TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                max_consecutive_failures INTEGER NOT NULL DEFAULT 3,
+                failure_cooldown_seconds INTEGER NOT NULL DEFAULT 300,
+                last_failure_at TEXT,
+                cooldown_until TEXT,
                 owner_worker_id TEXT,
                 owner_job_id TEXT,
                 owner_claimed_at TEXT,
@@ -145,13 +150,19 @@ class EventStore:
         for column in [
             "last_stop_reason",
             "last_resume_reason",
+            "consecutive_failures",
+            "max_consecutive_failures",
+            "failure_cooldown_seconds",
+            "last_failure_at",
+            "cooldown_until",
             "owner_worker_id",
             "owner_job_id",
             "owner_claimed_at",
         ]:
             with suppress(sqlite3.OperationalError):
+                column_definition = self._session_column_definition(column)
                 self._conn.execute(
-                    f"ALTER TABLE project_sessions ADD COLUMN {column} TEXT"
+                    f"ALTER TABLE project_sessions ADD COLUMN {column_definition}"
                 )
         self._conn.commit()
 
@@ -224,8 +235,10 @@ class EventStore:
                 max_iterations, completed_iterations, created_at, updated_at,
                 started_at, finished_at, last_run_id, error_message,
                 last_stop_reason, last_resume_reason,
+                consecutive_failures, max_consecutive_failures,
+                failure_cooldown_seconds, last_failure_at, cooldown_until,
                 owner_worker_id, owner_job_id, owner_claimed_at, note
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session.session_id,
@@ -244,6 +257,19 @@ class EventStore:
                 session.error_message,
                 session.last_stop_reason,
                 session.last_resume_reason,
+                session.consecutive_failures,
+                session.max_consecutive_failures,
+                session.failure_cooldown_seconds,
+                (
+                    session.last_failure_at.isoformat()
+                    if session.last_failure_at is not None
+                    else None
+                ),
+                (
+                    session.cooldown_until.isoformat()
+                    if session.cooldown_until is not None
+                    else None
+                ),
                 session.owner_worker_id,
                 session.owner_job_id,
                 (
@@ -306,9 +332,17 @@ class EventStore:
         clear_error_message: bool = False,
         clear_stop_reason: bool = False,
         clear_resume_reason: bool = False,
+        reset_consecutive_failures: bool = False,
+        clear_last_failure_at: bool = False,
+        clear_cooldown_until: bool = False,
         clear_owner_claim: bool = False,
         expected_owner_worker_id: str | None = None,
         expected_owner_job_id: str | None = None,
+        consecutive_failures: int | None = None,
+        max_consecutive_failures: int | None = None,
+        failure_cooldown_seconds: int | None = None,
+        last_failure_at: datetime | None = None,
+        cooldown_until: datetime | None = None,
         note: str | None = None,
     ) -> ProjectSession:
         current = self.get_session(session_id)
@@ -361,6 +395,51 @@ class EventStore:
                     else current.last_resume_reason
                 )
             ),
+            (
+                0
+                if reset_consecutive_failures
+                else (
+                    consecutive_failures
+                    if consecutive_failures is not None
+                    else current.consecutive_failures
+                )
+            ),
+            (
+                max_consecutive_failures
+                if max_consecutive_failures is not None
+                else current.max_consecutive_failures
+            ),
+            (
+                failure_cooldown_seconds
+                if failure_cooldown_seconds is not None
+                else current.failure_cooldown_seconds
+            ),
+            (
+                None
+                if clear_last_failure_at
+                else (
+                    last_failure_at.isoformat()
+                    if last_failure_at is not None
+                    else (
+                        current.last_failure_at.isoformat()
+                        if current.last_failure_at is not None
+                        else None
+                    )
+                )
+            ),
+            (
+                None
+                if clear_cooldown_until
+                else (
+                    cooldown_until.isoformat()
+                    if cooldown_until is not None
+                    else (
+                        current.cooldown_until.isoformat()
+                        if current.cooldown_until is not None
+                        else None
+                    )
+                )
+            ),
             None if clear_owner_claim else current.owner_worker_id,
             None if clear_owner_claim else current.owner_job_id,
             (
@@ -377,6 +456,8 @@ class EventStore:
                 updated_at = ?, started_at = ?,
                 finished_at = ?, last_run_id = ?, error_message = ?,
                 last_stop_reason = ?, last_resume_reason = ?,
+                consecutive_failures = ?, max_consecutive_failures = ?,
+                failure_cooldown_seconds = ?, last_failure_at = ?, cooldown_until = ?,
                 owner_worker_id = ?, owner_job_id = ?, owner_claimed_at = ?, note = ?
             WHERE session_id = ?
         """
@@ -399,6 +480,56 @@ class EventStore:
         if updated is None:
             raise KeyError(f"Unknown project session: {session_id}")
         return updated
+
+    def record_session_failure(
+        self,
+        session_id: str,
+        *,
+        error_message: str,
+        stop_reason: str,
+        expected_owner_worker_id: str | None = None,
+        expected_owner_job_id: str | None = None,
+        note: str | None = None,
+    ) -> ProjectSession:
+        current = self.get_session(session_id)
+        if current is None:
+            raise KeyError(f"Unknown project session: {session_id}")
+        failed_at = datetime.now(UTC)
+        cooldown_until = failed_at + timedelta(
+            seconds=max(current.failure_cooldown_seconds, 0)
+        )
+        return self.update_session(
+            session_id,
+            status=SessionStatus.FAILED,
+            error_message=error_message,
+            stop_reason=stop_reason,
+            expected_owner_worker_id=expected_owner_worker_id,
+            expected_owner_job_id=expected_owner_job_id,
+            consecutive_failures=current.consecutive_failures + 1,
+            last_failure_at=failed_at,
+            cooldown_until=cooldown_until,
+            note=note,
+        )
+
+    def reset_session_failure_state(
+        self,
+        session_id: str,
+        *,
+        clear_error_message: bool = True,
+        expected_owner_worker_id: str | None = None,
+        expected_owner_job_id: str | None = None,
+        note: str | None = None,
+    ) -> ProjectSession:
+        return self.update_session(
+            session_id,
+            clear_error_message=clear_error_message,
+            reset_consecutive_failures=True,
+            clear_last_failure_at=True,
+            clear_cooldown_until=True,
+            expected_owner_worker_id=expected_owner_worker_id,
+            expected_owner_job_id=expected_owner_job_id,
+            note=note,
+        )
 
     def claim_session(
         self,
@@ -1051,6 +1182,27 @@ class EventStore:
             error_message=row["error_message"],
             last_stop_reason=row["last_stop_reason"],
             last_resume_reason=row["last_resume_reason"],
+            consecutive_failures=(
+                int(row["consecutive_failures"])
+                if row["consecutive_failures"] is not None
+                else 0
+            ),
+            max_consecutive_failures=(
+                int(row["max_consecutive_failures"])
+                if row["max_consecutive_failures"] is not None
+                else 3
+            ),
+            failure_cooldown_seconds=(
+                int(row["failure_cooldown_seconds"])
+                if row["failure_cooldown_seconds"] is not None
+                else 300
+            ),
+            last_failure_at=datetime.fromisoformat(row["last_failure_at"])
+            if row["last_failure_at"]
+            else None,
+            cooldown_until=datetime.fromisoformat(row["cooldown_until"])
+            if row["cooldown_until"]
+            else None,
             owner_worker_id=row["owner_worker_id"],
             owner_job_id=row["owner_job_id"],
             owner_claimed_at=datetime.fromisoformat(row["owner_claimed_at"])
@@ -1058,6 +1210,26 @@ class EventStore:
             else None,
             note=row["note"],
         )
+
+    @staticmethod
+    def _session_column_definition(column: str) -> str:
+        definitions = {
+            "last_stop_reason": "last_stop_reason TEXT",
+            "last_resume_reason": "last_resume_reason TEXT",
+            "consecutive_failures": "consecutive_failures INTEGER NOT NULL DEFAULT 0",
+            "max_consecutive_failures": (
+                "max_consecutive_failures INTEGER NOT NULL DEFAULT 3"
+            ),
+            "failure_cooldown_seconds": (
+                "failure_cooldown_seconds INTEGER NOT NULL DEFAULT 300"
+            ),
+            "last_failure_at": "last_failure_at TEXT",
+            "cooldown_until": "cooldown_until TEXT",
+            "owner_worker_id": "owner_worker_id TEXT",
+            "owner_job_id": "owner_job_id TEXT",
+            "owner_claimed_at": "owner_claimed_at TEXT",
+        }
+        return definitions[column]
 
     def _row_to_session_iteration(self, row: sqlite3.Row) -> SessionIteration:
         return SessionIteration(

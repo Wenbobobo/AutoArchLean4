@@ -436,6 +436,10 @@ class RunService:
             status=SessionStatus.RUNNING,
             resume_reason="run_loop",
             clear_stop_reason=True,
+            clear_error_message=True,
+            reset_consecutive_failures=True,
+            clear_last_failure_at=True,
+            clear_cooldown_until=True,
             max_iterations=limit,
             note=note,
         )
@@ -501,6 +505,10 @@ class RunService:
                     completed_iterations=iteration_index,
                     last_run_id=result.run_id,
                     stop_reason=stop_reason,
+                    clear_error_message=True,
+                    reset_consecutive_failures=True,
+                    clear_last_failure_at=True,
+                    clear_cooldown_until=True,
                     note=note,
                 )
                 loop_result.status = session.status
@@ -512,14 +520,18 @@ class RunService:
                 if terminal_status is not SessionStatus.RUNNING:
                     break
         except Exception as exc:
-            session = self.event_store.update_session(
+            session = self.event_store.record_session_failure(
                 session.session_id,
-                status=SessionStatus.FAILED,
-                completed_iterations=iteration_index,
                 error_message=str(exc),
                 stop_reason="run_failed",
                 note=note,
             )
+            if iteration_index != session.completed_iterations:
+                session = self.event_store.update_session(
+                    session.session_id,
+                    completed_iterations=iteration_index,
+                    note=note,
+                )
             stop_reason = "run_failed"
             loop_result.status = session.status
             loop_result.completed_iterations = session.completed_iterations
@@ -643,6 +655,9 @@ class RunService:
                 last_run_id=result.run_id,
                 clear_error_message=True,
                 stop_reason=stop_reason,
+                reset_consecutive_failures=True,
+                clear_last_failure_at=True,
+                clear_cooldown_until=True,
                 expected_owner_worker_id=expected_owner_worker_id,
                 expected_owner_job_id=expected_owner_job_id,
                 note=note,
@@ -661,10 +676,8 @@ class RunService:
                 stop_reason=stop_reason,
             )
         except Exception as exc:
-            self.event_store.update_session(
+            self.event_store.record_session_failure(
                 session.session_id,
-                status=SessionStatus.FAILED,
-                completed_iterations=session.completed_iterations,
                 error_message=str(exc),
                 stop_reason="run_failed",
                 expected_owner_worker_id=expected_owner_worker_id,

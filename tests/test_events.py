@@ -244,6 +244,36 @@ def test_event_store_tracks_project_sessions_and_iterations(tmp_path: Path) -> N
     assert iterations[0].action_phase is ActionPhase.PLAN
 
 
+def test_event_store_round_trips_project_session_failure_state(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "artifacts" / "archonlab.db")
+    failed_at = datetime(2026, 1, 3, tzinfo=UTC)
+    cooldown_until = datetime(2026, 1, 3, 0, 5, tzinfo=UTC)
+    session = ProjectSession(
+        session_id="session-alpha-failed",
+        workspace_id="demo-workspace",
+        project_id="alpha",
+        status=SessionStatus.FAILED,
+        workflow=WorkflowMode.ADAPTIVE_LOOP,
+        dry_run=True,
+        max_iterations=8,
+        consecutive_failures=2,
+        max_consecutive_failures=3,
+        failure_cooldown_seconds=300,
+        last_failure_at=failed_at,
+        cooldown_until=cooldown_until,
+    )
+
+    store.register_session(session)
+    loaded = store.get_session(session.session_id)
+
+    assert loaded is not None
+    assert loaded.consecutive_failures == 2
+    assert loaded.max_consecutive_failures == 3
+    assert loaded.failure_cooldown_seconds == 300
+    assert loaded.last_failure_at == failed_at
+    assert loaded.cooldown_until == cooldown_until
+
+
 def test_event_store_prevents_stale_owner_from_overwriting_recovered_session(
     tmp_path: Path,
 ) -> None:
