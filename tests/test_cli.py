@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from archonlab.app import app
 from archonlab.models import (
     ActionPhase,
+    BatchRunReport,
     ExecutorKind,
     ProviderKind,
     QueueJobPreview,
@@ -566,6 +567,51 @@ def test_queue_fleet_command_processes_jobs_with_auto_slot_workers(
     assert fleet_result.exit_code == 0
     assert "Processed: 1" in fleet_result.output
     assert "Workers: 1" in fleet_result.output
+
+
+def test_queue_fleet_command_forwards_plan_driven_options(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_parallel = 2\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_fleet(self, **kwargs) -> BatchRunReport:
+        captured.update(kwargs)
+        return BatchRunReport(worker_ids=["worker-planned"])
+
+    monkeypatch.setattr("archonlab.app.BatchRunner.run_fleet", fake_run_fleet)
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "fleet",
+            "--config",
+            str(config_path),
+            "--plan-driven",
+            "--target-jobs-per-worker",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["plan_driven"] is True
+    assert captured["target_jobs_per_worker"] == 3
+    assert "Workers: 1" in result.output
 
 
 def test_queue_plan_fleet_command_summarizes_recommended_worker_profiles(

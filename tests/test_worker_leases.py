@@ -322,6 +322,53 @@ def test_queue_store_reaps_stale_worker_and_requeues_running_job(tmp_path: Path)
     assert updated_job.error_message == f"Recovered from stale worker {worker.worker_id}"
 
 
+def test_stale_worker_cannot_overwrite_requeued_job_owned_by_new_worker(
+    tmp_path: Path,
+) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    job = queue_store.enqueue("benchmark_project", {"manifest_path": "demo.toml"})
+    worker_stale = queue_store.register_worker(slot_index=1, worker_id="worker-stale")
+    claimed = queue_store.claim_next_job(worker_id=worker_stale.worker_id)
+    assert claimed is not None
+    queue_store.assign_job_to_worker(worker_stale.worker_id, claimed.id)
+
+    stale_heartbeat = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
+    queue_store._conn.execute(
+        "UPDATE queue_workers SET heartbeat_at = ? WHERE worker_id = ?",
+        (stale_heartbeat, worker_stale.worker_id),
+    )
+    queue_store._conn.commit()
+    queue_store.reap_stale_workers(stale_after_seconds=60)
+
+    worker_fresh = queue_store.register_worker(slot_index=2, worker_id="worker-fresh")
+    reclaimed = queue_store.claim_next_job(worker_id=worker_fresh.worker_id)
+    assert reclaimed is not None
+    assert reclaimed.id == job.id
+    queue_store.assign_job_to_worker(worker_fresh.worker_id, reclaimed.id)
+
+    stale_finish = queue_store.finish_job(
+        job.id,
+        status=QueueJobStatus.COMPLETED,
+        worker_id=worker_stale.worker_id,
+        result_path=tmp_path / "stale-summary.json",
+    )
+    stale_release = queue_store.release_job_from_worker(
+        worker_stale.worker_id,
+        job_id=job.id,
+        failed=False,
+    )
+
+    assert stale_finish.status is QueueJobStatus.RUNNING
+    assert stale_finish.worker_id == worker_fresh.worker_id
+    assert stale_release.status is WorkerStatus.FAILED
+
+    current_job = queue_store.get_job(job.id)
+    assert current_job is not None
+    assert current_job.status is QueueJobStatus.RUNNING
+    assert current_job.worker_id == worker_fresh.worker_id
+    assert current_job.result_path is None
+
+
 def test_queue_store_claim_next_job_respects_worker_executor_capabilities(
     tmp_path: Path,
 ) -> None:

@@ -591,8 +591,30 @@ def queue_fleet(
     ] = Path("archonlab.toml"),
     workers: Annotated[
         int | None,
-        typer.Option("--workers", min=1, help="Number of auto-slot workers to launch."),
+        typer.Option(
+            "--workers",
+            min=1,
+            help="Number of workers to launch, or a max cap when --plan-driven is enabled.",
+        ),
     ] = None,
+    plan_driven: Annotated[
+        bool,
+        typer.Option(
+            "--plan-driven/--fixed-fleet",
+            help=(
+                "Launch heterogeneous workers from queue fleet planning "
+                "instead of a uniform fleet."
+            ),
+        ),
+    ] = False,
+    target_jobs_per_worker: Annotated[
+        int,
+        typer.Option(
+            "--target-jobs-per-worker",
+            min=1,
+            help="Heuristic queue load assigned to each planned worker profile.",
+        ),
+    ] = 2,
     max_jobs_per_worker: Annotated[
         int | None,
         typer.Option(
@@ -665,7 +687,9 @@ def queue_fleet(
         slot_limit=workers or app_config.run.max_parallel,
     )
     report = runner.run_fleet(
-        worker_count=workers or app_config.run.max_parallel,
+        worker_count=workers if plan_driven else (workers or app_config.run.max_parallel),
+        plan_driven=plan_driven,
+        target_jobs_per_worker=target_jobs_per_worker,
         max_jobs_per_worker=max_jobs_per_worker,
         poll_seconds=poll_seconds,
         idle_timeout_seconds=idle_timeout_seconds,

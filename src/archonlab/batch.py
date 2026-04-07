@@ -25,6 +25,7 @@ from .models import (
     ProjectConfig,
     ProviderKind,
     QueueBenchmarkPayload,
+    QueueFleetProfile,
     QueueJob,
     QueueJobStatus,
     QueueWorkerLease,
@@ -221,6 +222,8 @@ class BatchRunner:
         self,
         *,
         worker_count: int | None = None,
+        plan_driven: bool = False,
+        target_jobs_per_worker: int = 2,
         max_jobs_per_worker: int | None = None,
         poll_seconds: float = 2.0,
         idle_timeout_seconds: float = 30.0,
@@ -231,35 +234,44 @@ class BatchRunner:
         cost_tiers: list[str] | None = None,
         endpoint_classes: list[str] | None = None,
     ) -> BatchRunReport:
-        desired_workers = max(1, worker_count or self.slot_limit)
         aggregate = BatchRunReport()
         aggregate_lock = threading.Lock()
-
-        def fleet_worker(index: int) -> None:
-            report = self.run_worker(
-                slot_index=None,
-                max_jobs=max_jobs_per_worker,
+        launch_specs = (
+            self._planned_fleet_launch_specs(
+                worker_count=worker_count,
+                target_jobs_per_worker=target_jobs_per_worker,
+                max_jobs_per_worker=max_jobs_per_worker,
                 poll_seconds=poll_seconds,
                 idle_timeout_seconds=idle_timeout_seconds,
-                note=f"fleet_worker_{index}",
                 stale_after_seconds=stale_after_seconds,
-                executor_kinds=executor_kinds,
-                provider_kinds=provider_kinds,
-                models=models,
-                cost_tiers=cost_tiers,
-                endpoint_classes=endpoint_classes,
             )
-            with aggregate_lock:
-                aggregate.processed_job_ids.extend(report.processed_job_ids)
-                aggregate.paused_job_ids.extend(report.paused_job_ids)
-                aggregate.failed_job_ids.extend(report.failed_job_ids)
-                aggregate.worker_ids.extend(report.worker_ids)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=desired_workers) as pool:
-            futures = [
-                pool.submit(fleet_worker, index)
-                for index in range(1, desired_workers + 1)
+            if plan_driven
+            else [
+                {
+                    "slot_index": None,
+                    "max_jobs": max_jobs_per_worker,
+                    "poll_seconds": poll_seconds,
+                    "idle_timeout_seconds": idle_timeout_seconds,
+                    "note": f"fleet_worker_{index}",
+                    "stale_after_seconds": stale_after_seconds,
+                    "executor_kinds": executor_kinds,
+                    "provider_kinds": provider_kinds,
+                    "models": models,
+                    "cost_tiers": cost_tiers,
+                    "endpoint_classes": endpoint_classes,
+                }
+                for index in range(1, max(1, worker_count or self.slot_limit) + 1)
             ]
+        )
+        if not launch_specs:
+            return aggregate
+
+        def fleet_worker(spec: dict[str, Any]) -> None:
+            report = self.run_worker(**spec)
+            self._merge_report(aggregate, report, aggregate_lock)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(launch_specs)) as pool:
+            futures = [pool.submit(fleet_worker, spec) for spec in launch_specs]
             for future in futures:
                 future.result()
         return aggregate
@@ -293,7 +305,7 @@ class BatchRunner:
                     ),
                     encoding="utf-8",
                 )
-                self.queue_store.finish_job(
+                paused_job = self.queue_store.finish_job(
                     job.id,
                     status=QueueJobStatus.PAUSED,
                     artifact_dir=artifact_dir,
@@ -301,6 +313,12 @@ class BatchRunner:
                     pause_reason=paused_reason,
                     worker_id=worker_id,
                 )
+                if not self._job_finish_applied(
+                    paused_job,
+                    expected_status=QueueJobStatus.PAUSED,
+                    worker_id=worker_id,
+                ):
+                    return
                 self.queue_store.release_job_from_worker(
                     worker_id,
                     job_id=job.id,
@@ -324,13 +342,19 @@ class BatchRunner:
                     job=job,
                 )
 
-            self.queue_store.finish_job(
+            finished_job = self.queue_store.finish_job(
                 job.id,
                 status=result_status,
                 artifact_dir=artifact_dir,
                 result_path=summary_path,
                 worker_id=worker_id,
             )
+            if not self._job_finish_applied(
+                finished_job,
+                expected_status=result_status,
+                worker_id=worker_id,
+            ):
+                return
             self.queue_store.release_job_from_worker(
                 worker_id,
                 job_id=job.id,
@@ -346,7 +370,7 @@ class BatchRunner:
                 ),
                 encoding="utf-8",
             )
-            self.queue_store.finish_job(
+            finished_job = self.queue_store.finish_job(
                 job.id,
                 status=QueueJobStatus.FAILED,
                 artifact_dir=artifact_dir,
@@ -354,6 +378,12 @@ class BatchRunner:
                 error_message=str(exc),
                 worker_id=worker_id,
             )
+            if not self._job_finish_applied(
+                finished_job,
+                expected_status=QueueJobStatus.FAILED,
+                worker_id=worker_id,
+            ):
+                return
             self.queue_store.release_job_from_worker(
                 worker_id,
                 job_id=job.id,
@@ -370,6 +400,78 @@ class BatchRunner:
 
     def list_worker_leases(self) -> list[QueueWorkerLease]:
         return self.queue_store.list_workers()
+
+    @staticmethod
+    def _merge_report(
+        aggregate: BatchRunReport,
+        report: BatchRunReport,
+        aggregate_lock: threading.Lock,
+    ) -> None:
+        with aggregate_lock:
+            aggregate.processed_job_ids.extend(report.processed_job_ids)
+            aggregate.paused_job_ids.extend(report.paused_job_ids)
+            aggregate.failed_job_ids.extend(report.failed_job_ids)
+            aggregate.worker_ids.extend(report.worker_ids)
+
+    def _planned_fleet_launch_specs(
+        self,
+        *,
+        worker_count: int | None,
+        target_jobs_per_worker: int,
+        max_jobs_per_worker: int | None,
+        poll_seconds: float,
+        idle_timeout_seconds: float,
+        stale_after_seconds: float | None,
+    ) -> list[dict[str, Any]]:
+        plan = self.queue_store.plan_fleet(
+            target_jobs_per_worker=target_jobs_per_worker,
+            stale_after_seconds=stale_after_seconds,
+        )
+        launch_specs: list[dict[str, Any]] = []
+        for profile in plan.profiles:
+            if (
+                profile.recommended_additional_workers < 1
+                or self._profile_is_generic(profile)
+            ):
+                continue
+            for launch_index in range(1, profile.recommended_additional_workers + 1):
+                launch_specs.append(
+                    {
+                        "slot_index": None,
+                        "max_jobs": max_jobs_per_worker,
+                        "poll_seconds": poll_seconds,
+                        "idle_timeout_seconds": idle_timeout_seconds,
+                        "note": f"planned_fleet:{profile.profile_id}:{launch_index}",
+                        "stale_after_seconds": stale_after_seconds,
+                        "executor_kinds": profile.required_executor_kinds,
+                        "provider_kinds": profile.required_provider_kinds,
+                        "models": profile.required_models,
+                        "cost_tiers": profile.required_cost_tiers,
+                        "endpoint_classes": profile.required_endpoint_classes,
+                    }
+                )
+                if worker_count is not None and len(launch_specs) >= worker_count:
+                    return launch_specs
+        return launch_specs
+
+    @staticmethod
+    def _profile_is_generic(profile: QueueFleetProfile) -> bool:
+        return not (
+            profile.required_executor_kinds
+            or profile.required_provider_kinds
+            or profile.required_models
+            or profile.required_cost_tiers
+            or profile.required_endpoint_classes
+        )
+
+    @staticmethod
+    def _job_finish_applied(
+        job: QueueJob,
+        *,
+        expected_status: QueueJobStatus,
+        worker_id: str,
+    ) -> bool:
+        return job.status is expected_status and job.worker_id == worker_id
 
     def _worker_worktree_root(self, *, worker_id: str | None, slot_index: int) -> Path:
         label = worker_id or f"slot-{slot_index}"

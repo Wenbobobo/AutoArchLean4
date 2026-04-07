@@ -443,29 +443,46 @@ class QueueStore:
         pause_reason: str | None = None,
         cancel_reason: str | None = None,
         worker_id: str | None = None,
+        expected_worker_id: str | None = None,
     ) -> QueueJob:
         finished_at = datetime.now(UTC).isoformat()
         with self._lock:
-            self._conn.execute(
-                """
+            current_row = self._conn.execute(
+                "SELECT * FROM queue_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if current_row is None:
+                raise KeyError(f"Unknown queue job: {job_id}")
+            current_job = self._row_to_job(current_row)
+            resolved_expected_worker_id = expected_worker_id
+            if (
+                resolved_expected_worker_id is None
+                and worker_id is not None
+                and current_job.status is QueueJobStatus.RUNNING
+            ):
+                resolved_expected_worker_id = worker_id
+            params: list[str | None] = [
+                status.value,
+                finished_at,
+                finished_at,
+                str(artifact_dir) if artifact_dir is not None else None,
+                str(result_path) if result_path is not None else None,
+                error_message,
+                pause_reason,
+                cancel_reason,
+                worker_id,
+                job_id,
+            ]
+            query = """
                 UPDATE queue_jobs
                 SET status = ?, updated_at = ?, finished_at = ?, artifact_dir = ?, result_path = ?,
                     error_message = ?, pause_reason = ?, cancel_reason = ?, worker_id = ?
                 WHERE job_id = ?
-                """,
-                (
-                    status.value,
-                    finished_at,
-                    finished_at,
-                    str(artifact_dir) if artifact_dir is not None else None,
-                    str(result_path) if result_path is not None else None,
-                    error_message,
-                    pause_reason,
-                    cancel_reason,
-                    worker_id,
-                    job_id,
-                ),
-            )
+            """
+            if resolved_expected_worker_id is not None:
+                query += " AND worker_id = ?"
+                params.append(resolved_expected_worker_id)
+            self._conn.execute(query, params)
             self._conn.commit()
             row = self._conn.execute(
                 "SELECT * FROM queue_jobs WHERE job_id = ?",
@@ -856,7 +873,7 @@ class QueueStore:
                     UPDATE queue_jobs
                     SET status = ?, updated_at = ?, started_at = NULL, worker_id = NULL,
                         error_message = ?
-                    WHERE job_id = ? AND status = ?
+                    WHERE job_id = ? AND status = ? AND worker_id = ?
                     """,
                     (
                         QueueJobStatus.QUEUED.value,
@@ -864,6 +881,7 @@ class QueueStore:
                         f"Recovered from stale worker {worker_id}",
                         current_job_id,
                         QueueJobStatus.RUNNING.value,
+                        worker_id,
                     ),
                 )
             self._conn.execute(
@@ -949,6 +967,30 @@ class QueueStore:
             raise KeyError(f"Unknown worker: {worker_id}")
         heartbeat_at = datetime.now(UTC).isoformat()
         with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            claimed = self._conn.execute(
+                """
+                UPDATE queue_jobs
+                SET worker_id = ?, updated_at = ?
+                WHERE job_id = ? AND status = ? AND (worker_id IS NULL OR worker_id = ?)
+                """,
+                (
+                    worker_id,
+                    heartbeat_at,
+                    job_id,
+                    QueueJobStatus.RUNNING.value,
+                    worker_id,
+                ),
+            )
+            if claimed.rowcount == 0:
+                job_row = self._conn.execute(
+                    "SELECT job_id FROM queue_jobs WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+                self._conn.rollback()
+                if job_row is None:
+                    raise KeyError(f"Unknown queue job: {job_id}")
+                raise RuntimeError(f"Job {job_id} is not assignable to worker {worker_id}")
             self._conn.execute(
                 """
                 UPDATE queue_workers
@@ -980,22 +1022,26 @@ class QueueStore:
             raise KeyError(f"Unknown worker: {worker_id}")
         heartbeat_at = datetime.now(UTC).isoformat()
         with self._lock:
-            self._conn.execute(
-                """
+            params: list[str | int | None] = [
+                WorkerStatus.IDLE.value,
+                job_id,
+                heartbeat_at,
+                1 if failed else 0,
+                worker_id,
+            ]
+            query = """
                 UPDATE queue_workers
                 SET status = ?, current_job_id = NULL, last_job_id = ?, heartbeat_at = ?,
                     processed_jobs = processed_jobs + 1,
                     failed_jobs = failed_jobs + ?
                 WHERE worker_id = ?
-                """,
-                (
-                    WorkerStatus.IDLE.value,
-                    job_id,
-                    heartbeat_at,
-                    1 if failed else 0,
-                    worker_id,
-                ),
-            )
+            """
+            if job_id is None:
+                query += " AND current_job_id IS NULL"
+            else:
+                query += " AND current_job_id = ?"
+                params.append(job_id)
+            self._conn.execute(query, params)
             self._conn.commit()
         updated = self.get_worker(worker_id)
         if updated is None:

@@ -331,15 +331,23 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert swept[0]["worker_id"] == "worker-test"
     assert swept[0]["status"] == "failed"
 
-    monkeypatch.setattr(
-        "archonlab.dashboard.BatchRunner.run_fleet",
-        lambda self, **kwargs: BatchRunReport(
+    captured_fleet: dict[str, object] = {}
+
+    def fake_run_fleet(self, **kwargs) -> BatchRunReport:
+        captured_fleet.update(kwargs)
+        return BatchRunReport(
             processed_job_ids=["job-1"],
             worker_ids=["worker-auto-1"],
-        ),
+        )
+
+    monkeypatch.setattr("archonlab.dashboard.BatchRunner.run_fleet", fake_run_fleet)
+    fleet_response = client.post(
+        "/api/queue/fleet",
+        json={"plan_driven": True, "target_jobs_per_worker": 3},
     )
-    fleet_response = client.post("/api/queue/fleet", json={})
     assert fleet_response.status_code == 200
     fleet_payload = fleet_response.json()
     assert fleet_payload["processed_job_ids"] == ["job-1"]
     assert fleet_payload["worker_ids"] == ["worker-auto-1"]
+    assert captured_fleet["plan_driven"] is True
+    assert captured_fleet["target_jobs_per_worker"] == 3

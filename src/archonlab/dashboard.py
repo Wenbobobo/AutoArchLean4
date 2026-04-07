@@ -50,6 +50,8 @@ class QueueCancelRequest(BaseModel):
 
 class QueueFleetRequest(BaseModel):
     workers: int | None = None
+    plan_driven: bool = False
+    target_jobs_per_worker: int = 2
     max_jobs_per_worker: int | None = None
     poll_seconds: float = 2.0
     idle_timeout_seconds: float = 30.0
@@ -258,7 +260,13 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             slot_limit=body.workers or config.run.max_parallel,
         )
         return runner.run_fleet(
-            worker_count=body.workers or config.run.max_parallel,
+            worker_count=(
+                body.workers
+                if body.plan_driven
+                else (body.workers or config.run.max_parallel)
+            ),
+            plan_driven=body.plan_driven,
+            target_jobs_per_worker=body.target_jobs_per_worker,
             max_jobs_per_worker=body.max_jobs_per_worker,
             poll_seconds=body.poll_seconds,
             idle_timeout_seconds=body.idle_timeout_seconds,
@@ -1482,7 +1490,7 @@ def render_dashboard_html(project_id: str) -> str:
         await fetchJson(`/api/queue/fleet`, {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify({{}}),
+          body: JSON.stringify({{ plan_driven: true }}),
         }});
         await refresh();
       }});

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from archonlab.batch import BatchRunner
 from archonlab.control import ControlService
+from archonlab.models import BatchRunReport, ExecutorKind, ProviderKind
 from archonlab.queue import QueueStore
 
 
@@ -213,3 +214,66 @@ def test_batch_runner_fleet_launches_auto_slot_workers(tmp_path: Path) -> None:
     assert {worker.slot_index for worker in workers} == {1, 2}
     assert all(worker.worker_id.startswith("worker-auto-") for worker in workers)
     assert BlockingBenchmarkRunService.max_active >= 2
+
+
+def test_batch_runner_plan_driven_fleet_launches_profile_specific_workers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "cheap.toml"},
+        project_id="cheap-project",
+        required_executor_kinds=[ExecutorKind.DRY_RUN],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4-mini"],
+        required_cost_tiers=["cheap"],
+        required_endpoint_classes=["lab"],
+    )
+    queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "premium.toml"},
+        project_id="premium-project",
+        required_executor_kinds=[ExecutorKind.DRY_RUN],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4"],
+        required_cost_tiers=["premium"],
+        required_endpoint_classes=["lab"],
+    )
+
+    runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(tmp_path / "control"),
+        artifact_root=tmp_path / "batch-artifacts",
+        slot_limit=1,
+    )
+
+    launched: list[dict[str, object]] = []
+
+    def fake_run_worker(**kwargs) -> BatchRunReport:
+        launched.append(kwargs)
+        return BatchRunReport(
+            worker_ids=[f"worker-{len(launched)}"],
+        )
+
+    monkeypatch.setattr(runner, "run_worker", fake_run_worker)
+
+    report = runner.run_fleet(
+        plan_driven=True,
+        target_jobs_per_worker=2,
+        idle_timeout_seconds=0.1,
+        poll_seconds=0.01,
+        stale_after_seconds=60,
+    )
+
+    assert report.worker_ids == ["worker-1", "worker-2"]
+    assert len(launched) == 2
+    assert {tuple(call["models"] or []) for call in launched} == {
+        ("gpt-5.4-mini",),
+        ("gpt-5.4",),
+    }
+    assert {tuple(call["cost_tiers"] or []) for call in launched} == {
+        ("cheap",),
+        ("premium",),
+    }
+    assert all(str(call["note"]).startswith("planned_fleet:") for call in launched)
