@@ -139,6 +139,8 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
 
     index_response = client.get("/")
     assert index_response.status_code == 200
+    assert 'id="project-selector"' in index_response.text
+    assert 'value="DemoProject"' in index_response.text
     assert 'id="project-preview-overview"' in index_response.text
     assert 'id="project-preview-analysis"' in index_response.text
     assert 'id="project-latest-run-loop"' in index_response.text
@@ -607,6 +609,9 @@ def test_dashboard_workspace_overview_and_project_switching(
 
     index_response = client.get("/")
     assert index_response.status_code == 200
+    assert 'id="project-selector"' in index_response.text
+    assert 'value="alpha"' in index_response.text
+    assert 'value="beta"' in index_response.text
     assert 'id="workspace-overview-summary"' in index_response.text
     assert 'id="workspace-session-table"' in index_response.text
     assert 'id="workspace-runtime-summary"' in index_response.text

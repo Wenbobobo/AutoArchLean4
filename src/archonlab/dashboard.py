@@ -138,6 +138,7 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
         return render_dashboard_html(
             dashboard_title,
             default_project_id=default_project_id,
+            available_project_ids=sorted(available_projects),
         )
 
     @app.get("/api/runs")
@@ -775,7 +776,20 @@ def _summarize_workflow_rule(rule: WorkflowRule) -> dict[str, Any]:
     }
 
 
-def render_dashboard_html(title: str, *, default_project_id: str) -> str:
+def render_dashboard_html(
+    title: str,
+    *,
+    default_project_id: str,
+    available_project_ids: list[str],
+) -> str:
+    project_selector_options = "".join(
+        (
+            f'<option value="{project_id}"'
+            f'{" selected" if project_id == default_project_id else ""}>'
+            f"{project_id}</option>"
+        )
+        for project_id in available_project_ids
+    )
     return f"""<!doctype html>
 <html lang="en">
   <head>
@@ -1152,6 +1166,12 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
           <h2>Project Control</h2>
           <div class="status" id="control-status"></div>
           <div class="controls">
+            <label>
+              Active Project
+              <select id="project-selector">
+                {project_selector_options}
+              </select>
+            </label>
             <button id="pause-button">Pause Project</button>
             <button class="secondary" id="resume-button">Resume Project</button>
             <textarea
@@ -1362,7 +1382,9 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
     </div>
 
     <script>
-      const projectId = {json.dumps(default_project_id)};
+      const defaultProjectId = {json.dumps(default_project_id)};
+      let currentProjectId = defaultProjectId;
+      const projectSelector = document.getElementById("project-selector");
       const controlStatus = document.getElementById("control-status");
       const runsList = document.getElementById("runs-list");
       const detailMeta = document.getElementById("detail-meta");
@@ -2145,9 +2167,9 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       }}
 
       async function refresh() {{
-        const previewPromise = fetchJson(`/api/projects/${{projectId}}/preview`)
+        const previewPromise = fetchJson(`/api/projects/${{currentProjectId}}/preview`)
           .catch((error) => ({{ error: error.message }}));
-        const projectRunLoopsPromise = fetchJson(`/api/projects/${{projectId}}/run-loops`)
+        const projectRunLoopsPromise = fetchJson(`/api/projects/${{currentProjectId}}/run-loops`)
           .catch((error) => ({{ error: error.message }}));
         const fleetPlanPromise = fetchJson(`/api/queue/fleet-plan`)
           .catch((error) => ({{ error: error.message }}));
@@ -2164,7 +2186,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
           workspaceOverview,
         ] =
           await Promise.all([
-          fetchJson(`/api/projects/${{projectId}}/control`),
+          fetchJson(`/api/projects/${{currentProjectId}}/control`),
           fetchJson(`/api/runs?limit=20`),
           fetchJson(`/api/queue/jobs?limit=20`),
           fetchJson(`/api/queue/workers`),
@@ -2199,8 +2221,13 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         }}
       }}
 
+      projectSelector.addEventListener("change", async () => {{
+        currentProjectId = projectSelector.value || defaultProjectId;
+        await refresh();
+      }});
+
       document.getElementById("pause-button").addEventListener("click", async () => {{
-        await fetchJson(`/api/projects/${{projectId}}/pause`, {{
+        await fetchJson(`/api/projects/${{currentProjectId}}/pause`, {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify({{ reason: "Paused from dashboard" }}),
@@ -2209,7 +2236,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       }});
 
       document.getElementById("resume-button").addEventListener("click", async () => {{
-        await fetchJson(`/api/projects/${{projectId}}/resume`, {{
+        await fetchJson(`/api/projects/${{currentProjectId}}/resume`, {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify({{}}),
@@ -2222,7 +2249,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         if (!text) {{
           return;
         }}
-        await fetchJson(`/api/projects/${{projectId}}/hint`, {{
+        await fetchJson(`/api/projects/${{currentProjectId}}/hint`, {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify({{ text, author: "dashboard" }}),
@@ -2235,7 +2262,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         const workflow = workflowModeSelect.value || null;
         const workflowSpecPath = workflowSpecInput.value.trim() || null;
         const clearWorkflowSpec = clearWorkflowSpecCheckbox.checked;
-        await fetchJson(`/api/projects/${{projectId}}/workflow`, {{
+        await fetchJson(`/api/projects/${{currentProjectId}}/workflow`, {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify({{
@@ -2248,7 +2275,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       }});
 
       workflowResetButton.addEventListener("click", async () => {{
-        await fetchJson(`/api/projects/${{projectId}}/workflow/reset`, {{
+        await fetchJson(`/api/projects/${{currentProjectId}}/workflow/reset`, {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify({{}}),
