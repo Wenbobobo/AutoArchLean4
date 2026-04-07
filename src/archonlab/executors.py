@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 from urllib import error, request
 from urllib.parse import urlsplit, urlunsplit
 
 from .models import (
+    ExecutionCapability,
     ExecutionRequest,
     ExecutionResult,
     ExecutionStatus,
@@ -29,15 +31,20 @@ class Executor(Protocol):
 class ExecutorProvider:
     def resolve(self, config: dict[str, object]) -> Executor:
         kind = str(config.get("kind", "dry_run"))
-        if kind == "dry_run":
-            return DryRunExecutor()
-        if kind in {"openai_compatible", "openai_compatible_http"}:
-            return OpenAICompatibleHttpExecutor(
-                base_url=str(config["base_url"]),
-                api_key=str(config.get("api_key", "")),
-                model=str(config["model"]),
-            )
-        if kind == "codex_exec":
+        resolved_kind = "openai_compatible" if kind == "openai_compatible_http" else kind
+        executor_config = ExecutorConfig(kind=ExecutorKind(resolved_kind))
+        provider_config = ProviderConfig(
+            model=str(config["model"]) if "model" in config else None,
+            base_url=str(config["base_url"]) if "base_url" in config else None,
+        )
+        executor = create_executor(
+            executor_config=executor_config,
+            provider_config=provider_config,
+        )
+        if isinstance(executor, OpenAICompatibleHttpExecutor):
+            executor.api_key = str(config.get("api_key", ""))
+            return executor
+        if isinstance(executor, CodexExecExecutor):
             command = config.get("command", ["codex", "exec"])
             if isinstance(command, str):
                 resolved_command = [command]
@@ -48,7 +55,11 @@ class ExecutorProvider:
             cwd_value = config.get("cwd")
             cwd = Path(str(cwd_value)).resolve() if cwd_value is not None else None
             return CodexExecExecutor(command=resolved_command, cwd=cwd)
+        if isinstance(executor, DryRunExecutor):
+            return executor
         raise ValueError(f"Unsupported executor kind: {kind}")
+
+ExecutorFactory = Callable[[ExecutorConfig, ProviderConfig], Executor]
 
 
 def create_executor(
@@ -56,18 +67,50 @@ def create_executor(
     executor_config: ExecutorConfig,
     provider_config: ProviderConfig,
 ) -> Executor:
-    if executor_config.kind is ExecutorKind.DRY_RUN:
-        return DryRunExecutor()
-    if executor_config.kind is ExecutorKind.CODEX_EXEC:
-        return CodexExecExecutor(
-            executor_config=executor_config,
-            provider_config=provider_config,
-        )
+    capability = ExecutionCapability.from_configs(
+        executor=executor_config,
+        provider=provider_config,
+    )
+    factory = _EXECUTOR_FACTORIES.get(capability.executor_kind)
+    if factory is None:
+        raise ValueError(f"Unsupported executor kind: {capability.executor_kind.value}")
+    return factory(executor_config, provider_config)
+
+
+def _build_dry_run_executor(
+    executor_config: ExecutorConfig,
+    provider_config: ProviderConfig,
+) -> Executor:
+    del executor_config, provider_config
+    return DryRunExecutor()
+
+
+def _build_openai_executor(
+    executor_config: ExecutorConfig,
+    provider_config: ProviderConfig,
+) -> Executor:
     return OpenAICompatibleHttpExecutor(
         executor_config=executor_config,
         provider_config=provider_config,
         endpoint_path=provider_config.endpoint_path,
     )
+
+
+def _build_codex_executor(
+    executor_config: ExecutorConfig,
+    provider_config: ProviderConfig,
+) -> Executor:
+    return CodexExecExecutor(
+        executor_config=executor_config,
+        provider_config=provider_config,
+    )
+
+
+_EXECUTOR_FACTORIES: dict[ExecutorKind, ExecutorFactory] = {
+    ExecutorKind.DRY_RUN: _build_dry_run_executor,
+    ExecutorKind.OPENAI_COMPATIBLE: _build_openai_executor,
+    ExecutorKind.CODEX_EXEC: _build_codex_executor,
+}
 
 
 class DryRunExecutor:

@@ -8,6 +8,7 @@ from .models import (
     AdapterAction,
     AppConfig,
     BenchmarkManifest,
+    ExecutionCapability,
     ExecutionPhaseOverride,
     ExecutionPolicy,
     ExecutionTaskMatcher,
@@ -144,37 +145,28 @@ def collect_required_execution_kinds(
     provider: ProviderConfig,
     execution_policy: ExecutionPolicy,
 ) -> tuple[list[ExecutorKind], list[ProviderKind], list[str], list[str], list[str]]:
-    executor_kinds = {executor.kind}
-    provider_kinds = {provider.kind}
-    models = {provider.model} if provider.model is not None else set()
-    cost_tiers = {provider.cost_tier} if provider.cost_tier is not None else set()
-    endpoint_classes = (
-        {provider.endpoint_class}
-        if provider.endpoint_class is not None
-        else set()
+    capabilities = collect_required_execution_capabilities(
+        executor=executor,
+        provider=provider,
+        execution_policy=execution_policy,
     )
-    for override in execution_policy.phases.values():
-        if override.executor is not None:
-            executor_kinds.add(override.executor.kind)
-        if override.provider is not None:
-            provider_kinds.add(override.provider.kind)
-            if override.provider.model is not None:
-                models.add(override.provider.model)
-            if override.provider.cost_tier is not None:
-                cost_tiers.add(override.provider.cost_tier)
-            if override.provider.endpoint_class is not None:
-                endpoint_classes.add(override.provider.endpoint_class)
-    for rule in execution_policy.task_rules:
-        if rule.executor is not None:
-            executor_kinds.add(rule.executor.kind)
-        if rule.provider is not None:
-            provider_kinds.add(rule.provider.kind)
-            if rule.provider.model is not None:
-                models.add(rule.provider.model)
-            if rule.provider.cost_tier is not None:
-                cost_tiers.add(rule.provider.cost_tier)
-            if rule.provider.endpoint_class is not None:
-                endpoint_classes.add(rule.provider.endpoint_class)
+    executor_kinds = {capability.executor_kind for capability in capabilities}
+    provider_kinds = {capability.provider_kind for capability in capabilities}
+    models = {
+        capability.model
+        for capability in capabilities
+        if capability.model is not None
+    }
+    cost_tiers = {
+        capability.cost_tier
+        for capability in capabilities
+        if capability.cost_tier is not None
+    }
+    endpoint_classes = {
+        capability.endpoint_class
+        for capability in capabilities
+        if capability.endpoint_class is not None
+    }
     return (
         sorted(executor_kinds),
         sorted(provider_kinds),
@@ -182,6 +174,58 @@ def collect_required_execution_kinds(
         sorted(cost_tiers),
         sorted(endpoint_classes),
     )
+
+
+def collect_required_execution_capabilities(
+    *,
+    executor: ExecutorConfig,
+    provider: ProviderConfig,
+    execution_policy: ExecutionPolicy,
+) -> list[ExecutionCapability]:
+    capabilities: dict[str, ExecutionCapability] = {}
+
+    def register(
+        resolved_executor: ExecutorConfig,
+        resolved_provider: ProviderConfig,
+    ) -> None:
+        capability = ExecutionCapability.from_configs(
+            executor=resolved_executor,
+            provider=resolved_provider,
+        )
+        capabilities[capability.capability_id] = capability
+
+    register(executor, provider)
+    phase_variants: dict[ActionPhase, tuple[ExecutorConfig, ProviderConfig]] = {}
+    for phase in (ActionPhase.PLAN, ActionPhase.PROVER, ActionPhase.REVIEW):
+        phase_executor, phase_provider = resolve_phase_configs(
+            executor=executor,
+            provider=provider,
+            execution_policy=execution_policy,
+            phase=phase,
+            action=None,
+        )
+        phase_variants[phase] = (phase_executor, phase_provider)
+        register(phase_executor, phase_provider)
+
+    fallback_phases = tuple(phase_variants) or (
+        ActionPhase.PLAN,
+        ActionPhase.PROVER,
+        ActionPhase.REVIEW,
+    )
+    for rule in execution_policy.task_rules:
+        candidate_phases = (
+            (rule.matcher.phase,)
+            if rule.matcher.phase is not None
+            else fallback_phases
+        )
+        for phase in candidate_phases:
+            base_executor, base_provider = phase_variants.get(phase, (executor, provider))
+            register(
+                rule.executor or base_executor,
+                rule.provider or base_provider,
+            )
+
+    return sorted(capabilities.values(), key=lambda capability: capability.capability_id)
 
 
 def build_task_matcher(name: str, raw_matcher: object) -> ExecutionTaskMatcher:

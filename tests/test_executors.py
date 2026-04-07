@@ -10,7 +10,9 @@ from archonlab.executors import (
     DryRunExecutor,
     ExecutorProvider,
     OpenAICompatibleHttpExecutor,
+    create_executor,
 )
+from archonlab.models import ExecutionCapability, ExecutorConfig, ExecutorKind, ProviderConfig
 
 
 def test_executor_provider_resolves_dry_run_http_and_codex_executors(
@@ -128,3 +130,33 @@ def test_codex_exec_executor_streams_prompt_to_stdin_and_returns_stdout(
     assert prompt_file.read_text(encoding="utf-8") == "prove foo"
     assert result.text == "codex:prove foo"
     assert result.provider == "codex_exec"
+
+
+def test_create_executor_uses_capability_normalization_for_dispatch() -> None:
+    dry_executor = create_executor(
+        executor_config=ExecutorConfig(kind=ExecutorKind.DRY_RUN),
+        provider_config=ProviderConfig(model="gpt-5.4-mini"),
+    )
+    http_executor = create_executor(
+        executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+        provider_config=ProviderConfig(
+            model="gpt-5.4-mini",
+            base_url="https://api.example.test/v1",
+        ),
+    )
+    codex_executor = create_executor(
+        executor_config=ExecutorConfig(kind=ExecutorKind.CODEX_EXEC),
+        provider_config=ProviderConfig(model="gpt-5.4-mini"),
+    )
+
+    assert isinstance(dry_executor, DryRunExecutor)
+    assert isinstance(http_executor, OpenAICompatibleHttpExecutor)
+    assert isinstance(codex_executor, CodexExecExecutor)
+    capability = ExecutionCapability.from_configs(
+        executor=ExecutorConfig(kind=ExecutorKind.CODEX_EXEC),
+        provider=ProviderConfig(model="gpt-5.4-mini"),
+    )
+    assert capability.capability_id == (
+        "executor=codex_exec__provider=openai_compatible__"
+        "model=gpt-5.4-mini__cost=any__endpoint=any"
+    )

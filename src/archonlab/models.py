@@ -165,6 +165,157 @@ class AppConfig(BaseModel):
     execution_policy: ExecutionPolicy = Field(default_factory=lambda: ExecutionPolicy())
 
 
+class ExecutionCapability(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    executor_kind: ExecutorKind
+    provider_kind: ProviderKind
+    model: str | None = None
+    cost_tier: str | None = None
+    endpoint_class: str | None = None
+
+    @classmethod
+    def from_configs(
+        cls,
+        *,
+        executor: ExecutorConfig,
+        provider: ProviderConfig,
+    ) -> ExecutionCapability:
+        return cls(
+            executor_kind=executor.kind,
+            provider_kind=provider.kind,
+            model=provider.model,
+            cost_tier=provider.cost_tier,
+            endpoint_class=provider.endpoint_class,
+        )
+
+    @property
+    def capability_id(self) -> str:
+        return "__".join(
+            [
+                f"executor={self.executor_kind.value}",
+                f"provider={self.provider_kind.value}",
+                f"model={self.model or 'any'}",
+                f"cost={self.cost_tier or 'any'}",
+                f"endpoint={self.endpoint_class or 'any'}",
+            ]
+        )
+
+    def as_requirement(self) -> ExecutionRequirement:
+        return ExecutionRequirement(
+            executor_kinds=[self.executor_kind],
+            provider_kinds=[self.provider_kind],
+            models=[self.model] if self.model is not None else [],
+            cost_tiers=[self.cost_tier] if self.cost_tier is not None else [],
+            endpoint_classes=(
+                [self.endpoint_class] if self.endpoint_class is not None else []
+            ),
+        )
+
+
+class ExecutionRequirement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    executor_kinds: list[ExecutorKind] = Field(default_factory=list)
+    provider_kinds: list[ProviderKind] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
+    cost_tiers: list[str] = Field(default_factory=list)
+    endpoint_classes: list[str] = Field(default_factory=list)
+
+    @property
+    def profile_key(self) -> tuple[tuple[str, ...], ...]:
+        return (
+            tuple(sorted(kind.value for kind in self.executor_kinds)),
+            tuple(sorted(kind.value for kind in self.provider_kinds)),
+            tuple(sorted(self.models)),
+            tuple(sorted(self.cost_tiers)),
+            tuple(sorted(self.endpoint_classes)),
+        )
+
+    @property
+    def profile_id(self) -> str:
+        return "__".join(
+            [
+                self._dimension(
+                    "executor",
+                    [kind.value for kind in self.executor_kinds],
+                ),
+                self._dimension(
+                    "provider",
+                    [kind.value for kind in self.provider_kinds],
+                ),
+                self._dimension("model", self.models),
+                self._dimension("cost", self.cost_tiers),
+                self._dimension("endpoint", self.endpoint_classes),
+            ]
+        )
+
+    def matches_axes(
+        self,
+        *,
+        executor_kinds: list[ExecutorKind],
+        provider_kinds: list[ProviderKind],
+        models: list[str],
+        cost_tiers: list[str],
+        endpoint_classes: list[str],
+    ) -> bool:
+        if self.executor_kinds and not set(self.executor_kinds).issubset(set(executor_kinds)):
+            return False
+        if self.provider_kinds and not set(self.provider_kinds).issubset(
+            set(provider_kinds)
+        ):
+            return False
+        if self.models and models and not set(self.models).issubset(set(models)):
+            return False
+        if self.cost_tiers and cost_tiers and not set(self.cost_tiers).issubset(
+            set(cost_tiers)
+        ):
+            return False
+        return not (
+            self.endpoint_classes
+            and endpoint_classes
+            and not set(self.endpoint_classes).issubset(set(endpoint_classes))
+        )
+
+    def matches_capability(
+        self,
+        capability: ExecutionCapability,
+        *,
+        allow_capability_wildcards: bool = True,
+    ) -> bool:
+        return self.matches_axes(
+            executor_kinds=[capability.executor_kind],
+            provider_kinds=[capability.provider_kind],
+            models=(
+                []
+                if allow_capability_wildcards and capability.model is None
+                else ([capability.model] if capability.model is not None else [])
+            ),
+            cost_tiers=(
+                []
+                if allow_capability_wildcards and capability.cost_tier is None
+                else ([capability.cost_tier] if capability.cost_tier is not None else [])
+            ),
+            endpoint_classes=(
+                []
+                if allow_capability_wildcards and capability.endpoint_class is None
+                else (
+                    [capability.endpoint_class]
+                    if capability.endpoint_class is not None
+                    else []
+                )
+            ),
+        )
+
+    @classmethod
+    def from_capability(cls, capability: ExecutionCapability) -> ExecutionRequirement:
+        return capability.as_requirement()
+
+    @staticmethod
+    def _dimension(label: str, values: list[str]) -> str:
+        return f"{label}={','.join(sorted(values)) or 'any'}"
+
+
 class ExecutionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -268,6 +419,7 @@ class RunPreview(BaseModel):
     task_graph: TaskGraph
     supervisor: SupervisorDecision
     action: AdapterAction
+    resolved_capability: ExecutionCapability | None = None
     resolved_executor: ExecutorConfig | None = None
     resolved_provider: ProviderConfig | None = None
 
@@ -297,6 +449,7 @@ class QueueJobPreview(BaseModel):
     model: str | None = None
     cost_tier: str | None = None
     endpoint_class: str | None = None
+    capability_id: str | None = None
 
 
 class BenchmarkConfig(BaseModel):
@@ -541,6 +694,16 @@ class QueueJob(BaseModel):
     def id(self) -> str:
         return self.job_id
 
+    @property
+    def execution_requirement(self) -> ExecutionRequirement:
+        return ExecutionRequirement(
+            executor_kinds=self.required_executor_kinds,
+            provider_kinds=self.required_provider_kinds,
+            models=self.required_models,
+            cost_tiers=self.required_cost_tiers,
+            endpoint_classes=self.required_endpoint_classes,
+        )
+
 
 class QueueWorkerLease(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -573,6 +736,16 @@ class QueueWorkerLease(BaseModel):
     @property
     def updated_at(self) -> datetime:
         return self.heartbeat_at
+
+    @property
+    def execution_requirement(self) -> ExecutionRequirement:
+        return ExecutionRequirement(
+            executor_kinds=self.executor_kinds,
+            provider_kinds=self.provider_kinds,
+            models=self.models,
+            cost_tiers=self.cost_tiers,
+            endpoint_classes=self.endpoint_classes,
+        )
 
 
 class QueueFleetProfile(BaseModel):

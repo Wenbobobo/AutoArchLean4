@@ -16,7 +16,9 @@ from pydantic import ValidationError
 from .benchmark import load_benchmark_manifest
 from .models import (
     ActionPhase,
+    ExecutionCapability,
     ExecutionPolicy,
+    ExecutionRequirement,
     ExecutorConfig,
     ExecutorKind,
     ProjectConfig,
@@ -44,6 +46,7 @@ class ProjectRequirements(TypedDict):
     required_models: list[str]
     required_cost_tiers: list[str]
     required_endpoint_classes: list[str]
+    resolved_capability: ExecutionCapability | None
     preview: QueueJobPreview
 
 
@@ -765,7 +768,7 @@ class QueueStore:
             )
             profiles.append(
                 QueueFleetProfile(
-                    profile_id=self._profile_id(exemplar),
+                    profile_id=exemplar.execution_requirement.profile_id,
                     required_executor_kinds=exemplar.required_executor_kinds,
                     required_provider_kinds=exemplar.required_provider_kinds,
                     required_models=exemplar.required_models,
@@ -1179,68 +1182,25 @@ class QueueStore:
     ) -> bool:
         if worker is None:
             return True
-        if job.required_executor_kinds and not set(job.required_executor_kinds).issubset(
-            set(worker.executor_kinds)
-        ):
-            return False
-        if job.required_provider_kinds and not set(job.required_provider_kinds).issubset(
-            set(worker.provider_kinds)
-        ):
-            return False
-        if job.required_models and worker.models and not set(job.required_models).issubset(
-            set(worker.models)
-        ):
-            return False
-        if job.required_cost_tiers and worker.cost_tiers and not set(
-            job.required_cost_tiers
-        ).issubset(set(worker.cost_tiers)):
-            return False
-        return not (
-            job.required_endpoint_classes
-            and worker.endpoint_classes
-            and not set(job.required_endpoint_classes).issubset(set(worker.endpoint_classes))
+        return job.execution_requirement.matches_axes(
+            executor_kinds=worker.executor_kinds,
+            provider_kinds=worker.provider_kinds,
+            models=worker.models,
+            cost_tiers=worker.cost_tiers,
+            endpoint_classes=worker.endpoint_classes,
         )
 
     @staticmethod
     def _worker_matches_profile_exact(worker: QueueWorkerLease, job: QueueJob) -> bool:
-        return (
-            set(worker.executor_kinds) == set(job.required_executor_kinds)
-            and set(worker.provider_kinds) == set(job.required_provider_kinds)
-            and set(worker.models) == set(job.required_models)
-            and set(worker.cost_tiers) == set(job.required_cost_tiers)
-            and set(worker.endpoint_classes) == set(job.required_endpoint_classes)
-        )
+        return worker.execution_requirement.profile_key == job.execution_requirement.profile_key
 
     @staticmethod
     def _fleet_profile_key(job: QueueJob) -> tuple[tuple[str, ...], ...]:
-        return (
-            tuple(sorted(kind.value for kind in job.required_executor_kinds)),
-            tuple(sorted(kind.value for kind in job.required_provider_kinds)),
-            tuple(sorted(job.required_models)),
-            tuple(sorted(job.required_cost_tiers)),
-            tuple(sorted(job.required_endpoint_classes)),
-        )
+        return job.execution_requirement.profile_key
 
     @staticmethod
     def _profile_id(job: QueueJob) -> str:
-        parts = [
-            QueueStore._profile_dimension(
-                "executor",
-                [kind.value for kind in job.required_executor_kinds],
-            ),
-            QueueStore._profile_dimension(
-                "provider",
-                [kind.value for kind in job.required_provider_kinds],
-            ),
-            QueueStore._profile_dimension("model", job.required_models),
-            QueueStore._profile_dimension("cost", job.required_cost_tiers),
-            QueueStore._profile_dimension("endpoint", job.required_endpoint_classes),
-        ]
-        return "__".join(parts)
-
-    @staticmethod
-    def _profile_dimension(label: str, values: list[str]) -> str:
-        return f"{label}={','.join(sorted(values)) or 'any'}"
+        return job.execution_requirement.profile_id
 
     @staticmethod
     def _increment_count(counts: dict[str, int], key: str) -> None:
@@ -1320,7 +1280,7 @@ class QueueStore:
             )
         )
         preview = service.preview()
-        if preview.resolved_executor is None or preview.resolved_provider is None:
+        if preview.resolved_capability is None:
             final_priority = base_priority
             return {
                 "priority": final_priority,
@@ -1329,6 +1289,7 @@ class QueueStore:
                 "required_models": [],
                 "required_cost_tiers": [],
                 "required_endpoint_classes": [],
+                "resolved_capability": None,
                 "preview": self._build_queue_preview(
                     preview=preview,
                     base_priority=base_priority,
@@ -1336,7 +1297,8 @@ class QueueStore:
                     include_dynamic_bonuses=False,
                 ),
             }
-        resolved_provider = preview.resolved_provider
+        resolved_capability = preview.resolved_capability
+        requirement = ExecutionRequirement.from_capability(resolved_capability)
         final_priority = self._derive_priority(
             base_priority,
             task_priority=preview.action.task_priority,
@@ -1344,19 +1306,12 @@ class QueueStore:
         )
         return {
             "priority": final_priority,
-            "required_executor_kinds": [preview.resolved_executor.kind],
-            "required_provider_kinds": [resolved_provider.kind],
-            "required_models": [resolved_provider.model] if resolved_provider.model else [],
-            "required_cost_tiers": (
-                [resolved_provider.cost_tier]
-                if resolved_provider.cost_tier
-                else []
-            ),
-            "required_endpoint_classes": (
-                [resolved_provider.endpoint_class]
-                if resolved_provider.endpoint_class
-                else []
-            ),
+            "required_executor_kinds": requirement.executor_kinds,
+            "required_provider_kinds": requirement.provider_kinds,
+            "required_models": requirement.models,
+            "required_cost_tiers": requirement.cost_tiers,
+            "required_endpoint_classes": requirement.endpoint_classes,
+            "resolved_capability": resolved_capability,
             "preview": self._build_queue_preview(
                 preview=preview,
                 base_priority=base_priority,
@@ -1418,13 +1373,34 @@ class QueueStore:
             task_priority_bonus=task_priority_bonus,
             objective_relevance_bonus=objective_bonus,
             final_priority=final_priority,
-            executor_kind=preview.resolved_executor.kind if preview.resolved_executor else None,
-            provider_kind=preview.resolved_provider.kind if preview.resolved_provider else None,
-            model=preview.resolved_provider.model if preview.resolved_provider else None,
-            cost_tier=preview.resolved_provider.cost_tier if preview.resolved_provider else None,
+            executor_kind=(
+                preview.resolved_capability.executor_kind
+                if preview.resolved_capability is not None
+                else None
+            ),
+            provider_kind=(
+                preview.resolved_capability.provider_kind
+                if preview.resolved_capability is not None
+                else None
+            ),
+            model=(
+                preview.resolved_capability.model
+                if preview.resolved_capability is not None
+                else None
+            ),
+            cost_tier=(
+                preview.resolved_capability.cost_tier
+                if preview.resolved_capability is not None
+                else None
+            ),
             endpoint_class=(
-                preview.resolved_provider.endpoint_class
-                if preview.resolved_provider
+                preview.resolved_capability.endpoint_class
+                if preview.resolved_capability is not None
+                else None
+            ),
+            capability_id=(
+                preview.resolved_capability.capability_id
+                if preview.resolved_capability is not None
                 else None
             ),
         )

@@ -14,6 +14,7 @@ from .models import (
     AppConfig,
     ControlState,
     EventRecord,
+    ExecutionCapability,
     ExecutionRequest,
     ExecutionStatus,
     RunPreview,
@@ -191,6 +192,11 @@ class RunService:
                     "progress": progress.model_dump(mode="json"),
                     "snapshot": snapshot.model_dump(mode="json"),
                     "control": control_state.model_dump(mode="json"),
+                    "resolved_capability": (
+                        preview.resolved_capability.model_dump(mode="json")
+                        if preview.resolved_capability is not None
+                        else None
+                    ),
                     "workflow_spec": (
                         workflow_spec.model_dump(mode="json")
                         if workflow_spec is not None
@@ -248,6 +254,11 @@ class RunService:
                     task_id=action.task_id,
                     payload={
                         "executor": execution_result.executor.value,
+                        "resolved_capability": (
+                            preview.resolved_capability.model_dump(mode="json")
+                            if preview.resolved_capability is not None
+                            else None
+                        ),
                         "resolved_executor": resolved_executor.model_dump(mode="json"),
                         "resolved_provider": resolved_provider.model_dump(mode="json"),
                         "status": execution_result.status.value,
@@ -283,6 +294,11 @@ class RunService:
                         payload={
                             "reason": "executor_failed",
                             "executor": execution_result.executor.value,
+                            "resolved_capability": (
+                                preview.resolved_capability.model_dump(mode="json")
+                                if preview.resolved_capability is not None
+                                else None
+                            ),
                             "resolved_executor": resolved_executor.model_dump(mode="json"),
                             "resolved_provider": resolved_provider.model_dump(mode="json"),
                             "error_message": execution_result.error_message,
@@ -388,11 +404,16 @@ class RunService:
         )
         resolved_executor = None
         resolved_provider = None
+        resolved_capability = None
         if str(action.phase) != "stop":
             resolved_executor, resolved_provider = resolve_app_phase_configs(
                 self.config,
                 phase=action.phase,
                 action=action,
+            )
+            resolved_capability = ExecutionCapability.from_configs(
+                executor=resolved_executor,
+                provider=resolved_provider,
             )
         return RunPreview(
             workflow=workflow,
@@ -404,6 +425,7 @@ class RunService:
             task_graph=task_graph,
             supervisor=supervisor,
             action=action,
+            resolved_capability=resolved_capability,
             resolved_executor=resolved_executor,
             resolved_provider=resolved_provider,
         )

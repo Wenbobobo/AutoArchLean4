@@ -4,8 +4,16 @@ import json
 from pathlib import Path
 
 from archonlab.config import load_config
-from archonlab.execution_policy import collect_required_execution_kinds
-from archonlab.models import ExecutorKind, ProviderKind
+from archonlab.execution_policy import (
+    collect_required_execution_capabilities,
+    collect_required_execution_kinds,
+)
+from archonlab.models import (
+    ExecutionCapability,
+    ExecutionRequirement,
+    ExecutorKind,
+    ProviderKind,
+)
 from archonlab.services import RunService
 
 
@@ -145,3 +153,117 @@ def test_collect_required_execution_kinds_includes_phase_and_task_overrides(
     assert set(models) == {"gpt-5.4-mini", "gpt-5.4-nano"}
     assert set(cost_tiers) == {"cheap", "nano"}
     assert set(endpoint_classes) == {"fast", "lab"}
+
+
+def test_collect_required_execution_capabilities_preserves_valid_tuples(
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "LeanProject"
+    archon_path = tmp_path / "Archon"
+    project_path.mkdir()
+    archon_path.mkdir()
+    config_path = tmp_path / "archonlab.toml"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        'project_path = "./LeanProject"\n'
+        'archon_path = "./Archon"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        'artifact_root = "./artifacts"\n'
+        "dry_run = false\n\n"
+        "[executor]\n"
+        'kind = "codex_exec"\n'
+        "\n"
+        "[provider]\n"
+        'model = "gpt-5.4-mini"\n'
+        'cost_tier = "cheap"\n'
+        'endpoint_class = "lab"\n'
+        "\n"
+        "[phase_executor.plan]\n"
+        'kind = "openai_compatible"\n'
+        "\n"
+        "[phase_provider.plan]\n"
+        'model = "gpt-5.4"\n'
+        'cost_tier = "premium"\n'
+        'endpoint_class = "priority"\n',
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    capabilities = collect_required_execution_capabilities(
+        executor=config.executor,
+        provider=config.provider,
+        execution_policy=config.execution_policy,
+    )
+
+    assert capabilities == sorted(capabilities, key=lambda capability: capability.capability_id)
+    assert capabilities == [
+        ExecutionCapability(
+            executor_kind=ExecutorKind.CODEX_EXEC,
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model="gpt-5.4-mini",
+            cost_tier="cheap",
+            endpoint_class="lab",
+        ),
+        ExecutionCapability(
+            executor_kind=ExecutorKind.OPENAI_COMPATIBLE,
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model="gpt-5.4",
+            cost_tier="premium",
+            endpoint_class="priority",
+        ),
+    ]
+
+
+def test_execution_requirement_matches_capability_axes_with_wildcard_worker_dimensions() -> None:
+    requirement = ExecutionRequirement(
+        executor_kinds=[ExecutorKind.OPENAI_COMPATIBLE],
+        provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        models=["gpt-5.4-mini"],
+        cost_tiers=["cheap"],
+        endpoint_classes=["lab"],
+    )
+
+    assert requirement.matches_axes(
+        executor_kinds=[ExecutorKind.OPENAI_COMPATIBLE],
+        provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        models=["gpt-5.4-mini"],
+        cost_tiers=["cheap"],
+        endpoint_classes=["lab"],
+    )
+    assert requirement.matches_axes(
+        executor_kinds=[ExecutorKind.OPENAI_COMPATIBLE],
+        provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        models=[],
+        cost_tiers=[],
+        endpoint_classes=[],
+    )
+    assert requirement.matches_capability(
+        ExecutionCapability(
+            executor_kind=ExecutorKind.OPENAI_COMPATIBLE,
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model="gpt-5.4-mini",
+            cost_tier="cheap",
+            endpoint_class="lab",
+        )
+    )
+    assert requirement.matches_capability(
+        ExecutionCapability(
+            executor_kind=ExecutorKind.OPENAI_COMPATIBLE,
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model=None,
+            cost_tier=None,
+            endpoint_class=None,
+        )
+    )
+    assert requirement.matches_capability(
+        ExecutionCapability(
+            executor_kind=ExecutorKind.OPENAI_COMPATIBLE,
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model="gpt-5.4",
+            cost_tier="premium",
+            endpoint_class="lab",
+        ),
+        allow_capability_wildcards=False,
+    ) is False
