@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from archonlab.benchmark import (
@@ -9,6 +10,23 @@ from archonlab.benchmark import (
     load_benchmark_manifest,
     score_project_snapshot,
 )
+
+
+def _init_git_repo(repo_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "ArchonLab"], cwd=repo_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "archonlab@example.com"],
+        cwd=repo_path,
+        check=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-m", "initial"],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+    )
 
 
 def _write_benchmark_manifest(tmp_path: Path) -> Path:
@@ -152,3 +170,17 @@ def test_benchmark_run_service_writes_manifest_copy_and_summary(
     assert summary["projects"][0]["run_status"] == "completed"
     assert summary["projects"][0]["snapshot"]["progress"]["stage"] == "prover"
     assert summary["projects"][0]["score"]["task_result_count"] == 0
+
+
+def test_benchmark_run_service_can_use_worktrees(tmp_path: Path) -> None:
+    manifest_path = _write_benchmark_manifest(tmp_path)
+    _init_git_repo(tmp_path / "DemoProject")
+
+    service = BenchmarkRunService(manifest_path)
+    result = service.run(use_worktrees=True, cleanup_worktrees=False)
+
+    assert result.projects[0].run_status.value == "completed"
+    assert result.projects[0].worktree_path is not None
+    assert result.projects[0].lease_path is not None
+    assert result.projects[0].worktree_path.exists()
+    assert result.projects[0].lease_path.exists()

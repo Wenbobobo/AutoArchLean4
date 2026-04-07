@@ -219,6 +219,8 @@ class BenchmarkProjectResult(BaseModel):
     score: ProjectScore
     delta: SnapshotDelta
     artifact_dir: Path | None = None
+    worktree_path: Path | None = None
+    lease_path: Path | None = None
     error_message: str | None = None
 
 

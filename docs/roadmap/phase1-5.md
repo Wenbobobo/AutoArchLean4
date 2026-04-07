@@ -57,7 +57,9 @@
 当前基线已实现：
 - `run start` 自动生成 `task-graph.json` 和 `supervisor.json`
 - `run start` 会基于 task graph + supervisor 做 task-aware next-action 选择
+- supervisor 会参考近期运行历史识别重复无进展
 - `worktree create/remove` 可管理隔离工作树
+- benchmark 可选用隔离 worktree 运行
 - Phase 4 的最小契约测试已经覆盖 task graph、supervisor、worktree
 
 ## Phase 5: workflow 与最小 UI

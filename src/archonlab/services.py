@@ -6,7 +6,16 @@ from datetime import UTC, datetime
 
 from .adapter import ArchonAdapter
 from .events import EventStore
-from .models import AppConfig, EventRecord, RunResult, RunStatus, RunSummary
+from .models import (
+    AppConfig,
+    EventRecord,
+    RunResult,
+    RunStatus,
+    RunSummary,
+    SupervisorAction,
+    SupervisorDecision,
+    SupervisorReason,
+)
 from .planner import select_next_action
 from .project_state import collect_project_snapshot
 from .supervisor import decide_supervisor_action
@@ -84,7 +93,41 @@ class RunService:
             jsonl_path=events_jsonl,
         )
 
-        supervisor = decide_supervisor_action(snapshot=snapshot, task_graph=task_graph)
+        recent_events = self.event_store.list_recent_project_events(
+            self.config.project.name,
+            limit=20,
+        )
+        provisional_supervisor = SupervisorDecision(
+            project_id=self.config.project.name,
+            action=SupervisorAction.CONTINUE,
+            reason=SupervisorReason.HEALTHY,
+            summary="Provisional supervisor state before historical evaluation.",
+        )
+        predicted_action = select_next_action(
+            adapter=self.adapter,
+            workflow=self.config.run.workflow,
+            snapshot=snapshot,
+            task_graph=task_graph,
+            supervisor=provisional_supervisor,
+        )
+        recent_events = [
+            *recent_events,
+            EventRecord(
+                run_id=run_id,
+                kind="workflow.next_action",
+                project_id=self.config.project.name,
+                payload={
+                    "phase": predicted_action.phase,
+                    "reason": predicted_action.reason,
+                },
+            ),
+        ]
+
+        supervisor = decide_supervisor_action(
+            snapshot=snapshot,
+            task_graph=task_graph,
+            recent_events=recent_events,
+        )
         supervisor_path.write_text(
             json.dumps(supervisor.model_dump(mode="json"), ensure_ascii=False, indent=2),
             encoding="utf-8",

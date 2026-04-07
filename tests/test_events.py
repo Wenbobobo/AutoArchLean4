@@ -42,3 +42,39 @@ def test_event_store_round_trip(tmp_path: Path) -> None:
     assert events[0].payload["hello"] == "world"
     assert jsonl_path.exists()
 
+
+def test_event_store_lists_recent_project_events_in_order(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "artifacts" / "archonlab.db")
+    for run_id in ["run-1", "run-2"]:
+        store.register_run(
+            RunSummary(
+                run_id=run_id,
+                project_id="demo",
+                workflow=WorkflowMode.ADAPTIVE_LOOP,
+                status=RunStatus.STARTED,
+                stage="prover",
+                dry_run=True,
+                started_at=datetime.now(UTC),
+                artifact_dir=tmp_path / "artifacts" / "runs" / run_id,
+            )
+        )
+    store.append(
+        EventRecord(
+            run_id="run-1",
+            kind="workflow.next_action",
+            project_id="demo",
+            payload={"phase": "plan", "reason": "bootstrap_first_iteration"},
+        )
+    )
+    store.append(
+        EventRecord(
+            run_id="run-2",
+            kind="workflow.next_action",
+            project_id="demo",
+            payload={"phase": "plan", "reason": "bootstrap_first_iteration"},
+        )
+    )
+
+    recent = store.list_recent_project_events("demo", limit=10)
+
+    assert [event.run_id for event in recent] == ["run-1", "run-2"]

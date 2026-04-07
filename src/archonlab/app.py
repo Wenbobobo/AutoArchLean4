@@ -180,9 +180,27 @@ def benchmark_run(
             help="Use the current dry-run execution path for each project.",
         ),
     ] = True,
+    use_worktrees: Annotated[
+        bool,
+        typer.Option(
+            "--use-worktrees/--direct-checkout",
+            help="Run benchmark projects from isolated git worktrees.",
+        ),
+    ] = False,
+    keep_worktrees: Annotated[
+        bool,
+        typer.Option(
+            "--keep-worktrees/--cleanup-worktrees",
+            help="Keep created worktrees after the benchmark run finishes.",
+        ),
+    ] = False,
 ) -> None:
     service = BenchmarkRunService(manifest)
-    result = service.run(dry_run=dry_run)
+    result = service.run(
+        dry_run=dry_run,
+        use_worktrees=use_worktrees,
+        cleanup_worktrees=not keep_worktrees,
+    )
     typer.echo(f"Benchmark: {result.benchmark.name}")
     typer.echo(f"Run: {result.run_id}")
     typer.echo(f"Status: {result.status.value}")
@@ -194,6 +212,8 @@ def benchmark_run(
             f"sorry={project.snapshot.sorry_count} | "
             f"reviews={len(project.snapshot.review_sessions)}"
         )
+        if project.worktree_path is not None:
+            typer.echo(f"  worktree={project.worktree_path}")
 
 
 @worktree_app.command("create")

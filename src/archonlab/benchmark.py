@@ -20,6 +20,7 @@ from .models import (
 )
 from .project_state import collect_project_snapshot, diff_snapshots, score_project_snapshot
 from .services import RunService
+from .worktree import WorktreeManager
 
 
 def _resolve_path(base_dir: Path, raw_path: str) -> Path:
@@ -66,13 +67,20 @@ class BenchmarkRunService:
         self.manifest_path = manifest_path.resolve()
         self.manifest = load_benchmark_manifest(self.manifest_path)
 
-    def run(self, *, dry_run: bool = True) -> BenchmarkResult:
+    def run(
+        self,
+        *,
+        dry_run: bool = True,
+        use_worktrees: bool = False,
+        cleanup_worktrees: bool = True,
+    ) -> BenchmarkResult:
         started_at = datetime.now(UTC)
         run_id = self._new_run_id()
         artifact_dir = self.manifest.benchmark.artifact_root / "runs" / run_id
         artifact_dir.mkdir(parents=True, exist_ok=True)
         project_run_root = artifact_dir / "project-runs"
         project_run_root.mkdir(parents=True, exist_ok=True)
+        worktree_root = artifact_dir / "worktrees"
 
         manifest_copy_path = artifact_dir / "manifest.toml"
         manifest_copy_path.write_text(
@@ -91,6 +99,8 @@ class BenchmarkRunService:
                     project,
                     artifact_root=project_run_root,
                     dry_run=dry_run,
+                    worktree_root=worktree_root if use_worktrees else None,
+                    cleanup_worktrees=cleanup_worktrees,
                 )
             )
 
@@ -122,22 +132,42 @@ class BenchmarkRunService:
         *,
         artifact_root: Path,
         dry_run: bool,
+        worktree_root: Path | None,
+        cleanup_worktrees: bool,
     ) -> BenchmarkProjectResult:
-        project_config = ProjectConfig(
-            name=benchmark_project.id,
+        baseline_snapshot = collect_project_snapshot(
             project_path=benchmark_project.project_path,
             archon_path=benchmark_project.archon_path,
         )
-        snapshot = collect_project_snapshot(
-            project_path=benchmark_project.project_path,
-            archon_path=benchmark_project.archon_path,
-        )
+        effective_project_path = benchmark_project.project_path
+        lease = None
+        lease_path: Path | None = None
+        worktree_path: Path | None = None
+        manager = WorktreeManager(root=worktree_root) if worktree_root is not None else None
         run_status = RunStatus.FAILED
         run_id: str | None = None
         run_artifact_dir: Path | None = None
         error_message: str | None = None
+        final_snapshot = baseline_snapshot
 
         try:
+            if manager is not None:
+                lease = manager.create(
+                    benchmark_project.project_path,
+                    name=f"{benchmark_project.id}-{uuid.uuid4().hex[:8]}",
+                )
+                worktree_path = lease.worktree_path
+                effective_project_path = lease.worktree_path
+                lease_path = artifact_root / f"{lease.lease_id}.json"
+                lease_path.write_text(
+                    json.dumps(lease.model_dump(mode="json"), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            project_config = ProjectConfig(
+                name=benchmark_project.id,
+                project_path=effective_project_path,
+                archon_path=benchmark_project.archon_path,
+            )
             service = RunService(
                 AppConfig(
                     project=project_config,
@@ -153,13 +183,15 @@ class BenchmarkRunService:
             run_status = run_result.status
             run_id = run_result.run_id
             run_artifact_dir = run_result.artifact_dir
+            final_snapshot = collect_project_snapshot(
+                project_path=effective_project_path,
+                archon_path=benchmark_project.archon_path,
+            )
         except Exception as exc:
             error_message = str(exc)
-
-        final_snapshot = collect_project_snapshot(
-            project_path=benchmark_project.project_path,
-            archon_path=benchmark_project.archon_path,
-        )
+        finally:
+            if lease is not None and manager is not None and cleanup_worktrees:
+                manager.release(lease, force=True)
         return BenchmarkProjectResult(
             id=benchmark_project.id,
             workflow=benchmark_project.workflow,
@@ -168,8 +200,10 @@ class BenchmarkRunService:
             run_status=run_status,
             snapshot=final_snapshot,
             score=score_project_snapshot(final_snapshot),
-            delta=diff_snapshots(snapshot, final_snapshot),
+            delta=diff_snapshots(baseline_snapshot, final_snapshot),
             artifact_dir=run_artifact_dir,
+            worktree_path=worktree_path,
+            lease_path=lease_path,
             error_message=error_message,
         )
 

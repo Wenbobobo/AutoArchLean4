@@ -144,6 +144,32 @@ class EventStore:
             for row in rows
         ]
 
+    def list_recent_project_events(self, project_id: str, *, limit: int = 20) -> list[EventRecord]:
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM events
+            WHERE project_id = ?
+            ORDER BY seq DESC
+            LIMIT ?
+            """,
+            (project_id, limit),
+        ).fetchall()
+        ordered_rows = reversed(rows)
+        return [
+            EventRecord(
+                run_id=row["run_id"],
+                kind=row["kind"],
+                project_id=row["project_id"],
+                task_id=row["task_id"],
+                worktree_id=row["worktree_id"],
+                policy_version=row["policy_version"],
+                payload=json.loads(row["payload_json"]),
+                ts=datetime.fromisoformat(row["ts"]),
+            )
+            for row in ordered_rows
+        ]
+
     def _row_to_run_summary(self, row: sqlite3.Row) -> RunSummary:
         return RunSummary(
             run_id=row["run_id"],

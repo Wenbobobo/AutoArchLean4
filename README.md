@@ -40,6 +40,7 @@ uv run archonlab doctor
 uv run archonlab project init --project-path /path/to/lean-project --archon-path /path/to/Archon
 uv run archonlab run start --config archonlab.toml --dry-run
 uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-run
+uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --use-worktrees
 uv run archonlab worktree create --repo-path /path/to/repo --name phase4-run
 ```
 
@@ -55,3 +56,5 @@ uv run archonlab worktree create --repo-path /path/to/repo --name phase4-run
 
 `run start` 现在会用 `task-graph.json` 和 `supervisor.json` 共同选择下一步动作，
 而不再只是复用最早的固定启发式。
+supervisor 也会读取同一项目的近期历史事件，识别重复无进展的 loop。
+benchmark 则已经支持在隔离 `git worktree` 中运行。
