@@ -263,6 +263,76 @@ def test_workspace_run_project_command_executes_loop(
     assert "Completed iterations: 2" in result.output
 
 
+def test_workspace_run_command_enqueues_sessions_and_runs_autoscaler(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(self, **kwargs) -> object:
+        captured.update(kwargs)
+        return self.result_model(
+            cycles_completed=2,
+            stop_reason="queue_drained",
+            total_processed_jobs=1,
+            total_paused_jobs=0,
+            total_failed_jobs=0,
+            total_workers_launched=1,
+            cycles=[],
+            final_plan=self.queue_store.plan_fleet(),
+        )
+
+    monkeypatch.setattr("archonlab.app.FleetController.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "run",
+            "--config",
+            str(config_path),
+            "--project-id",
+            "alpha",
+            "--max-iterations",
+            "4",
+            "--execute",
+            "--max-cycles",
+            "5",
+            "--idle-cycles",
+            "2",
+            "--target-jobs-per-worker",
+            "3",
+            "--note",
+            "workspace-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Enqueued sessions: 1" in result.output
+    assert "Stop reason: queue_drained" in result.output
+    assert "Processed: 1" in result.output
+    assert captured["max_cycles"] == 5
+    assert captured["idle_cycles"] == 2
+    assert captured["target_jobs_per_worker"] == 3
+    jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
+    assert len(jobs) == 1
+    assert jobs[0].project_id == "alpha"
+    session = EventStore(artifact_root / "archonlab.db").get_session(jobs[0].session_id or "")
+    assert session is not None
+    assert session.dry_run is False
+    assert session.max_iterations == 4
+    assert session.note == "workspace-run"
+
+
 def test_run_start_creates_artifacts(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:

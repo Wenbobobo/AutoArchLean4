@@ -495,6 +495,135 @@ def workspace_run_project(
     typer.echo(f"Runs: {len(result.run_ids)}")
 
 
+@workspace_app.command("run")
+def workspace_run(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    project_id: Annotated[
+        str | None,
+        typer.Option("--project-id", help="Optional workspace project filter."),
+    ] = None,
+    max_iterations: Annotated[
+        int | None,
+        typer.Option("--max-iterations", min=1, help="Optional session iteration cap."),
+    ] = None,
+    dry_run: Annotated[
+        bool | None,
+        typer.Option("--dry-run/--execute", help="Override the workspace project run mode."),
+    ] = None,
+    priority: Annotated[
+        int,
+        typer.Option("--priority", help="Base queue priority for created session jobs."),
+    ] = 0,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", help="Optional session note."),
+    ] = None,
+    max_cycles: Annotated[
+        int,
+        typer.Option("--max-cycles", min=1, help="Maximum autoscaling control cycles."),
+    ] = 10,
+    idle_cycles: Annotated[
+        int,
+        typer.Option(
+            "--idle-cycles",
+            min=1,
+            help="Stop after this many consecutive no-progress control cycles.",
+        ),
+    ] = 1,
+    workers: Annotated[
+        int | None,
+        typer.Option(
+            "--workers",
+            min=1,
+            help="Optional cap on workers launched per autoscaling cycle.",
+        ),
+    ] = None,
+    target_jobs_per_worker: Annotated[
+        int,
+        typer.Option(
+            "--target-jobs-per-worker",
+            min=1,
+            help="Heuristic queue load assigned to each planned worker profile.",
+        ),
+    ] = 2,
+    max_jobs_per_worker: Annotated[
+        int | None,
+        typer.Option(
+            "--max-jobs-per-worker",
+            min=1,
+            help="Optional maximum jobs processed by each worker in a cycle.",
+        ),
+    ] = None,
+    poll_seconds: Annotated[
+        float,
+        typer.Option("--poll-seconds", min=0.1, help="Polling interval when the queue is empty."),
+    ] = 2.0,
+    idle_timeout_seconds: Annotated[
+        float,
+        typer.Option(
+            "--idle-timeout-seconds",
+            min=0.1,
+            help="Stop each launched worker after this many idle seconds.",
+        ),
+    ] = 30.0,
+    stale_after_seconds: Annotated[
+        float | None,
+        typer.Option(
+            "--stale-after-seconds",
+            min=0.1,
+            help="Ignore or reap active workers older than this heartbeat age.",
+        ),
+    ] = 120.0,
+) -> None:
+    workspace_config = load_workspace_config(config)
+    queue_store = QueueStore(workspace_config.run.artifact_root / "archonlab.db")
+    jobs = queue_store.enqueue_workspace_sessions(
+        config,
+        project_ids=[project_id] if project_id is not None else None,
+        max_iterations=max_iterations,
+        dry_run=dry_run,
+        priority=priority,
+        note=note,
+    )
+    typer.echo(f"Enqueued sessions: {len(jobs)}")
+    if not jobs:
+        typer.echo("Stop reason: no_sessions_enqueued")
+        typer.echo("Processed: 0")
+        typer.echo("Paused: 0")
+        typer.echo("Failed: 0")
+        typer.echo("Workers launched: 0")
+        return
+
+    batch_runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(workspace_config.run.artifact_root),
+        artifact_root=workspace_config.run.artifact_root,
+        slot_limit=workers or workspace_config.run.max_parallel,
+    )
+    result = FleetController(
+        queue_store=queue_store,
+        batch_runner=batch_runner,
+    ).run(
+        max_cycles=max_cycles,
+        idle_cycles=idle_cycles,
+        worker_count=workers,
+        target_jobs_per_worker=target_jobs_per_worker,
+        max_jobs_per_worker=max_jobs_per_worker,
+        poll_seconds=poll_seconds,
+        idle_timeout_seconds=idle_timeout_seconds,
+        stale_after_seconds=stale_after_seconds,
+    )
+    typer.echo(f"Cycles: {result.cycles_completed}")
+    typer.echo(f"Stop reason: {result.stop_reason}")
+    typer.echo(f"Processed: {result.total_processed_jobs}")
+    typer.echo(f"Paused: {result.total_paused_jobs}")
+    typer.echo(f"Failed: {result.total_failed_jobs}")
+    typer.echo(f"Workers launched: {result.total_workers_launched}")
+
+
 @run_app.command("start")
 def run_start(
     config: Annotated[
