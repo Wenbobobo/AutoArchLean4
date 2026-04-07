@@ -23,6 +23,7 @@ from archonlab.models import (
     ProviderPoolMemberHealth,
     ProviderPoolMemberHealthStatus,
     QueueJobPreview,
+    RunLoopResult,
     RunStatus,
     RunSummary,
     SessionStatus,
@@ -424,6 +425,91 @@ def test_workspace_stop_loop_command_requests_stop(
     assert control_payload["reason"] == "operator_stop_requested"
 
 
+def test_workspace_daemon_commands_run_status_and_stop(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 10\n\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+
+    def fake_run(self, **kwargs) -> WorkspaceLoopResult:
+        del kwargs
+        return WorkspaceLoopResult(
+            workspace_id="demo-workspace",
+            loop_run_id="loop-daemon-cli-1",
+            loop_id="loop-daemon-cli-1",
+            stop_reason="idle_cycles_exhausted",
+            cycles_completed=1,
+        )
+
+    monkeypatch.setattr("archonlab.workspace_daemon.WorkspaceLoopController.run", fake_run)
+
+    run_result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "daemon",
+            "run",
+            "--config",
+            str(config_path),
+            "--max-ticks",
+            "1",
+            "--poll-seconds",
+            "0",
+        ],
+    )
+    status_result = runner.invoke(
+        app,
+        ["workspace", "daemon", "status", "--config", str(config_path), "--json"],
+    )
+    stop_result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "daemon",
+            "stop",
+            "--config",
+            str(config_path),
+            "--reason",
+            "operator_pause",
+        ],
+    )
+    stopped_status_result = runner.invoke(
+        app,
+        ["workspace", "daemon", "status", "--config", str(config_path), "--json"],
+    )
+
+    assert run_result.exit_code == 0
+    assert "Daemon:" in run_result.output
+    assert "Ticks: 1" in run_result.output
+    assert status_result.exit_code == 0
+    status_payload = json.loads(status_result.output)
+    assert status_payload["tick_count"] == 1
+    assert status_payload["last_loop_run_id"] == "loop-daemon-cli-1"
+    assert status_payload["status"] == "idle"
+    assert stop_result.exit_code == 0
+    assert "Stop requested: demo-workspace" in stop_result.output
+    stopped_payload = json.loads(stopped_status_result.output)
+    assert stopped_payload["stop_requested"] is True
+    assert stopped_payload["request_reason"] == "operator_pause"
+
+
 def test_workspace_run_project_command_executes_loop(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:
@@ -459,6 +545,8 @@ def test_workspace_run_project_command_executes_loop(
     )
 
     assert result.exit_code == 0
+    assert "Loop: run-loop-" in result.output
+    assert "Artifacts:" in result.output
     assert "Project: demo-project" in result.output
     assert "Completed iterations: 2" in result.output
 
@@ -977,8 +1065,54 @@ def test_run_loop_command_creates_session_iterations(
     )
 
     assert result.exit_code == 0
+    assert "Loop: run-loop-" in result.output
+    assert "Artifacts:" in result.output
     assert "Session: session-" in result.output
     assert "Completed iterations: 2" in result.output
+
+
+def test_run_loops_command_lists_recent_runs(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    store.upsert_run_loop_run(
+        RunLoopResult(
+            loop_run_id="run-loop-demo-1",
+            session_id="session-demo-1",
+            workspace_id="standalone",
+            project_id="demo",
+            status=SessionStatus.PAUSED,
+            dry_run=True,
+            max_iterations=2,
+            completed_iterations=2,
+            run_ids=["run-1", "run-2"],
+            stop_reason="max_iterations_reached",
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        ["run", "loops", "--config", str(config_path), "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["project"] == "demo"
+    assert len(payload["loops"]) == 1
+    assert payload["loops"][0]["loop_run_id"] == "run-loop-demo-1"
 
 
 def test_benchmark_run_creates_summary(
