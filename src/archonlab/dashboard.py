@@ -411,6 +411,9 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             control_service=control,
             artifact_root=config.run.artifact_root,
             slot_limit=config.run.max_parallel,
+            provider_pools=(
+                config.provider_pools if config.provider.pool is not None else None
+            ),
         )
         return runner.run_pending(max_jobs=max_jobs).model_dump(mode="json")
 
@@ -426,6 +429,9 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             control_service=control,
             artifact_root=config.run.artifact_root,
             slot_limit=body.workers or config.run.max_parallel,
+            provider_pools=(
+                config.provider_pools if config.provider.pool is not None else None
+            ),
         )
         report = runner.run_fleet(
             worker_count=(

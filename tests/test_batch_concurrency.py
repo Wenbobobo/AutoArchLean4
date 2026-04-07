@@ -6,7 +6,17 @@ from types import SimpleNamespace
 
 from archonlab.batch import BatchRunner
 from archonlab.control import ControlService
-from archonlab.models import BatchRunReport, ExecutorKind, ProviderKind
+from archonlab.models import (
+    BatchRunReport,
+    ExecutorKind,
+    ProviderKind,
+    ProviderPoolConfig,
+    ProviderPoolHealthReport,
+    ProviderPoolHealthStatus,
+    ProviderPoolMemberConfig,
+    ProviderPoolMemberHealth,
+    ProviderPoolMemberHealthStatus,
+)
 from archonlab.queue import QueueStore
 
 
@@ -325,3 +335,82 @@ def test_batch_runner_plan_driven_fleet_launches_generic_workers_for_unconstrain
     assert launched[0]["cost_tiers"] is None
     assert launched[0]["endpoint_classes"] is None
     assert str(launched[0]["note"]).startswith("planned_fleet:generic:")
+
+
+def test_batch_runner_plan_driven_fleet_skips_profiles_without_available_provider_capacity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "premium.toml"},
+        project_id="premium-project",
+        required_executor_kinds=[ExecutorKind.DRY_RUN],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4"],
+        required_cost_tiers=["premium"],
+        required_endpoint_classes=["lab"],
+    )
+
+    runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(tmp_path / "control"),
+        artifact_root=tmp_path / "batch-artifacts",
+        slot_limit=1,
+        provider_pools={
+            "lab": ProviderPoolConfig(
+                name="lab",
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="premium-a",
+                        model="gpt-5.4",
+                        cost_tier="premium",
+                        endpoint_class="lab",
+                    )
+                ],
+            )
+        },
+    )
+
+    monkeypatch.setattr(
+        "archonlab.batch.snapshot_provider_pool_health",
+        lambda provider_pools, *, db_path=None: [
+            ProviderPoolHealthReport(
+                pool_name="lab",
+                status=ProviderPoolHealthStatus.ALL_QUARANTINED,
+                strategy="ordered_failover",
+                total_members=1,
+                available_members=0,
+                quarantined_members=1,
+                members=[
+                    ProviderPoolMemberHealth(
+                        pool_name="lab",
+                        member_name="premium-a",
+                        status=ProviderPoolMemberHealthStatus.QUARANTINED,
+                        model="gpt-5.4",
+                        cost_tier="premium",
+                        endpoint_class="lab",
+                    )
+                ],
+            )
+        ],
+    )
+
+    launched: list[dict[str, object]] = []
+
+    def fake_run_worker(**kwargs) -> BatchRunReport:
+        launched.append(kwargs)
+        return BatchRunReport(worker_ids=[f"worker-{len(launched)}"])
+
+    monkeypatch.setattr(runner, "run_worker", fake_run_worker)
+
+    report = runner.run_fleet(
+        plan_driven=True,
+        target_jobs_per_worker=1,
+        idle_timeout_seconds=0.1,
+        poll_seconds=0.01,
+        stale_after_seconds=60,
+    )
+
+    assert report.worker_ids == []
+    assert launched == []

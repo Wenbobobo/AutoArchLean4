@@ -117,6 +117,11 @@ class WorkspaceLoopController:
             control_service=ControlService(self.workspace_config.run.artifact_root),
             artifact_root=self.workspace_config.run.artifact_root,
             slot_limit=workers or self.workspace_config.run.max_parallel,
+            provider_pools=(
+                self.workspace_config.provider_pools
+                if self.workspace_config.provider.pool is not None
+                else None
+            ),
         )
         self._persist_result(event_store, artifact_dir, result)
 

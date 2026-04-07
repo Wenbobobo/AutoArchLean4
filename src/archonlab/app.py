@@ -118,6 +118,22 @@ def _resolve_workspace_name(config_path: Path) -> str:
         return "standalone"
 
 
+def _resolve_batch_provider_pools(
+    config_path: Path,
+) -> dict[str, ProviderPoolConfig]:
+    resolved_config_path = config_path.resolve()
+    try:
+        workspace_config = load_workspace_config(resolved_config_path)
+        if workspace_config.provider.pool is None:
+            return {}
+        return workspace_config.provider_pools
+    except (KeyError, ValueError):
+        app_config = load_config(resolved_config_path)
+        if app_config.provider.pool is None:
+            return {}
+        return app_config.provider_pools
+
+
 def _resolve_provider_runtime(
     config_path: Path,
 ) -> tuple[str | None, dict[str, ProviderPoolConfig]]:
@@ -957,6 +973,11 @@ def workspace_run(
         control_service=ControlService(workspace_config.run.artifact_root),
         artifact_root=workspace_config.run.artifact_root,
         slot_limit=workers or workspace_config.run.max_parallel,
+        provider_pools=(
+            workspace_config.provider_pools
+            if workspace_config.provider.pool is not None
+            else None
+        ),
     )
     try:
         worker_launcher = create_worker_launcher(launcher, config)
@@ -1981,6 +2002,7 @@ def queue_fleet(
         control_service=ControlService(artifact_root),
         artifact_root=artifact_root,
         slot_limit=workers or max_parallel,
+        provider_pools=_resolve_batch_provider_pools(config),
     )
     report = runner.run_fleet(
         worker_count=workers if plan_driven else (workers or max_parallel),
@@ -2175,6 +2197,7 @@ def queue_autoscale(
         control_service=ControlService(artifact_root),
         artifact_root=artifact_root,
         slot_limit=workers or max_parallel,
+        provider_pools=_resolve_batch_provider_pools(config),
     )
     try:
         worker_launcher = create_worker_launcher(launcher, config)
