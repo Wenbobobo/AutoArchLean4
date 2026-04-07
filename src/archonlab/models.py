@@ -748,6 +748,7 @@ class ExperimentProjectLedger(BaseModel):
     project_id: str
     run_id: str | None = None
     run_status: RunStatus
+    artifact_dir: Path | None = None
     theorem_outcomes: list[TheoremOutcome] = Field(default_factory=list)
     failure_taxonomy: list[FailureCategorySummary] = Field(default_factory=list)
 
@@ -791,6 +792,21 @@ class ExperimentLedgerComparison(BaseModel):
     candidate_benchmark: str
     summary: ExperimentLedgerComparisonSummary
     changes: list[ExperimentLedgerChange] = Field(default_factory=list)
+
+
+class ExperimentReplayPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    benchmark_name: str
+    benchmark_run_id: str
+    project_id: str
+    run_id: str | None = None
+    run_status: RunStatus
+    artifact_dir: Path | None = None
+    run_summary_path: Path | None = None
+    execution_path: Path | None = None
+    theorem_outcomes: list[TheoremOutcome] = Field(default_factory=list)
+    failure_taxonomy: list[FailureCategorySummary] = Field(default_factory=list)
 
 
 class ProjectScore(BaseModel):
@@ -1007,6 +1023,8 @@ class ProjectSession(BaseModel):
     finished_at: datetime | None = None
     last_run_id: str | None = None
     error_message: str | None = None
+    last_stop_reason: str | None = None
+    last_resume_reason: str | None = None
     note: str | None = None
 
     @property

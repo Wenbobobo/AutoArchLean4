@@ -14,6 +14,7 @@ from .models import (
     ExperimentLedgerComparisonSummary,
     ExperimentLedgerSummary,
     ExperimentProjectLedger,
+    ExperimentReplayPayload,
     FailureCategory,
     FailureCategorySummary,
     LeanAnalysisSnapshot,
@@ -158,6 +159,15 @@ def load_experiment_ledger(path: Path) -> ExperimentLedger:
     return ExperimentLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
 
 
+def _resolve_artifact_file(artifact_dir: Path | None, name: str) -> Path | None:
+    if artifact_dir is None:
+        return None
+    path = artifact_dir / name
+    if not path.exists():
+        return None
+    return path
+
+
 def _comparison_change_kind(
     *,
     baseline_exists: bool,
@@ -257,6 +267,43 @@ def build_experiment_ledger_comparison(
     return compare_experiment_ledgers(baseline_ledger, candidate_ledger)
 
 
+def build_experiment_replay(
+    *,
+    experiment_ledger: ExperimentLedger,
+    project_id: str,
+    theorem_name: str | None = None,
+) -> ExperimentReplayPayload:
+    project_ledger = next(
+        (outcome for outcome in experiment_ledger.outcomes if outcome.project_id == project_id),
+        None,
+    )
+    if project_ledger is None:
+        raise KeyError(f"Unknown project in experiment ledger: {project_id}")
+    theorem_outcomes = project_ledger.theorem_outcomes
+    if theorem_name is not None:
+        theorem_outcomes = [
+            outcome
+            for outcome in theorem_outcomes
+            if outcome.theorem_name == theorem_name
+        ]
+        if not theorem_outcomes:
+            raise KeyError(
+                f"Unknown theorem in experiment ledger project {project_id}: {theorem_name}"
+            )
+    return ExperimentReplayPayload(
+        benchmark_name=experiment_ledger.benchmark_name,
+        benchmark_run_id=experiment_ledger.benchmark_run_id,
+        project_id=project_ledger.project_id,
+        run_id=project_ledger.run_id,
+        run_status=project_ledger.run_status,
+        artifact_dir=project_ledger.artifact_dir,
+        run_summary_path=_resolve_artifact_file(project_ledger.artifact_dir, "run-summary.json"),
+        execution_path=_resolve_artifact_file(project_ledger.artifact_dir, "execution.json"),
+        theorem_outcomes=theorem_outcomes,
+        failure_taxonomy=project_ledger.failure_taxonomy,
+    )
+
+
 def build_experiment_ledger(
     *,
     benchmark_name: str,
@@ -324,6 +371,7 @@ def build_experiment_ledger(
                 project_id=project_result.id,
                 run_id=project_result.run_id,
                 run_status=project_result.run_status,
+                artifact_dir=project_result.artifact_dir,
                 theorem_outcomes=project_result.theorem_outcomes,
                 failure_taxonomy=project_result.failure_taxonomy,
             )

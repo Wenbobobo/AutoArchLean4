@@ -20,7 +20,11 @@ from .config import (
 from .control import ControlService
 from .dashboard import create_dashboard_app
 from .events import EventStore
-from .experiment_ledger import compare_experiment_ledgers, load_experiment_ledger
+from .experiment_ledger import (
+    build_experiment_replay,
+    compare_experiment_ledgers,
+    load_experiment_ledger,
+)
 from .fleet import FleetController
 from .ledger import load_benchmark_ledger
 from .models import (
@@ -772,12 +776,58 @@ def benchmark_compare(
         f"new={comparison.summary.new}, "
         f"removed={comparison.summary.removed}"
     )
-    for change in comparison.changes[:20]:
-        typer.echo(
-            f"{change.project_id} | {change.theorem_name} | "
-            f"{change.baseline_state.value} -> {change.candidate_state.value} | "
-            f"{change.change.value}"
+
+
+@benchmark_app.command("replay")
+def benchmark_replay(
+    summary: Annotated[
+        Path | None,
+        typer.Option("--summary", exists=True, help="Benchmark summary JSON."),
+    ] = None,
+    ledger: Annotated[
+        Path | None,
+        typer.Option("--ledger", exists=True, help="Experiment ledger JSON."),
+    ] = None,
+    project_id: Annotated[
+        str,
+        typer.Option("--project-id", help="Project identifier inside the experiment ledger."),
+    ] = "",
+    theorem_name: Annotated[
+        str | None,
+        typer.Option("--theorem-name", help="Optional theorem filter."),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable JSON.")
+    ] = False,
+) -> None:
+    experiment_ledger = _load_experiment_ledger_from_options(
+        summary=summary,
+        ledger=ledger,
+    )
+    try:
+        replay = build_experiment_replay(
+            experiment_ledger=experiment_ledger,
+            project_id=project_id,
+            theorem_name=theorem_name,
         )
+    except KeyError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    if json_output:
+        typer.echo(json.dumps(replay.model_dump(mode="json"), ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"Benchmark: {replay.benchmark_name}")
+    typer.echo(f"Run: {replay.benchmark_run_id}")
+    typer.echo(f"Project: {replay.project_id}")
+    typer.echo(f"Status: {replay.run_status.value}")
+    if replay.artifact_dir is not None:
+        typer.echo(f"Artifacts: {replay.artifact_dir}")
+    if replay.run_summary_path is not None:
+        typer.echo(f"Run Summary: {replay.run_summary_path}")
+    if replay.execution_path is not None:
+        typer.echo(f"Execution: {replay.execution_path}")
+    typer.echo(f"Theorems: {len(replay.theorem_outcomes)}")
 
 
 @worktree_app.command("create")
@@ -1442,7 +1492,9 @@ def queue_session_status(
         typer.echo(
             f"{session.session_id} | {session.project_id} | {session.status.value} | "
             f"iterations={session.completed_iterations}/{session.max_iterations} | "
-            f"job={(active_job.id if active_job is not None else '-')}"
+            f"job={(active_job.id if active_job is not None else '-')} | "
+            f"stop={session.last_stop_reason or '-'} | "
+            f"resume={session.last_resume_reason or '-'}"
         )
 
 
@@ -1689,6 +1741,10 @@ def queue_resume_session(
         int,
         typer.Option("--priority", help="Base queue priority for the resumed session job."),
     ] = 0,
+    resume_reason: Annotated[
+        str | None,
+        typer.Option("--resume-reason", help="Optional operator reason for resuming."),
+    ] = None,
     note: Annotated[
         str | None,
         typer.Option("--note", help="Optional updated session note."),
@@ -1724,6 +1780,8 @@ def queue_resume_session(
         status=SessionStatus.PENDING,
         max_iterations=resolved_max_iterations,
         clear_error_message=True,
+        clear_stop_reason=True,
+        resume_reason=resume_reason or "queue_resume_session",
         note=note,
     )
     job = QueueStore(workspace_config.run.artifact_root / "archonlab.db").enqueue_session_quantum(

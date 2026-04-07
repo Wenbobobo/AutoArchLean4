@@ -4,6 +4,7 @@ from pathlib import Path
 
 from archonlab.experiment_ledger import (
     build_experiment_ledger_comparison,
+    build_experiment_replay,
     build_failure_taxonomy,
     build_theorem_outcome_ledger,
 )
@@ -11,6 +12,7 @@ from archonlab.models import (
     ExperimentLedger,
     ExperimentLedgerSummary,
     ExperimentProjectLedger,
+    ExperimentReplayPayload,
     FailureCategory,
     LeanAnalysisSnapshot,
     LeanDeclaration,
@@ -184,3 +186,57 @@ def test_experiment_ledger_comparison_reports_theorem_level_changes() -> None:
     assert change_by_theorem["foo"].baseline_state is TheoremState.CONTAINS_SORRY
     assert change_by_theorem["foo"].candidate_state is TheoremState.PROVED
     assert change_by_theorem["bar"].change is TheoremOutcomeKind.NEW
+
+
+def test_build_experiment_replay_exposes_artifact_paths_and_theorem_filter(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "run-demo"
+    artifact_dir.mkdir()
+    (artifact_dir / "run-summary.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "execution.json").write_text("{}", encoding="utf-8")
+    ledger = ExperimentLedger(
+        benchmark_name="demo-benchmark",
+        benchmark_run_id="run-demo",
+        summary=ExperimentLedgerSummary(total_projects=1, total_theorems=2),
+        outcomes=[
+            ExperimentProjectLedger(
+                project_id="demo",
+                run_id="run-demo",
+                run_status=RunStatus.COMPLETED,
+                artifact_dir=artifact_dir,
+                theorem_outcomes=[
+                    TheoremOutcome(
+                        theorem_name="foo",
+                        file_path=Path("Core.lean"),
+                        declaration_kind="theorem",
+                        before_state=TheoremState.CONTAINS_SORRY,
+                        after_state=TheoremState.PROVED,
+                        outcome=TheoremOutcomeKind.IMPROVED,
+                    ),
+                    TheoremOutcome(
+                        theorem_name="helper",
+                        file_path=Path("Core.lean"),
+                        declaration_kind="theorem",
+                        before_state=TheoremState.PROVED,
+                        after_state=TheoremState.PROVED,
+                        outcome=TheoremOutcomeKind.UNCHANGED,
+                    ),
+                ],
+            )
+        ],
+    )
+
+    replay = build_experiment_replay(
+        experiment_ledger=ledger,
+        project_id="demo",
+        theorem_name="foo",
+    )
+
+    assert isinstance(replay, ExperimentReplayPayload)
+    assert replay.project_id == "demo"
+    assert replay.artifact_dir == artifact_dir
+    assert replay.run_summary_path == artifact_dir / "run-summary.json"
+    assert replay.execution_path == artifact_dir / "execution.json"
+    assert len(replay.theorem_outcomes) == 1
+    assert replay.theorem_outcomes[0].theorem_name == "foo"

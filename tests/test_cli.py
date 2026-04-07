@@ -299,6 +299,27 @@ def test_benchmark_run_creates_summary(
     assert experiment_ledger_payload["summary"]["total_projects"] == 1
     assert experiment_ledger_payload["outcomes"][0]["project_id"] == "demo"
 
+    replay_result = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "replay",
+            "--summary",
+            str(summary_files[0]),
+            "--project-id",
+            "demo",
+            "--json",
+        ],
+    )
+
+    assert replay_result.exit_code == 0
+    replay_payload = json.loads(replay_result.output)
+    assert replay_payload["benchmark_name"] == "smoke"
+    assert replay_payload["project_id"] == "demo"
+    assert replay_payload["artifact_dir"] is not None
+    assert replay_payload["run_summary_path"].endswith("run-summary.json")
+    assert isinstance(replay_payload["theorem_outcomes"], list)
+
 
 def test_benchmark_compare_reports_theorem_level_deltas(tmp_path: Path) -> None:
     baseline_ledger = tmp_path / "baseline-ledger.json"
@@ -943,16 +964,32 @@ def test_queue_resume_session_command_extends_budget_and_enqueues_quantum(
             session.session_id,
             "--max-iterations",
             "3",
+            "--resume-reason",
+            "manual_extend_budget",
+        ],
+    )
+    status_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "session-status",
+            "--config",
+            str(config_path),
+            "--session-id",
+            session.session_id,
         ],
     )
 
     assert result.exit_code == 0
+    assert status_result.exit_code == 0
     assert f"Session: {session.session_id}" in result.output
     assert "Enqueued job:" in result.output
 
     updated = store.get_session(session.session_id)
     assert updated is not None
     assert updated.max_iterations == 3
+    assert updated.last_resume_reason == "manual_extend_budget"
+    assert "resume=manual_extend_budget" in status_result.output
 
     jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
     assert len(jobs) == 1
