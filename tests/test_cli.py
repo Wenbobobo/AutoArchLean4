@@ -8,6 +8,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from archonlab.app import app
+from archonlab.checks import ToolStatus
 from archonlab.events import EventStore
 from archonlab.models import (
     ActionPhase,
@@ -112,6 +113,59 @@ def test_workspace_init_command_writes_config(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert (tmp_path / "workspace.toml").exists()
+
+
+def test_doctor_command_reports_failed_command_lean_analyzer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("archonlab.checks._read_version", lambda executable: "stub-version")
+    monkeypatch.setattr(
+        "archonlab.checks._tool_status",
+        lambda name, *, required: ToolStatus(
+            name=name,
+            required=required,
+            available=True,
+            path=f"/mock/{name}",
+            version="stub-version",
+        ),
+    )
+    project_path = tmp_path / "LeanProject"
+    archon_path = tmp_path / "Archon"
+    artifact_root = tmp_path / "artifacts"
+    analyzer_script = tmp_path / "failing_sidecar.py"
+    state_dir = project_path / ".archon"
+    project_path.mkdir()
+    archon_path.mkdir()
+    state_dir.mkdir(parents=True)
+    (project_path / "Core.lean").write_text(
+        "theorem demo : True := by\n  sorry\n",
+        encoding="utf-8",
+    )
+    (state_dir / "PROGRESS.md").write_text("# progress\n", encoding="utf-8")
+    (archon_path / "archon-loop.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    analyzer_script.write_text("raise SystemExit(1)\n", encoding="utf-8")
+    config_path = tmp_path / "archonlab.toml"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{project_path}"\n'
+        f'archon_path = "{archon_path}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n\n"
+        "[lean_analyzer]\n"
+        'kind = "command"\n'
+        f'command = ["{analyzer_script}"]\n',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["doctor", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "[FAIL] lean_analyzer:" in result.output
+    assert "fallback=yes" in result.output
 
 
 def test_workspace_status_and_start_session_commands(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from archonlab.lean_analyzer import collect_lean_analysis
 from archonlab.models import LeanAnalysisSnapshot, LeanDeclaration
 from archonlab.project_state import collect_project_snapshot
 from archonlab.task_graph import build_task_graph
@@ -128,3 +129,23 @@ def test_collect_project_snapshot_falls_back_when_analyzer_fails(
     assert snapshot.theorem_count == 1
     assert snapshot.sorry_count == 1
     assert snapshot.axiom_count == 0
+
+
+def test_collect_lean_analysis_marks_fallback_metadata_when_analyzer_fails(
+    fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    (fake_archon_project / "Core.lean").write_text(
+        "theorem foo : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+
+    snapshot = collect_lean_analysis(
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+        analyzer=FailingAnalyzer(),
+    )
+
+    assert snapshot.backend == "regex"
+    assert snapshot.fallback_used is True
+    assert snapshot.fallback_reason == "sidecar unavailable"

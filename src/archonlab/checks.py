@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from pathlib import Path
 
 from pydantic import BaseModel
 
-from .lean_analyzer import CommandLeanAnalyzer, RegexLeanAnalyzer
+from .lean_analyzer import (
+    CommandLeanAnalyzer,
+    RegexLeanAnalyzer,
+    build_lean_analyzer,
+    collect_lean_analysis,
+)
 from .models import LeanAnalyzerConfig, LeanAnalyzerKind, ProjectConfig
 
 
@@ -63,6 +69,52 @@ def _lean_analyzer_detail(config: LeanAnalyzerConfig | None) -> str:
     return f"{CommandLeanAnalyzer.__name__} ({command})"
 
 
+def _resolve_command_path(command: list[str]) -> str | None:
+    if not command:
+        return None
+    executable = command[0]
+    command_path = Path(executable).expanduser()
+    if command_path.is_absolute() or "/" in executable:
+        return str(command_path.resolve()) if command_path.exists() else None
+    return shutil.which(executable)
+
+
+def _smoke_check_lean_analyzer(
+    project: ProjectConfig,
+    config: LeanAnalyzerConfig | None,
+) -> PathStatus:
+    detail = _lean_analyzer_detail(config)
+    if config is None or config.kind is LeanAnalyzerKind.REGEX:
+        return PathStatus(name="lean_analyzer", ok=True, detail=detail)
+    if not config.command:
+        return PathStatus(name="lean_analyzer", ok=False, detail=detail)
+
+    command_path = _resolve_command_path(config.command)
+    if not project.project_path.exists() or not project.archon_path.exists():
+        if command_path is None:
+            detail = f"{detail} | executable=missing"
+            return PathStatus(name="lean_analyzer", ok=False, detail=detail)
+        detail = f"{detail} | executable={command_path} | smoke=skipped"
+        return PathStatus(name="lean_analyzer", ok=True, detail=detail)
+
+    snapshot = collect_lean_analysis(
+        project_path=project.project_path,
+        archon_path=project.archon_path,
+        analyzer=build_lean_analyzer(config),
+    )
+    detail = (
+        f"{detail} | backend={snapshot.backend} | theorem_count={snapshot.theorem_count} | "
+        f"fallback={'yes' if snapshot.fallback_used else 'no'}"
+    )
+    if snapshot.fallback_reason:
+        detail = f"{detail} | fallback_reason={snapshot.fallback_reason}"
+    return PathStatus(
+        name="lean_analyzer",
+        ok=not snapshot.fallback_used,
+        detail=detail,
+    )
+
+
 def gather_doctor_report(
     project: ProjectConfig | None = None,
     *,
@@ -104,13 +156,9 @@ def gather_doctor_report(
                     ok=(project.project_path / ".archon" / "PROGRESS.md").exists(),
                     detail=str(project.project_path / ".archon" / "PROGRESS.md"),
                 ),
-                PathStatus(
-                    name="lean_analyzer",
-                    ok=True,
-                    detail=_lean_analyzer_detail(lean_analyzer),
-                ),
             ]
         )
+        paths.append(_smoke_check_lean_analyzer(project, lean_analyzer))
 
     return DoctorReport(
         python_version=_read_version("python3.12") or "unavailable",

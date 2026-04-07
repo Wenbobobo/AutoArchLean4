@@ -78,6 +78,7 @@ class RegexLeanAnalyzer:
         return LeanAnalysisSnapshot(
             project_id=resolved_project_path.name,
             project_path=resolved_project_path,
+            backend="regex",
             declarations=declarations,
             lean_file_count=lean_file_count,
             theorem_count=theorem_count,
@@ -118,7 +119,15 @@ class CommandLeanAnalyzer:
         payload = completed.stdout.strip()
         if not payload:
             raise RuntimeError("Lean analyzer command returned no output")
-        return LeanAnalysisSnapshot.model_validate(json.loads(payload))
+        raw_snapshot = json.loads(payload)
+        snapshot = LeanAnalysisSnapshot.model_validate(raw_snapshot)
+        return snapshot.model_copy(
+            update={
+                "backend": str(raw_snapshot.get("backend", "command")),
+                "fallback_used": bool(raw_snapshot.get("fallback_used", False)),
+                "fallback_reason": raw_snapshot.get("fallback_reason"),
+            }
+        )
 
 
 def build_lean_analyzer(config: LeanAnalyzerConfig | None = None) -> LeanAnalyzer:
@@ -144,10 +153,16 @@ def collect_lean_analysis(
             project_path=project_path,
             archon_path=archon_path,
         )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         if isinstance(primary_analyzer, RegexLeanAnalyzer):
             raise
-        return RegexLeanAnalyzer().analyze(
+        fallback_snapshot = RegexLeanAnalyzer().analyze(
             project_path=project_path,
             archon_path=archon_path,
+        )
+        return fallback_snapshot.model_copy(
+            update={
+                "fallback_used": True,
+                "fallback_reason": str(exc),
+            }
         )

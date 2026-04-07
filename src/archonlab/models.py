@@ -696,6 +696,9 @@ class LeanAnalysisSnapshot(BaseModel):
     project_id: str
     project_path: Path
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    backend: str = "regex"
+    fallback_used: bool = False
+    fallback_reason: str | None = None
     declarations: list[LeanDeclaration] = Field(default_factory=list)
     lean_file_count: int = 0
     theorem_count: int = 0
