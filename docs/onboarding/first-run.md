@@ -59,6 +59,10 @@ uv run archonlab queue sweep-workers --config archonlab.toml --stale-after-secon
 # 10. 启动控制面 dashboard
 uv run archonlab dashboard serve --config archonlab.toml --port 8000
 
+# 10b. 如果你想临时切 workflow，而不改配置文件
+uv run archonlab control workflow --config archonlab.toml --workflow fixed_loop --clear-workflow-spec
+uv run archonlab control clear-workflow --config archonlab.toml
+
 # 11. 如果要直接走 Archon 固定 loop，再手动启动
 ./archon-loop.sh /path/to/lean-project
 ```
@@ -71,6 +75,7 @@ uv run archonlab dashboard serve --config archonlab.toml --port 8000
 - Lean 文件里的 `sorry` 有没有减少
 - `artifacts/` 里有没有产生可回放的 run / benchmark 结果
 - dashboard 里能不能暂停、恢复、注入 hint
+- dashboard / CLI 里能不能临时切 workflow override，再恢复默认
 - `execution.json` 里有没有真实 executor 输出
 - `queue workers` 能不能看到 slot / current job / processed 统计
 - 独立 `queue worker` 跑完后，worker 是否进入 `stopped`
