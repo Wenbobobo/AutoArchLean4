@@ -270,6 +270,33 @@ class RunPreview(BaseModel):
     resolved_provider: ProviderConfig | None = None
 
 
+class QueueJobPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phase: ActionPhase | None = None
+    reason: str | None = None
+    stage: str | None = None
+    supervisor_action: SupervisorAction | None = None
+    supervisor_reason: SupervisorReason | None = None
+    supervisor_summary: str | None = None
+    task_id: str | None = None
+    task_title: str | None = None
+    theorem_name: str | None = None
+    file_path: Path | None = None
+    task_status: TaskStatus | None = None
+    task_priority: int | None = None
+    objective_relevant: bool | None = None
+    base_priority: int = 0
+    task_priority_bonus: int = 0
+    objective_relevance_bonus: int = 0
+    final_priority: int = 0
+    executor_kind: ExecutorKind | None = None
+    provider_kind: ProviderKind | None = None
+    model: str | None = None
+    cost_tier: str | None = None
+    endpoint_class: str | None = None
+
+
 class BenchmarkConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -503,6 +530,7 @@ class QueueJob(BaseModel):
     required_models: list[str] = Field(default_factory=list)
     required_cost_tiers: list[str] = Field(default_factory=list)
     required_endpoint_classes: list[str] = Field(default_factory=list)
+    preview: QueueJobPreview | None = None
 
     @property
     def id(self) -> str:

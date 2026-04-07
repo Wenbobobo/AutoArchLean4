@@ -10,10 +10,16 @@ from fastapi.testclient import TestClient  # noqa: E402
 from archonlab.dashboard import create_dashboard_app  # noqa: E402
 from archonlab.events import EventStore  # noqa: E402
 from archonlab.models import (  # noqa: E402
+    ActionPhase,
     BatchRunReport,
     EventRecord,
+    ExecutorKind,
+    ProviderKind,
+    QueueJobPreview,
     RunStatus,
     RunSummary,
+    SupervisorAction,
+    SupervisorReason,
     WorkflowMode,
 )
 from archonlab.queue import QueueStore  # noqa: E402
@@ -129,6 +135,35 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert (project_path / ".archon" / "USER_HINTS.md").exists()
 
     queue_store = QueueStore(artifact_root / "archonlab.db")
+    queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": str(tmp_path / "demo.toml")},
+        project_id="demo-project",
+        priority=10,
+        required_executor_kinds=[ExecutorKind.DRY_RUN],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4"],
+        required_cost_tiers=["premium"],
+        required_endpoint_classes=["lab"],
+        preview=QueueJobPreview(
+            phase=ActionPhase.PROVER,
+            reason="task_graph_focus",
+            stage="prover",
+            supervisor_action=SupervisorAction.CONTINUE,
+            supervisor_reason=SupervisorReason.HEALTHY,
+            supervisor_summary="Current state looks healthy enough to continue the planned loop.",
+            theorem_name="foo",
+            base_priority=3,
+            task_priority_bonus=2,
+            objective_relevance_bonus=5,
+            final_priority=10,
+            executor_kind=ExecutorKind.DRY_RUN,
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model="gpt-5.4",
+            cost_tier="premium",
+            endpoint_class="lab",
+        ),
+    )
     queue_store.register_worker(slot_index=1, worker_id="worker-test")
     stale_heartbeat = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
     queue_store._conn.execute(
@@ -141,6 +176,16 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     workers = workers_response.json()
     assert workers[0]["worker_id"] == "worker-test"
     assert workers[0]["stale"] is True
+
+    jobs_response = client.get("/api/queue/jobs")
+    assert jobs_response.status_code == 200
+    jobs = jobs_response.json()
+    assert jobs[0]["preview"]["phase"] == "prover"
+    assert jobs[0]["preview"]["reason"] == "task_graph_focus"
+    assert jobs[0]["preview"]["stage"] == "prover"
+    assert jobs[0]["preview"]["final_priority"] == 10
+    assert jobs[0]["preview"]["model"] == "gpt-5.4"
+    assert jobs[0]["preview"]["supervisor_summary"].startswith("Current state looks healthy")
 
     sweep_response = client.post(
         "/api/queue/workers/sweep",

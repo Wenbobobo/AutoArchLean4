@@ -12,6 +12,7 @@ from typing import TypedDict, cast
 
 from .benchmark import load_benchmark_manifest
 from .models import (
+    ActionPhase,
     ExecutionPolicy,
     ExecutorConfig,
     ExecutorKind,
@@ -21,9 +22,11 @@ from .models import (
     QueueBenchmarkPayload,
     QueueJob,
     QueueJobKind,
+    QueueJobPreview,
     QueueJobStatus,
     QueueWorkerLease,
     RunConfig,
+    RunPreview,
     WorkerStatus,
     WorkflowMode,
 )
@@ -36,6 +39,7 @@ class ProjectRequirements(TypedDict):
     required_models: list[str]
     required_cost_tiers: list[str]
     required_endpoint_classes: list[str]
+    preview: QueueJobPreview
 
 
 class QueueStore:
@@ -74,7 +78,8 @@ class QueueStore:
                     required_provider_kinds TEXT,
                     required_models TEXT,
                     required_cost_tiers TEXT,
-                    required_endpoint_classes TEXT
+                    required_endpoint_classes TEXT,
+                    preview_json TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS queue_workers (
@@ -108,6 +113,7 @@ class QueueStore:
                 "required_models",
                 "required_cost_tiers",
                 "required_endpoint_classes",
+                "preview_json",
             ]:
                 with suppress(sqlite3.OperationalError):
                     self._conn.execute(f"ALTER TABLE queue_jobs ADD COLUMN {column} TEXT")
@@ -136,6 +142,7 @@ class QueueStore:
         required_models: list[str] | None = None,
         required_cost_tiers: list[str] | None = None,
         required_endpoint_classes: list[str] | None = None,
+        preview: QueueJobPreview | None = None,
     ) -> QueueJob:
         job = QueueJob(
             job_id=self._new_job_id(),
@@ -150,6 +157,7 @@ class QueueStore:
             required_models=required_models or [],
             required_cost_tiers=required_cost_tiers or [],
             required_endpoint_classes=required_endpoint_classes or [],
+            preview=preview,
         )
         self._insert(job)
         return job
@@ -199,6 +207,7 @@ class QueueStore:
                     required_models=requireds["required_models"],
                     required_cost_tiers=requireds["required_cost_tiers"],
                     required_endpoint_classes=requireds["required_endpoint_classes"],
+                    preview=requireds["preview"],
                 )
             )
         return jobs
@@ -777,8 +786,8 @@ class QueueStore:
                     created_at, updated_at, started_at, finished_at, artifact_dir, result_path,
                     error_message, pause_reason, cancel_reason
                     , worker_id, required_executor_kinds, required_provider_kinds,
-                    required_models, required_cost_tiers, required_endpoint_classes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    required_models, required_cost_tiers, required_endpoint_classes, preview_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -809,6 +818,11 @@ class QueueStore:
                     json.dumps(job.required_models, ensure_ascii=False),
                     json.dumps(job.required_cost_tiers, ensure_ascii=False),
                     json.dumps(job.required_endpoint_classes, ensure_ascii=False),
+                    (
+                        json.dumps(job.preview.model_dump(mode="json"), ensure_ascii=False)
+                        if job.preview is not None
+                        else None
+                    ),
                 ),
             )
             self._conn.commit()
@@ -845,6 +859,11 @@ class QueueStore:
             required_cost_tiers=json.loads(row["required_cost_tiers"] or "[]"),
             required_endpoint_classes=json.loads(
                 row["required_endpoint_classes"] or "[]"
+            ),
+            preview=(
+                QueueJobPreview.model_validate(json.loads(row["preview_json"]))
+                if row["preview_json"]
+                else None
             ),
         )
 
@@ -973,21 +992,29 @@ class QueueStore:
         )
         preview = service.preview()
         if preview.resolved_executor is None or preview.resolved_provider is None:
+            final_priority = base_priority
             return {
-                "priority": base_priority,
+                "priority": final_priority,
                 "required_executor_kinds": [],
                 "required_provider_kinds": [],
                 "required_models": [],
                 "required_cost_tiers": [],
                 "required_endpoint_classes": [],
+                "preview": self._build_queue_preview(
+                    preview=preview,
+                    base_priority=base_priority,
+                    final_priority=final_priority,
+                    include_dynamic_bonuses=False,
+                ),
             }
         resolved_provider = preview.resolved_provider
+        final_priority = self._derive_priority(
+            base_priority,
+            task_priority=preview.action.task_priority,
+            objective_relevant=preview.action.objective_relevant,
+        )
         return {
-            "priority": self._derive_priority(
-                base_priority,
-                task_priority=preview.action.task_priority,
-                objective_relevant=preview.action.objective_relevant,
-            ),
+            "priority": final_priority,
             "required_executor_kinds": [preview.resolved_executor.kind],
             "required_provider_kinds": [resolved_provider.kind],
             "required_models": [resolved_provider.model] if resolved_provider.model else [],
@@ -1001,7 +1028,55 @@ class QueueStore:
                 if resolved_provider.endpoint_class
                 else []
             ),
+            "preview": self._build_queue_preview(
+                preview=preview,
+                base_priority=base_priority,
+                final_priority=final_priority,
+            ),
         }
+
+    @staticmethod
+    def _build_queue_preview(
+        *,
+        preview: RunPreview,
+        base_priority: int,
+        final_priority: int,
+        include_dynamic_bonuses: bool = True,
+    ) -> QueueJobPreview:
+        task_priority_bonus = (
+            preview.action.task_priority or 0
+        ) if include_dynamic_bonuses else 0
+        objective_bonus = (
+            5 if preview.action.objective_relevant else 0
+        ) if include_dynamic_bonuses else 0
+        return QueueJobPreview(
+            phase=ActionPhase(str(preview.action.phase)),
+            reason=preview.action.reason,
+            stage=preview.action.stage,
+            supervisor_action=preview.action.supervisor_action,
+            supervisor_reason=preview.action.supervisor_reason,
+            supervisor_summary=preview.supervisor.summary,
+            task_id=preview.action.task_id,
+            task_title=preview.action.task_title,
+            theorem_name=preview.action.theorem_name,
+            file_path=preview.action.file_path,
+            task_status=preview.action.task_status,
+            task_priority=preview.action.task_priority,
+            objective_relevant=preview.action.objective_relevant,
+            base_priority=base_priority,
+            task_priority_bonus=task_priority_bonus,
+            objective_relevance_bonus=objective_bonus,
+            final_priority=final_priority,
+            executor_kind=preview.resolved_executor.kind if preview.resolved_executor else None,
+            provider_kind=preview.resolved_provider.kind if preview.resolved_provider else None,
+            model=preview.resolved_provider.model if preview.resolved_provider else None,
+            cost_tier=preview.resolved_provider.cost_tier if preview.resolved_provider else None,
+            endpoint_class=(
+                preview.resolved_provider.endpoint_class
+                if preview.resolved_provider
+                else None
+            ),
+        )
 
     @staticmethod
     def _new_job_id() -> str:

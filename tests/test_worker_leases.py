@@ -10,12 +10,16 @@ from types import SimpleNamespace
 from archonlab.batch import BatchRunner
 from archonlab.control import ControlService
 from archonlab.models import (
+    ActionPhase,
     BenchmarkProjectResult,
     ExecutorKind,
+    ProjectConfig,
     ProviderKind,
     QueueJobStatus,
     RunStatus,
     SnapshotDelta,
+    SupervisorAction,
+    SupervisorReason,
     WorkerStatus,
     WorkflowMode,
 )
@@ -440,3 +444,88 @@ def test_enqueue_benchmark_manifest_uses_previewed_resource_requirements(
     assert job.required_cost_tiers == ["premium"]
     assert job.required_endpoint_classes == ["lab"]
     assert job.priority == 10
+    assert job.preview is not None
+    assert job.preview.phase is ActionPhase.PROVER
+    assert job.preview.reason == "task_graph_focus"
+    assert job.preview.stage == "prover"
+    assert job.preview.supervisor_action is SupervisorAction.CONTINUE
+    assert job.preview.supervisor_reason is SupervisorReason.HEALTHY
+    assert job.preview.theorem_name == "foo"
+    assert job.preview.base_priority == 3
+    assert job.preview.task_priority_bonus == 2
+    assert job.preview.objective_relevance_bonus == 5
+    assert job.preview.final_priority == 10
+
+    stored = queue_store.get_job(job.id)
+    assert stored is not None
+    assert stored.preview is not None
+    assert stored.preview.phase is ActionPhase.PROVER
+    assert stored.preview.model == "gpt-5.4"
+    assert stored.preview.cost_tier == "premium"
+    assert stored.preview.endpoint_class == "lab"
+    assert stored.preview.supervisor_summary is not None
+
+
+def test_enqueue_benchmark_manifest_paused_project_keeps_base_priority_breakdown(
+    tmp_path: Path,
+) -> None:
+    project_path = _make_project(tmp_path, "DemoProject")
+    archon_path = _make_archon(tmp_path)
+    (project_path / "Core.lean").write_text(
+        "theorem foo : True := by\n"
+        "  sorry\n"
+        "\n"
+        "theorem bar : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+    (project_path / ".archon" / "proof-journal" / "sessions" / "session-1").mkdir(parents=True)
+    manifest_path = tmp_path / "paused-previewed.toml"
+    manifest_path.write_text(
+        "[benchmark]\n"
+        'name = "paused-previewed"\n'
+        'artifact_root = "./artifacts/paused-previewed"\n\n'
+        "[provider]\n"
+        'model = "gpt-5.4-mini"\n'
+        'cost_tier = "cheap"\n'
+        'endpoint_class = "fast"\n'
+        "\n"
+        "[phase_provider.prover]\n"
+        'model = "gpt-5.4"\n'
+        'cost_tier = "premium"\n'
+        'endpoint_class = "lab"\n'
+        "\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'path = "{project_path}"\n'
+        f'archon_path = "{archon_path}"\n'
+        'workflow = "adaptive_loop"\n',
+        encoding="utf-8",
+    )
+    ControlService(tmp_path / "artifacts" / "paused-previewed").pause(
+        ProjectConfig(
+            name="demo-project",
+            project_path=project_path,
+            archon_path=archon_path,
+        ),
+        reason="manual_hold",
+    )
+
+    queue_store = QueueStore(tmp_path / "queue.db")
+    jobs = queue_store.enqueue_benchmark_manifest(manifest_path, priority=3)
+
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job.priority == 3
+    assert job.required_executor_kinds == []
+    assert job.required_provider_kinds == []
+    assert job.required_models == []
+    assert job.required_cost_tiers == []
+    assert job.required_endpoint_classes == []
+    assert job.preview is not None
+    assert job.preview.phase is ActionPhase.STOP
+    assert job.preview.reason == "control_paused"
+    assert job.preview.base_priority == 3
+    assert job.preview.task_priority_bonus == 0
+    assert job.preview.objective_relevance_bonus == 0
+    assert job.preview.final_priority == 3

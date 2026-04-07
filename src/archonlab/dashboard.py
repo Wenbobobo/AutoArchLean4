@@ -459,15 +459,39 @@ def render_dashboard_html(project_id: str) -> str:
         for (const job of jobs) {{
           const item = document.createElement("div");
           item.className = "run";
+          const preview = job.preview || {{}};
           const workerId = job.worker_id || "-";
           const executors = (job.required_executor_kinds || []).join(",") || "-";
+          const providers = (job.required_provider_kinds || []).join(",") || "-";
           const models = (job.required_models || []).join(",") || "-";
           const costTiers = (job.required_cost_tiers || []).join(",") || "-";
+          const endpointClasses = (job.required_endpoint_classes || []).join(",") || "-";
+          const phase = preview.phase || "-";
+          const stage = preview.stage || "-";
+          const reason = preview.reason || "-";
+          const focus = preview.theorem_name || preview.task_title || preview.task_id || "-";
+          const supervisor = preview.supervisor_action
+            ? `${{preview.supervisor_action}}/${{preview.supervisor_reason || "-"}}`
+            : "-";
+          const supervisorSummary = preview.supervisor_summary || "-";
+          const priority = preview.final_priority ?? job.priority;
+          const basePriority = preview.base_priority ?? 0;
+          const taskBonus = preview.task_priority_bonus ?? 0;
+          const objectiveBonus = preview.objective_relevance_bonus ?? 0;
+          const prioritySummary =
+            `focus=${{focus}} · priority=${{priority}} ` +
+            `(base=${{basePriority}} + task=${{taskBonus}} + objective=${{objectiveBonus}})`;
+          const resourceSummary =
+            `models=${{models}} · cost_tiers=${{costTiers}} · ` +
+            `endpoints=${{endpointClasses}}`;
           item.innerHTML = `
             <strong>${{job.job_id}}</strong>
             <div class="meta">${{job.status}} · ${{job.project_id}} · worker=${{workerId}}</div>
-            <div class="meta">requires executors=${{executors}}</div>
-            <div class="meta">models=${{models}} · cost_tiers=${{costTiers}}</div>
+            <div class="meta">phase=${{phase}} · stage=${{stage}} · reason=${{reason}}</div>
+            <div class="meta">supervisor=${{supervisor}} · ${{supervisorSummary}}</div>
+            <div class="meta">${{prioritySummary}}</div>
+            <div class="meta">requires executors=${{executors}} · providers=${{providers}}</div>
+            <div class="meta">${{resourceSummary}}</div>
           `;
           queueList.appendChild(item);
         }}

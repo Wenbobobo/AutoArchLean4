@@ -77,6 +77,7 @@ supervisor 也会读取同一项目的近期历史事件，识别重复无进展
 benchmark 则已经支持在隔离 `git worktree` 中运行。
 queue/batch 层已经支持 benchmark 作业排队、slot-aware 并发处理、pause-aware 跳过和 job 级 artifacts。
 benchmark project 入队前现在会先做一次 `preview()`，按当前预测的 next action 派生 executor/provider 约束和 job priority。
+queue job 现在还会持久化一份精简的 preview 摘要，dashboard/API 能直接解释当前 phase、reason、focus task 和 priority 组成。
 queue worker 现在会留下可查询的 lease / heartbeat / 当前 job telemetry。
 你现在还可以单独启动 `queue worker` 进程，让多个外部 worker 共享同一个 sqlite 队列。
 独立 worker 现在支持 `--auto-slot`，可以自动抢占当前空闲 slot，而不必人工分配编号。
@@ -188,6 +189,7 @@ model = "gpt-5.4"
 - 使用自己的 `queue-worktrees/<worker_id>` 根目录
 - 暴露自己的 executor/provider capabilities，并只 claim 自己能跑的 job
 - 进一步暴露 `model / cost_tier / endpoint_class`，支持更细粒度的资源调度
+- dashboard / API 可直接显示每个 job 的调度解释，而不只是资源标签
 
 ## Workflow DSL
 
