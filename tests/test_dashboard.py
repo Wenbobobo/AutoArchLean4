@@ -674,6 +674,10 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert 'id="project-selector"' in index_response.text
     assert 'value="alpha"' in index_response.text
     assert 'value="beta"' in index_response.text
+    assert 'id="mission-control-guide"' in index_response.text
+    assert "Mission Control Guide" in index_response.text
+    assert 'href="#workspace-operations-section"' in index_response.text
+    assert 'href="#benchmark-lab-section"' in index_response.text
     assert 'id="workspace-overview-summary"' in index_response.text
     assert 'id="workspace-session-table"' in index_response.text
     assert 'id="workspace-runtime-summary"' in index_response.text

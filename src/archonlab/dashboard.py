@@ -1087,6 +1087,68 @@ def render_dashboard_html(
         font-size: 16px;
         line-height: 1.55;
       }}
+      .playbook {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+        margin-top: 18px;
+      }}
+      .playbook-card {{
+        display: grid;
+        gap: 10px;
+        padding: 18px;
+        border-radius: 22px;
+        border: 1px solid var(--line);
+        background: linear-gradient(135deg, rgba(255,255,255,0.82), rgba(247,239,227,0.9));
+        box-shadow: var(--shadow);
+      }}
+      .playbook-card h2 {{
+        margin: 0;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+      }}
+      .playbook-card p {{
+        margin: 0;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.55;
+      }}
+      .playbook-card ol {{
+        margin: 0;
+        padding-left: 18px;
+        color: var(--ink);
+        display: grid;
+        gap: 6px;
+        font-size: 13px;
+      }}
+      .guide-links {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }}
+      .guide-link {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 8px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.72);
+        color: var(--ink);
+        font-size: 12px;
+        text-decoration: none;
+      }}
+      .command-strip {{
+        font-family: "Iosevka", "SFMono-Regular", monospace;
+        font-size: 12px;
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: rgba(34, 39, 46, 0.92);
+        color: #f7f3e8;
+        overflow: auto;
+      }}
       .grid {{
         display: grid;
         grid-template-columns: 340px minmax(0, 1fr) 320px;
@@ -1398,7 +1460,57 @@ def render_dashboard_html(
         </div>
       </section>
 
-      <div class="grid">
+      <section class="playbook" id="mission-control-guide">
+        <article class="playbook-card">
+          <h2>Mission Control Guide</h2>
+          <p>
+            第一次进入时先看 workspace 的 blocked sessions、provider health、daemon 状态，
+            再决定是 enqueue/resume、调整 workflow，还是转去 benchmark 回放。
+          </p>
+          <div class="guide-links">
+            <a class="guide-link" href="#workspace-operations-section">Workspace</a>
+            <a class="guide-link" href="#queue-operations-section">Queue</a>
+            <a class="guide-link" href="#project-preview-section">Preview</a>
+            <a class="guide-link" href="#benchmark-lab-section">Benchmark Lab</a>
+          </div>
+        </article>
+        <article class="playbook-card">
+          <h2>Bring Up A Workspace</h2>
+          <ol>
+            <li>先用 doctor 和 workspace status 检查 Lean、provider、配置文件。</li>
+            <li>需要持续自治时优先跑 workspace daemon，而不是手工反复触发。</li>
+            <li>打开 Workspace Overview，确认 blocked reason、budget、daemon ticks。</li>
+          </ol>
+          <div class="command-strip">uv run archonlab doctor
+uv run archonlab workspace status --config workspace.toml
+uv run archonlab workspace daemon run --config workspace.toml</div>
+        </article>
+        <article class="playbook-card">
+          <h2>Operate The Loop</h2>
+          <ol>
+            <li>Queue Board 看 backlog、worker health、job reason 和 capability 匹配。</li>
+            <li>Project Preview 看下一个 focus theorem、workflow rule 和 supervisor reason。</li>
+            <li>遇到 blocked session，先看 cooldown / failure budget / control pause。</li>
+          </ol>
+          <div class="command-strip">uv run archonlab workspace enqueue --config workspace.toml
+uv run archonlab workspace resume --config workspace.toml
+uv run archonlab queue session-status --config workspace.toml</div>
+        </article>
+        <article class="playbook-card">
+          <h2>Benchmark And Replay</h2>
+          <ol>
+            <li>Run Index 先选一轮 benchmark，再自动填入 ledger / summary。</li>
+            <li>Compare 优先看 theorem-level improved / regressed，而不是只看总分。</li>
+            <li>Replay 用来回放单 theorem 的上下文、artifact 和失败模式。</li>
+          </ol>
+          <div class="command-strip">uv run archonlab benchmark runs
+--manifest benchmarks/smoke.example.toml
+uv run archonlab benchmark run-detail
+--manifest benchmarks/smoke.example.toml --run-id &lt;id&gt;</div>
+        </article>
+      </section>
+
+      <div class="grid" id="queue-operations-section">
         <aside class="panel">
           <h2>Project Control</h2>
           <div class="status" id="control-status"></div>
@@ -1503,7 +1615,7 @@ def render_dashboard_html(
         </aside>
       </div>
 
-      <section class="panel" style="margin-top: 18px;">
+      <section class="panel" id="workspace-operations-section" style="margin-top: 18px;">
         <div class="section-head">
           <div>
             <h2>Workspace Overview</h2>
@@ -1567,7 +1679,7 @@ def render_dashboard_html(
         </div>
       </section>
 
-      <section class="panel" style="margin-top: 18px;">
+      <section class="panel" id="project-preview-section" style="margin-top: 18px;">
         <div class="section-head">
           <h2>Current Preview</h2>
           <div class="meta" id="project-preview-meta">
@@ -1617,7 +1729,7 @@ def render_dashboard_html(
         </details>
       </section>
 
-      <section class="panel" style="margin-top: 18px;">
+      <section class="panel" id="benchmark-lab-section" style="margin-top: 18px;">
         <div class="section-head">
           <div>
             <h2>Benchmark Lab</h2>
