@@ -120,6 +120,19 @@ class EventStore:
         ).fetchall()
         return [self._row_to_run_summary(row) for row in rows]
 
+    def get_run(self, run_id: str) -> RunSummary | None:
+        row = self._conn.execute(
+            """
+            SELECT *
+            FROM runs
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_run_summary(row)
+
     def get_run_events(self, run_id: str) -> list[EventRecord]:
         rows = self._conn.execute(
             """

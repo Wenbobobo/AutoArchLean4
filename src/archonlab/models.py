@@ -13,6 +13,13 @@ class WorkflowMode(StrEnum):
     ADAPTIVE_LOOP = "adaptive_loop"
 
 
+class ActionPhase(StrEnum):
+    PLAN = "plan"
+    PROVER = "prover"
+    REVIEW = "review"
+    STOP = "stop"
+
+
 class TaskSource(StrEnum):
     OBJECTIVE = "objective"
     LEAN_DECLARATION = "lean_declaration"
@@ -76,6 +83,7 @@ class RunConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workflow: WorkflowMode = WorkflowMode.ADAPTIVE_LOOP
+    workflow_spec: Path | None = None
     stage_policy: str = "auto"
     max_iterations: int = 10
     max_parallel: int = 8
@@ -92,7 +100,7 @@ class AppConfig(BaseModel):
 
 
 class AdapterAction(BaseModel):
-    phase: str
+    phase: str | ActionPhase
     reason: str
     stage: str
     prompt_preview: str | None = None
@@ -271,6 +279,27 @@ class TaskGraph(BaseModel):
     edges: list[TaskEdge] = Field(default_factory=list)
 
 
+class WorkflowRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    when_supervisor_reason: SupervisorReason | None = None
+    when_task_status: TaskStatus | None = None
+    when_phase: ActionPhase | None = None
+    when_has_task_results: bool | None = None
+    when_has_review_sessions: bool | None = None
+    phase: ActionPhase
+    reason: str
+
+
+class WorkflowSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str = ""
+    rules: list[WorkflowRule] = Field(default_factory=list)
+
+
 class SupervisorDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -280,6 +309,24 @@ class SupervisorDecision(BaseModel):
     summary: str
     evidence: dict[str, Any] = Field(default_factory=dict)
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class HintRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    author: str = "user"
+    ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ControlState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    paused: bool = False
+    pause_reason: str | None = None
+    hints: list[HintRecord] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class WorktreeLease(BaseModel):

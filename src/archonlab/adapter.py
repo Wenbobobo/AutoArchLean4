@@ -116,7 +116,8 @@ class ArchonAdapter:
                 f"Project state directory: {self.state_dir}\n"
                 f"Read {self.state_dir / 'CLAUDE.md'} for your role, then read "
                 f"{self.state_dir / 'prompts' / f'prover-{stage}.md'} and {self.progress_file}.\n"
-                f"All state files are in {self.state_dir}. "
+                f"All state files are in {self.state_dir}, including "
+                f"{self.state_dir / 'USER_HINTS.md'} when present. "
                 f"The .lean files are in {self.project.project_path}.\n"
             )
         if phase == "review":
@@ -126,6 +127,7 @@ class ArchonAdapter:
                 f"Project directory: {self.project.project_path}\n"
                 f"Project state directory: {self.state_dir}\n"
                 f"Read {self.state_dir / 'CLAUDE.md'} for your role, then read "
-                f"{self.state_dir / 'prompts' / 'review.md'}.\n"
+                f"{self.state_dir / 'prompts' / 'review.md'} and "
+                f"{self.state_dir / 'USER_HINTS.md'} when present.\n"
             )
         return "No prompt is required because the project is complete.\n"

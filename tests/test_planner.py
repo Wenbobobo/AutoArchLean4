@@ -57,6 +57,39 @@ def _make_project(
     return project_path, archon_path
 
 
+def _make_dependency_project(tmp_path: Path) -> tuple[Path, Path]:
+    project_path = tmp_path / "DemoProject"
+    archon_path = tmp_path / "Archon"
+    state_dir = project_path / ".archon"
+    prompts_dir = state_dir / "prompts"
+    prompts_dir.mkdir(parents=True)
+    archon_path.mkdir(parents=True)
+    (archon_path / "archon-loop.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (state_dir / "CLAUDE.md").write_text("# demo\n", encoding="utf-8")
+    (prompts_dir / "plan.md").write_text("# plan\n", encoding="utf-8")
+    (prompts_dir / "prover-prover.md").write_text("# prover\n", encoding="utf-8")
+    (state_dir / "PROGRESS.md").write_text(
+        "# Project Progress\n\n"
+        "## Current Stage\n"
+        "prover\n\n"
+        "## Stages\n"
+        "- [x] init\n"
+        "- [ ] prover\n\n"
+        "## Current Objectives\n\n"
+        "1. **Core.lean** - fill theorem `foo`\n",
+        encoding="utf-8",
+    )
+    (state_dir / "proof-journal" / "sessions" / "session-1").mkdir(parents=True)
+    (project_path / "Core.lean").write_text(
+        "theorem helper : True := by\n"
+        "  sorry\n\n"
+        "theorem foo : True := by\n"
+        "  exact helper\n",
+        encoding="utf-8",
+    )
+    return project_path, archon_path
+
+
 def _healthy_supervisor(project_id: str) -> SupervisorDecision:
     return SupervisorDecision(
         project_id=project_id,
@@ -148,3 +181,22 @@ def test_select_next_action_respects_supervisor_reroute(tmp_path: Path) -> None:
     assert action.reason == "supervisor_repeated_no_progress"
     assert action.supervisor_action is SupervisorAction.REROUTE_PLAN
     assert "Supervisor recommendation:" in (action.prompt_preview or "")
+
+
+def test_select_next_action_prefers_dependency_that_unblocks_objective(tmp_path: Path) -> None:
+    project_path, archon_path = _make_dependency_project(tmp_path)
+    project = ProjectConfig(name="demo", project_path=project_path, archon_path=archon_path)
+    adapter = ArchonAdapter(project)
+    snapshot = collect_project_snapshot(project_path=project_path, archon_path=archon_path)
+    task_graph = build_task_graph(project_path=project_path, archon_path=archon_path)
+
+    action = select_next_action(
+        adapter=adapter,
+        workflow=WorkflowMode.ADAPTIVE_LOOP,
+        snapshot=snapshot,
+        task_graph=task_graph,
+        supervisor=_healthy_supervisor(snapshot.project_id),
+    )
+
+    assert action.phase == "prover"
+    assert action.task_title == "helper"

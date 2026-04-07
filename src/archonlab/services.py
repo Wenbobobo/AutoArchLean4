@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime
 
 from .adapter import ArchonAdapter
+from .control import ControlService
 from .events import EventStore
 from .models import (
     AppConfig,
@@ -20,6 +21,7 @@ from .planner import select_next_action
 from .project_state import collect_project_snapshot
 from .supervisor import decide_supervisor_action
 from .task_graph import build_task_graph
+from .workflow import load_workflow_spec
 
 
 class RunService:
@@ -27,6 +29,7 @@ class RunService:
         self.config = config
         self.adapter = ArchonAdapter(config.project)
         self.event_store = EventStore(config.run.artifact_root / "archonlab.db")
+        self.control = ControlService(config.run.artifact_root)
 
     def start(self, *, dry_run: bool | None = None) -> RunResult:
         self.adapter.ensure_valid()
@@ -40,6 +43,7 @@ class RunService:
         prompt_path = run_dir / "next-prompt.txt"
         task_graph_path = run_dir / "task-graph.json"
         supervisor_path = run_dir / "supervisor.json"
+        control_path = run_dir / "control.json"
 
         summary = RunSummary(
             run_id=run_id,
@@ -71,6 +75,11 @@ class RunService:
             project_path=self.config.project.project_path,
             archon_path=self.config.project.archon_path,
         )
+        control_state = self.control.read(self.config.project)
+        control_path.write_text(
+            json.dumps(control_state.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         task_graph = build_task_graph(
             project_path=self.config.project.project_path,
             archon_path=self.config.project.archon_path,
@@ -93,6 +102,11 @@ class RunService:
             jsonl_path=events_jsonl,
         )
 
+        workflow_spec = (
+            load_workflow_spec(self.config.run.workflow_spec)
+            if self.config.run.workflow_spec is not None
+            else None
+        )
         recent_events = self.event_store.list_recent_project_events(
             self.config.project.name,
             limit=20,
@@ -109,6 +123,8 @@ class RunService:
             snapshot=snapshot,
             task_graph=task_graph,
             supervisor=provisional_supervisor,
+            workflow_spec=workflow_spec,
+            control_state=control_state,
         )
         recent_events = [
             *recent_events,
@@ -153,6 +169,8 @@ class RunService:
             snapshot=snapshot,
             task_graph=task_graph,
             supervisor=supervisor,
+            workflow_spec=workflow_spec,
+            control_state=control_state,
         )
         prompt_text = action.prompt_preview or ""
         prompt_path.write_text(prompt_text, encoding="utf-8")
@@ -180,6 +198,7 @@ class RunService:
                         if action.supervisor_reason is not None
                         else None
                     ),
+                    "paused": control_state.paused,
                 },
             ),
             jsonl_path=events_jsonl,
@@ -194,6 +213,12 @@ class RunService:
                     "run": self.config.run.model_dump(mode="json"),
                     "progress": progress.model_dump(mode="json"),
                     "snapshot": snapshot.model_dump(mode="json"),
+                    "control": control_state.model_dump(mode="json"),
+                    "workflow_spec": (
+                        workflow_spec.model_dump(mode="json")
+                        if workflow_spec is not None
+                        else None
+                    ),
                     "task_graph": task_graph.model_dump(mode="json"),
                     "supervisor": supervisor.model_dump(mode="json"),
                     "next_action": action.model_dump(mode="json"),

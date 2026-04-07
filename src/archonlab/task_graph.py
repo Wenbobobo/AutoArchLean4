@@ -26,6 +26,8 @@ def build_task_graph(*, project_path: Path, archon_path: Path) -> TaskGraph:
 
     nodes: dict[str, TaskNode] = {}
     edges: list[TaskEdge] = []
+    declaration_blocks: dict[str, str] = {}
+    theorem_to_id: dict[str, str] = {}
 
     for index, objective in enumerate(progress.objectives, start=1):
         objective_node = _objective_to_node(objective, index=index)
@@ -53,6 +55,21 @@ def build_task_graph(*, project_path: Path, archon_path: Path) -> TaskGraph:
                 blockers=["contains_sorry"] if status is TaskStatus.BLOCKED else [],
                 metadata={"declaration_kind": match.group(1)},
             )
+            declaration_blocks[node_id] = block
+            theorem_to_id[theorem_name] = node_id
+
+    for node_id, block in declaration_blocks.items():
+        for theorem_name, dependency_id in theorem_to_id.items():
+            if dependency_id == node_id:
+                continue
+            if re.search(rf"\b{re.escape(theorem_name)}\b", block):
+                edges.append(
+                    TaskEdge(
+                        source_id=node_id,
+                        target_id=dependency_id,
+                        kind="depends_on",
+                    )
+                )
 
     for objective_node in list(nodes.values()):
         if TaskSource.OBJECTIVE not in objective_node.sources:

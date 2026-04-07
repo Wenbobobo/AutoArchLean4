@@ -19,15 +19,18 @@ def test_load_config_resolves_relative_paths(tmp_path: Path) -> None:
         'archon_path = "./Archon"\n\n'
         "[run]\n"
         'workflow = "adaptive_loop"\n'
+        'workflow_spec = "./workflow.toml"\n'
         'artifact_root = "./artifacts"\n',
         encoding="utf-8",
     )
+    (tmp_path / "workflow.toml").write_text("[workflow]\nname = \"demo\"\n", encoding="utf-8")
 
     config = load_config(config_path)
 
     assert config.project.project_path == project_path.resolve()
     assert config.project.archon_path == archon_path.resolve()
     assert config.run.artifact_root == (tmp_path / "artifacts").resolve()
+    assert config.run.workflow_spec == (tmp_path / "workflow.toml").resolve()
 
 
 def test_init_config_writes_expected_template(tmp_path: Path) -> None:
@@ -44,4 +47,3 @@ def test_init_config_writes_expected_template(tmp_path: Path) -> None:
     content = config_path.read_text(encoding="utf-8")
     assert 'workflow = "fixed_loop"' in content
     assert "dry_run = true" in content
-

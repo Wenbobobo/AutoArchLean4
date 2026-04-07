@@ -22,6 +22,11 @@ def load_config(config_path: Path) -> AppConfig:
     project_path = _resolve_path(base_dir, project_raw["project_path"])
     archon_path = _resolve_path(base_dir, project_raw["archon_path"])
     artifact_root = _resolve_path(base_dir, run_raw.get("artifact_root", "artifacts"))
+    workflow_spec = (
+        _resolve_path(base_dir, run_raw["workflow_spec"])
+        if "workflow_spec" in run_raw
+        else None
+    )
 
     return AppConfig(
         project=ProjectConfig(
@@ -32,6 +37,7 @@ def load_config(config_path: Path) -> AppConfig:
         ),
         run=RunConfig(
             workflow=WorkflowMode(run_raw.get("workflow", WorkflowMode.ADAPTIVE_LOOP)),
+            workflow_spec=workflow_spec,
             stage_policy=run_raw.get("stage_policy", "auto"),
             max_iterations=run_raw.get("max_iterations", 10),
             max_parallel=run_raw.get("max_parallel", 8),
@@ -49,9 +55,10 @@ def render_config(
     archon_path: Path,
     artifact_root: Path,
     workflow: WorkflowMode,
+    workflow_spec: Path | None,
     dry_run: bool,
 ) -> str:
-    return (
+    content = (
         "[project]\n"
         f'name = "{project_name}"\n'
         'backend = "archon"\n'
@@ -66,6 +73,9 @@ def render_config(
         f"dry_run = {'true' if dry_run else 'false'}\n"
         f'artifact_root = "{artifact_root}"\n'
     )
+    if workflow_spec is not None:
+        content += f'workflow_spec = "{workflow_spec}"\n'
+    return content
 
 
 def init_config(
@@ -75,6 +85,7 @@ def init_config(
     archon_path: Path,
     artifact_root: Path,
     workflow: WorkflowMode = WorkflowMode.ADAPTIVE_LOOP,
+    workflow_spec: Path | None = None,
     dry_run: bool = True,
     force: bool = False,
 ) -> Path:
@@ -87,9 +98,9 @@ def init_config(
         archon_path=archon_path,
         artifact_root=artifact_root,
         workflow=workflow,
+        workflow_spec=workflow_spec,
         dry_run=dry_run,
     )
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(content, encoding="utf-8")
     return config_path
-

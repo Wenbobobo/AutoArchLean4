@@ -1,0 +1,16 @@
+[workflow]
+name = "review-on-stuck"
+description = "Force a review step when the supervisor sees repeated no-progress loops."
+
+[[rules]]
+name = "reroute_after_no_progress"
+when_supervisor_reason = "repeated_no_progress"
+phase = "review"
+reason = "workflow_force_review"
+
+[[rules]]
+name = "plan_when_blocked_focus_task"
+when_task_status = "blocked"
+when_phase = "prover"
+phase = "plan"
+reason = "workflow_blocked_task_plan"

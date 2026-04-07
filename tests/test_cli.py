@@ -135,3 +135,42 @@ def test_worktree_create_and_remove_commands(tmp_path: Path) -> None:
     assert remove_result.exit_code == 0
     assert not worktree_path.exists()
     assert not lease_path.exists()
+
+
+def test_control_commands_pause_resume_and_hint(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{tmp_path / "artifacts"}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+
+    pause_result = runner.invoke(
+        app,
+        ["control", "pause", "--config", str(config_path), "--reason", "manual_hold"],
+    )
+    hint_result = runner.invoke(
+        app,
+        [
+            "control",
+            "hint",
+            "--text",
+            "Try `rw` before `simp`.",
+            "--config",
+            str(config_path),
+        ],
+    )
+    resume_result = runner.invoke(app, ["control", "resume", "--config", str(config_path)])
+
+    assert pause_result.exit_code == 0
+    assert hint_result.exit_code == 0
+    assert resume_result.exit_code == 0
+    assert (fake_archon_project / ".archon" / "USER_HINTS.md").exists()

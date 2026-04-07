@@ -9,6 +9,8 @@ import typer
 from .benchmark import BenchmarkRunService
 from .checks import gather_doctor_report
 from .config import init_config, load_config
+from .control import ControlService
+from .dashboard import create_dashboard_app
 from .events import EventStore
 from .models import WorkflowMode, WorktreeLease
 from .services import RunService
@@ -19,10 +21,14 @@ project_app = typer.Typer(no_args_is_help=True)
 run_app = typer.Typer(no_args_is_help=True)
 benchmark_app = typer.Typer(no_args_is_help=True)
 worktree_app = typer.Typer(no_args_is_help=True)
+control_app = typer.Typer(no_args_is_help=True)
+dashboard_app = typer.Typer(no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(run_app, name="run")
 app.add_typer(benchmark_app, name="benchmark")
 app.add_typer(worktree_app, name="worktree")
+app.add_typer(control_app, name="control")
+app.add_typer(dashboard_app, name="dashboard")
 
 
 @app.command()
@@ -79,6 +85,10 @@ def project_init(
         WorkflowMode,
         typer.Option("--workflow", case_sensitive=False, help="Baseline workflow mode."),
     ] = WorkflowMode.ADAPTIVE_LOOP,
+    workflow_spec: Annotated[
+        Path | None,
+        typer.Option("--workflow-spec", exists=False, help="Optional workflow DSL TOML."),
+    ] = None,
     dry_run: Annotated[
         bool, typer.Option("--dry-run/--execute", help="Default run mode.")
     ] = True,
@@ -92,6 +102,7 @@ def project_init(
         archon_path=archon_path.resolve(),
         artifact_root=artifact_root,
         workflow=workflow,
+        workflow_spec=workflow_spec.resolve() if workflow_spec is not None else None,
         dry_run=dry_run,
         force=force,
     )
@@ -261,6 +272,93 @@ def worktree_remove(
     manager.release(lease_data, force=force)
     lease.unlink(missing_ok=True)
     typer.echo(f"Removed: {lease_data.worktree_path}")
+
+
+@control_app.command("status")
+def control_status(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+) -> None:
+    app_config = load_config(config)
+    state = ControlService(app_config.run.artifact_root).read(app_config.project)
+    typer.echo(json.dumps(state.model_dump(mode="json"), ensure_ascii=False, indent=2))
+
+
+@control_app.command("pause")
+def control_pause(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    reason: Annotated[
+        str | None,
+        typer.Option("--reason", help="Optional pause reason."),
+    ] = None,
+) -> None:
+    app_config = load_config(config)
+    state = ControlService(app_config.run.artifact_root).pause(
+        app_config.project,
+        reason=reason,
+    )
+    typer.echo(f"Paused: {state.project_id}")
+
+
+@control_app.command("resume")
+def control_resume(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+) -> None:
+    app_config = load_config(config)
+    state = ControlService(app_config.run.artifact_root).resume(app_config.project)
+    typer.echo(f"Resumed: {state.project_id}")
+
+
+@control_app.command("hint")
+def control_hint(
+    text: Annotated[
+        str,
+        typer.Option("--text", help="Hint text for the next cycle."),
+    ],
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    author: Annotated[
+        str,
+        typer.Option("--author", help="Hint author label."),
+    ] = "user",
+) -> None:
+    app_config = load_config(config)
+    state = ControlService(app_config.run.artifact_root).add_hint(
+        app_config.project,
+        text=text,
+        author=author,
+    )
+    typer.echo(f"Hints: {len(state.hints)}")
+
+
+@dashboard_app.command("serve")
+def dashboard_serve(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    host: Annotated[
+        str,
+        typer.Option("--host", help="Host interface."),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", min=1, max=65535, help="Port."),
+    ] = 8000,
+) -> None:
+    import uvicorn
+
+    uvicorn.run(create_dashboard_app(config), host=host, port=port)
 
 
 def main() -> None:

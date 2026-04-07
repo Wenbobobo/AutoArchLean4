@@ -75,6 +75,12 @@
 - 人工干预入口
 - 可扩展的运行看板
 
+当前基线已实现：
+- FastAPI dashboard 与本地 control API
+- `control pause/resume/hint` CLI
+- workflow DSL 及规则加载器
+- dashboard 中的 pause/resume/hint 操作
+
 ## 优先级原则
 
 - 先控制平面，后看板

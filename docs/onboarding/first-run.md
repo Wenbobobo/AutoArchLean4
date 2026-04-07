@@ -31,7 +31,10 @@ uv run archonlab run start --config archonlab.toml --dry-run
 # 6. 跑一个 benchmark smoke test
 uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-run
 
-# 7. 如果要直接走 Archon 固定 loop，再手动启动
+# 7. 启动控制面 dashboard
+uv run archonlab dashboard serve --config archonlab.toml --port 8000
+
+# 8. 如果要直接走 Archon 固定 loop，再手动启动
 ./archon-loop.sh /path/to/lean-project
 ```
 
@@ -42,6 +45,7 @@ uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-ru
 - `proof-journal/` 有没有 session
 - Lean 文件里的 `sorry` 有没有减少
 - `artifacts/` 里有没有产生可回放的 run / benchmark 结果
+- dashboard 里能不能暂停、恢复、注入 hint
 - 日志里是正常推进还是反复 stuck
 
 ## 你第一次不用做什么
