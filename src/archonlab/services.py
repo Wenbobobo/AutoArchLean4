@@ -461,6 +461,8 @@ class RunService:
         self,
         session_id: str,
         *,
+        owner_worker_id: str | None = None,
+        owner_job_id: str | None = None,
         note: str | None = None,
     ) -> SessionQuantumResult:
         session = self.event_store.get_session(session_id)
@@ -468,32 +470,54 @@ class RunService:
             raise KeyError(f"Unknown project session: {session_id}")
         if session.status in {SessionStatus.COMPLETED, SessionStatus.CANCELED}:
             raise ValueError(f"Session {session_id} is already terminal: {session.status.value}")
-        if session.completed_iterations >= session.max_iterations:
-            paused = self.event_store.update_session(
+        expected_owner_worker_id: str | None = None
+        expected_owner_job_id: str | None = None
+        if owner_worker_id is not None and owner_job_id is not None:
+            session = self.event_store.claim_session(
                 session_id,
-                status=SessionStatus.PAUSED,
-                stop_reason="max_iterations_reached",
+                owner_worker_id=owner_worker_id,
+                owner_job_id=owner_job_id,
                 note=note,
             )
-            return SessionQuantumResult(
-                session_id=paused.session_id,
-                workspace_id=paused.workspace_id,
-                project_id=paused.project_id,
-                status=paused.status,
-                dry_run=paused.dry_run,
-                max_iterations=paused.max_iterations,
-                completed_iterations=paused.completed_iterations,
-                stop_reason="max_iterations_reached",
-            )
-
-        self.event_store.update_session(
-            session_id,
-            status=SessionStatus.RUNNING,
-            clear_error_message=True,
-            clear_stop_reason=True,
-            note=note,
-        )
+            expected_owner_worker_id = owner_worker_id
+            expected_owner_job_id = owner_job_id
+        elif owner_worker_id is not None or owner_job_id is not None:
+            raise ValueError("owner_worker_id and owner_job_id must be provided together")
         try:
+            if session.completed_iterations >= session.max_iterations:
+                paused = self.event_store.update_session(
+                    session_id,
+                    status=SessionStatus.PAUSED,
+                    stop_reason="max_iterations_reached",
+                    expected_owner_worker_id=expected_owner_worker_id,
+                    expected_owner_job_id=expected_owner_job_id,
+                    note=note,
+                )
+                return SessionQuantumResult(
+                    session_id=paused.session_id,
+                    workspace_id=paused.workspace_id,
+                    project_id=paused.project_id,
+                    status=paused.status,
+                    dry_run=paused.dry_run,
+                    max_iterations=paused.max_iterations,
+                    completed_iterations=paused.completed_iterations,
+                    stop_reason="max_iterations_reached",
+                )
+
+            self.event_store.update_session(
+                session_id,
+                status=SessionStatus.RUNNING,
+                clear_error_message=True,
+                clear_stop_reason=True,
+                resume_reason=(
+                    f"claimed_by:{owner_worker_id}"
+                    if owner_worker_id is not None
+                    else session.last_resume_reason
+                ),
+                expected_owner_worker_id=expected_owner_worker_id,
+                expected_owner_job_id=expected_owner_job_id,
+                note=note,
+            )
             result = self.start(dry_run=session.dry_run)
             iteration_index = session.completed_iterations + 1
             action_phase = (
@@ -529,6 +553,8 @@ class RunService:
                 last_run_id=result.run_id,
                 clear_error_message=True,
                 stop_reason=stop_reason,
+                expected_owner_worker_id=expected_owner_worker_id,
+                expected_owner_job_id=expected_owner_job_id,
                 note=note,
             )
             return SessionQuantumResult(
@@ -551,9 +577,19 @@ class RunService:
                 completed_iterations=session.completed_iterations,
                 error_message=str(exc),
                 stop_reason="run_failed",
+                expected_owner_worker_id=expected_owner_worker_id,
+                expected_owner_job_id=expected_owner_job_id,
                 note=note,
             )
             raise
+        finally:
+            if owner_worker_id is not None and owner_job_id is not None:
+                self.event_store.release_session_claim(
+                    session_id,
+                    owner_worker_id=owner_worker_id,
+                    owner_job_id=owner_job_id,
+                    note=note,
+                )
 
     def preview(self) -> RunPreview:
         self.adapter.ensure_valid()

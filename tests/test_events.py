@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from archonlab.events import EventStore
 from archonlab.models import (
     ActionPhase,
@@ -133,3 +135,56 @@ def test_event_store_tracks_project_sessions_and_iterations(tmp_path: Path) -> N
     assert listed[0].last_run_id == "run-1"
     assert len(iterations) == 1
     assert iterations[0].action_phase is ActionPhase.PLAN
+
+
+def test_event_store_prevents_stale_owner_from_overwriting_recovered_session(
+    tmp_path: Path,
+) -> None:
+    store = EventStore(tmp_path / "artifacts" / "archonlab.db")
+    session = ProjectSession(
+        session_id="session-alpha-2",
+        workspace_id="demo-workspace",
+        project_id="alpha",
+        workflow=WorkflowMode.ADAPTIVE_LOOP,
+        dry_run=True,
+        max_iterations=4,
+    )
+    store.register_session(session)
+    store.claim_session(
+        session.session_id,
+        owner_worker_id="worker-stale",
+        owner_job_id="job-stale",
+    )
+    running = store.update_session(
+        session.session_id,
+        status=SessionStatus.RUNNING,
+        expected_owner_worker_id="worker-stale",
+        expected_owner_job_id="job-stale",
+    )
+    assert running.owner_worker_id == "worker-stale"
+    recovered = store.recover_session_claims(
+        owner_worker_id="worker-stale",
+        owner_job_id="job-stale",
+        stop_reason="recovered_from_stale_worker:worker-stale",
+    )
+    assert recovered[0].status is SessionStatus.PENDING
+    assert recovered[0].owner_worker_id is None
+    store.claim_session(
+        session.session_id,
+        owner_worker_id="worker-fresh",
+        owner_job_id="job-fresh",
+    )
+
+    with pytest.raises(RuntimeError):
+        store.update_session(
+            session.session_id,
+            status=SessionStatus.COMPLETED,
+            expected_owner_worker_id="worker-stale",
+            expected_owner_job_id="job-stale",
+        )
+
+    current = store.get_session(session.session_id)
+    assert current is not None
+    assert current.status is SessionStatus.PENDING
+    assert current.owner_worker_id == "worker-fresh"
+    assert current.owner_job_id == "job-fresh"

@@ -1025,6 +1025,9 @@ class ProjectSession(BaseModel):
     error_message: str | None = None
     last_stop_reason: str | None = None
     last_resume_reason: str | None = None
+    owner_worker_id: str | None = None
+    owner_job_id: str | None = None
+    owner_claimed_at: datetime | None = None
     note: str | None = None
 
     @property

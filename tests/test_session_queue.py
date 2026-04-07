@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from archonlab.batch import BatchRunner
@@ -145,6 +146,8 @@ def test_batch_runner_processes_session_quantum_and_reenqueues_follow_up(
     assert session is not None
     assert session.completed_iterations == 1
     assert session.status is SessionStatus.PENDING
+    assert session.owner_worker_id is None
+    assert session.owner_job_id is None
 
     jobs = queue_store.list_jobs(limit=10)
     completed = next(job for job in jobs if job.id == initial_job.id)
@@ -204,3 +207,58 @@ def test_batch_runner_session_quanta_are_fair_across_projects(
     queued_jobs = queue_store.list_jobs(status=QueueJobStatus.QUEUED, limit=10)
     assert len(queued_jobs) == 2
     assert {job.session_id for job in queued_jobs} == {session.session_id for session in sessions}
+
+
+def test_queue_store_reaps_stale_worker_and_recovers_running_session_claim(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    workspace_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        archon_path=fake_archon_root,
+        projects=[("demo-project", fake_archon_project)],
+    )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    job = queue_store.enqueue_workspace_sessions(workspace_path)[0]
+    worker = queue_store.register_worker(slot_index=1, worker_id="worker-stale")
+    claimed = queue_store.claim_next_job(worker_id=worker.worker_id)
+    assert claimed is not None
+    queue_store.assign_job_to_worker(worker.worker_id, claimed.id)
+
+    event_store = EventStore(artifact_root / "archonlab.db")
+    event_store.claim_session(
+        job.session_id or "",
+        owner_worker_id=worker.worker_id,
+        owner_job_id=job.id,
+    )
+    event_store.update_session(
+        job.session_id or "",
+        status=SessionStatus.RUNNING,
+        expected_owner_worker_id=worker.worker_id,
+        expected_owner_job_id=job.id,
+    )
+
+    stale_heartbeat = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
+    queue_store._conn.execute(
+        "UPDATE queue_workers SET heartbeat_at = ? WHERE worker_id = ?",
+        (stale_heartbeat, worker.worker_id),
+    )
+    queue_store._conn.commit()
+
+    reaped = queue_store.reap_stale_workers(stale_after_seconds=60)
+
+    assert [lease.worker_id for lease in reaped] == [worker.worker_id]
+    updated_session = event_store.get_session(job.session_id or "")
+    assert updated_session is not None
+    assert updated_session.status is SessionStatus.PENDING
+    assert updated_session.owner_worker_id is None
+    assert updated_session.owner_job_id is None
+    assert updated_session.last_stop_reason == "recovered_from_stale_worker:worker-stale"
+
+    updated_job = queue_store.get_job(job.id)
+    assert updated_job is not None
+    assert updated_job.status is QueueJobStatus.QUEUED
+    assert updated_job.worker_id is None

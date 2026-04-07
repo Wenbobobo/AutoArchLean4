@@ -638,6 +638,8 @@ class BatchRunner:
         )
         result = RunService(app_config).run_session_quantum(
             payload.session_id,
+            owner_worker_id=worker_id,
+            owner_job_id=job.id,
             note=f"queue_worker:{worker_id}",
         )
         summary_path = artifact_dir / "summary.json"

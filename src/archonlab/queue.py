@@ -771,11 +771,20 @@ class QueueStore:
     ) -> list[QueueWorkerLease]:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
-            reaped_ids = self._reap_stale_workers_locked(
+            reaped_ids, recovered_session_claims = self._reap_stale_workers_locked(
                 stale_after_seconds=stale_after_seconds,
                 requeue_running_jobs=requeue_running_jobs,
             )
             self._conn.commit()
+        if recovered_session_claims:
+            event_store = EventStore(self.db_path)
+            for worker_id, job_id in recovered_session_claims:
+                event_store.recover_session_claims(
+                    owner_worker_id=worker_id,
+                    owner_job_id=job_id,
+                    stop_reason=f"recovered_from_stale_worker:{worker_id}",
+                    note=f"recovered_from_stale_worker:{worker_id}",
+                )
         workers = [
             worker
             for worker in (self.get_worker(worker_id) for worker_id in reaped_ids)
@@ -994,7 +1003,7 @@ class QueueStore:
         *,
         stale_after_seconds: float,
         requeue_running_jobs: bool,
-    ) -> list[str]:
+    ) -> tuple[list[str], list[tuple[str, str]]]:
         cutoff = datetime.now(UTC).timestamp() - stale_after_seconds
         rows = self._conn.execute(
             """
@@ -1007,6 +1016,7 @@ class QueueStore:
             ),
         ).fetchall()
         reaped_ids: list[str] = []
+        recovered_session_claims: list[tuple[str, str]] = []
         now_iso = datetime.now(UTC).isoformat()
         for row in rows:
             heartbeat_ts = datetime.fromisoformat(row["heartbeat_at"]).timestamp()
@@ -1015,6 +1025,10 @@ class QueueStore:
             worker_id = str(row["worker_id"])
             current_job_id = row["current_job_id"]
             if requeue_running_jobs and current_job_id is not None:
+                job_row = self._conn.execute(
+                    "SELECT session_id FROM queue_jobs WHERE job_id = ?",
+                    (current_job_id,),
+                ).fetchone()
                 self._conn.execute(
                     """
                     UPDATE queue_jobs
@@ -1031,6 +1045,10 @@ class QueueStore:
                         worker_id,
                     ),
                 )
+                if job_row is not None and job_row["session_id"] is not None:
+                    recovered_session_claims.append(
+                        (worker_id, str(current_job_id))
+                    )
             self._conn.execute(
                 """
                 UPDATE queue_workers
@@ -1048,7 +1066,7 @@ class QueueStore:
                 ),
             )
             reaped_ids.append(worker_id)
-        return reaped_ids
+        return reaped_ids, recovered_session_claims
 
     @staticmethod
     def _annotate_workers(

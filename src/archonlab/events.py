@@ -70,6 +70,9 @@ class EventStore:
                 error_message TEXT,
                 last_stop_reason TEXT,
                 last_resume_reason TEXT,
+                owner_worker_id TEXT,
+                owner_job_id TEXT,
+                owner_claimed_at TEXT,
                 note TEXT
             );
 
@@ -88,7 +91,13 @@ class EventStore:
             );
             """
         )
-        for column in ["last_stop_reason", "last_resume_reason"]:
+        for column in [
+            "last_stop_reason",
+            "last_resume_reason",
+            "owner_worker_id",
+            "owner_job_id",
+            "owner_claimed_at",
+        ]:
             with suppress(sqlite3.OperationalError):
                 self._conn.execute(
                     f"ALTER TABLE project_sessions ADD COLUMN {column} TEXT"
@@ -163,8 +172,9 @@ class EventStore:
                 session_id, workspace_id, project_id, status, workflow, dry_run,
                 max_iterations, completed_iterations, created_at, updated_at,
                 started_at, finished_at, last_run_id, error_message,
-                last_stop_reason, last_resume_reason, note
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_stop_reason, last_resume_reason,
+                owner_worker_id, owner_job_id, owner_claimed_at, note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session.session_id,
@@ -183,6 +193,13 @@ class EventStore:
                 session.error_message,
                 session.last_stop_reason,
                 session.last_resume_reason,
+                session.owner_worker_id,
+                session.owner_job_id,
+                (
+                    session.owner_claimed_at.isoformat()
+                    if session.owner_claimed_at is not None
+                    else None
+                ),
                 session.note,
             ),
         )
@@ -238,6 +255,9 @@ class EventStore:
         clear_error_message: bool = False,
         clear_stop_reason: bool = False,
         clear_resume_reason: bool = False,
+        clear_owner_claim: bool = False,
+        expected_owner_worker_id: str | None = None,
+        expected_owner_job_id: str | None = None,
         note: str | None = None,
     ) -> ProjectSession:
         current = self.get_session(session_id)
@@ -257,57 +277,185 @@ class EventStore:
             finished_at = now
         elif next_status is SessionStatus.RUNNING:
             finished_at = None
-        self._conn.execute(
-            """
+        params: list[str | int | None] = [
+            next_status.value,
+            (
+                completed_iterations
+                if completed_iterations is not None
+                else current.completed_iterations
+            ),
+            max_iterations if max_iterations is not None else current.max_iterations,
+            now.isoformat(),
+            started_at.isoformat() if started_at is not None else None,
+            finished_at.isoformat() if finished_at is not None else None,
+            last_run_id if last_run_id is not None else current.last_run_id,
+            (
+                None
+                if clear_error_message
+                else (
+                    error_message if error_message is not None else current.error_message
+                )
+            ),
+            (
+                None
+                if clear_stop_reason
+                else (stop_reason if stop_reason is not None else current.last_stop_reason)
+            ),
+            (
+                None
+                if clear_resume_reason
+                else (
+                    resume_reason
+                    if resume_reason is not None
+                    else current.last_resume_reason
+                )
+            ),
+            None if clear_owner_claim else current.owner_worker_id,
+            None if clear_owner_claim else current.owner_job_id,
+            (
+                None
+                if clear_owner_claim or current.owner_claimed_at is None
+                else current.owner_claimed_at.isoformat()
+            ),
+            note if note is not None else current.note,
+            session_id,
+        ]
+        query = """
             UPDATE project_sessions
             SET status = ?, completed_iterations = ?, max_iterations = ?,
                 updated_at = ?, started_at = ?,
                 finished_at = ?, last_run_id = ?, error_message = ?,
-                last_stop_reason = ?, last_resume_reason = ?, note = ?
+                last_stop_reason = ?, last_resume_reason = ?,
+                owner_worker_id = ?, owner_job_id = ?, owner_claimed_at = ?, note = ?
             WHERE session_id = ?
+        """
+        if expected_owner_worker_id is not None or expected_owner_job_id is not None:
+            query += " AND owner_worker_id IS ? AND owner_job_id IS ?"
+            params.extend([expected_owner_worker_id, expected_owner_job_id])
+        cursor = self._conn.execute(query, params)
+        self._conn.commit()
+        if cursor.rowcount == 0 and (
+            expected_owner_worker_id is not None or expected_owner_job_id is not None
+        ):
+            current = self.get_session(session_id)
+            if current is None:
+                raise KeyError(f"Unknown project session: {session_id}")
+            raise RuntimeError(
+                f"Session {session_id} is not owned by "
+                f"{expected_owner_worker_id or '-'}:{expected_owner_job_id or '-'}"
+            )
+        updated = self.get_session(session_id)
+        if updated is None:
+            raise KeyError(f"Unknown project session: {session_id}")
+        return updated
+
+    def claim_session(
+        self,
+        session_id: str,
+        *,
+        owner_worker_id: str,
+        owner_job_id: str,
+        note: str | None = None,
+    ) -> ProjectSession:
+        current = self.get_session(session_id)
+        if current is None:
+            raise KeyError(f"Unknown project session: {session_id}")
+        now = datetime.now(UTC).isoformat()
+        cursor = self._conn.execute(
+            """
+            UPDATE project_sessions
+            SET owner_worker_id = ?, owner_job_id = ?, owner_claimed_at = ?,
+                updated_at = ?, note = ?
+            WHERE session_id = ?
+              AND (
+                (owner_worker_id IS NULL AND owner_job_id IS NULL)
+                OR (owner_worker_id = ? AND owner_job_id = ?)
+              )
             """,
             (
-                next_status.value,
-                (
-                    completed_iterations
-                    if completed_iterations is not None
-                    else current.completed_iterations
-                ),
-                max_iterations if max_iterations is not None else current.max_iterations,
-                now.isoformat(),
-                started_at.isoformat() if started_at is not None else None,
-                finished_at.isoformat() if finished_at is not None else None,
-                last_run_id if last_run_id is not None else current.last_run_id,
-                (
-                    None
-                    if clear_error_message
-                    else (
-                        error_message if error_message is not None else current.error_message
-                    )
-                ),
-                (
-                    None
-                    if clear_stop_reason
-                    else (stop_reason if stop_reason is not None else current.last_stop_reason)
-                ),
-                (
-                    None
-                    if clear_resume_reason
-                    else (
-                        resume_reason
-                        if resume_reason is not None
-                        else current.last_resume_reason
-                    )
-                ),
+                owner_worker_id,
+                owner_job_id,
+                now,
+                now,
                 note if note is not None else current.note,
                 session_id,
+                owner_worker_id,
+                owner_job_id,
             ),
         )
         self._conn.commit()
         updated = self.get_session(session_id)
         if updated is None:
             raise KeyError(f"Unknown project session: {session_id}")
+        if cursor.rowcount == 0:
+            raise RuntimeError(
+                f"Session {session_id} is already owned by "
+                f"{updated.owner_worker_id or '-'}:{updated.owner_job_id or '-'}"
+            )
         return updated
+
+    def release_session_claim(
+        self,
+        session_id: str,
+        *,
+        owner_worker_id: str,
+        owner_job_id: str,
+        note: str | None = None,
+    ) -> ProjectSession:
+        try:
+            return self.update_session(
+                session_id,
+                clear_owner_claim=True,
+                expected_owner_worker_id=owner_worker_id,
+                expected_owner_job_id=owner_job_id,
+                note=note,
+            )
+        except RuntimeError as err:
+            current = self.get_session(session_id)
+            if current is None:
+                raise KeyError(f"Unknown project session: {session_id}") from err
+            return current
+
+    def recover_session_claims(
+        self,
+        *,
+        owner_worker_id: str | None = None,
+        owner_job_id: str | None = None,
+        stop_reason: str,
+        note: str | None = None,
+    ) -> list[ProjectSession]:
+        if owner_worker_id is None and owner_job_id is None:
+            raise ValueError("Specify owner_worker_id or owner_job_id to recover claims.")
+        query = "SELECT session_id, status FROM project_sessions"
+        clauses: list[str] = []
+        params: list[str] = []
+        if owner_worker_id is not None:
+            clauses.append("owner_worker_id = ?")
+            params.append(owner_worker_id)
+        if owner_job_id is not None:
+            clauses.append("owner_job_id = ?")
+            params.append(owner_job_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        rows = self._conn.execute(query, params).fetchall()
+        recovered: list[ProjectSession] = []
+        for row in rows:
+            current_status = SessionStatus(row["status"])
+            recovered.append(
+                self.update_session(
+                    str(row["session_id"]),
+                    status=(
+                        SessionStatus.PENDING
+                        if current_status is SessionStatus.RUNNING
+                        else current_status
+                    ),
+                    stop_reason=stop_reason,
+                    clear_owner_claim=True,
+                    clear_error_message=True,
+                    note=note,
+                )
+            )
+        return recovered
 
     def append_session_iteration(self, iteration: SessionIteration) -> None:
         self._conn.execute(
@@ -456,6 +604,11 @@ class EventStore:
             error_message=row["error_message"],
             last_stop_reason=row["last_stop_reason"],
             last_resume_reason=row["last_resume_reason"],
+            owner_worker_id=row["owner_worker_id"],
+            owner_job_id=row["owner_job_id"],
+            owner_claimed_at=datetime.fromisoformat(row["owner_claimed_at"])
+            if row["owner_claimed_at"]
+            else None,
             note=row["note"],
         )
 
