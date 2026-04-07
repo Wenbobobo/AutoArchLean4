@@ -20,11 +20,13 @@ from .config import (
 from .control import ControlService
 from .dashboard import create_dashboard_app
 from .events import EventStore
+from .experiment_ledger import compare_experiment_ledgers, load_experiment_ledger
 from .fleet import FleetController
 from .ledger import load_benchmark_ledger
 from .models import (
     ExecutorConfig,
     ExecutorKind,
+    ExperimentLedger,
     ProjectSession,
     ProviderConfig,
     ProviderKind,
@@ -658,6 +660,123 @@ def benchmark_ledger(
         typer.echo(
             f"{outcome.project_id} | theorem={outcome.theorem_name or '-'} | "
             f"outcome={outcome.outcome.value} | failure={outcome.failure_kind.value}"
+        )
+
+
+def _load_experiment_ledger_from_options(
+    *,
+    summary: Path | None,
+    ledger: Path | None,
+) -> ExperimentLedger:
+    if summary is not None and ledger is not None:
+        raise typer.BadParameter("Specify either --summary or --ledger, not both.")
+    if summary is None and ledger is None:
+        raise typer.BadParameter("Specify --summary or --ledger.")
+    resolved_path = summary if summary is not None else ledger
+    if resolved_path is None:
+        raise typer.BadParameter("Specify --summary or --ledger.")
+    return load_experiment_ledger(resolved_path)
+
+
+@benchmark_app.command("experiment-ledger")
+def benchmark_experiment_ledger(
+    summary: Annotated[
+        Path | None,
+        typer.Option("--summary", exists=True, help="Benchmark summary JSON."),
+    ] = None,
+    ledger: Annotated[
+        Path | None,
+        typer.Option("--ledger", exists=True, help="Experiment ledger JSON."),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable JSON.")
+    ] = False,
+) -> None:
+    experiment_ledger = _load_experiment_ledger_from_options(
+        summary=summary,
+        ledger=ledger,
+    )
+    if json_output:
+        typer.echo(
+            json.dumps(
+                experiment_ledger.model_dump(mode="json"),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    typer.echo(f"Benchmark: {experiment_ledger.benchmark_name}")
+    typer.echo(f"Run: {experiment_ledger.benchmark_run_id}")
+    typer.echo(f"Projects: {experiment_ledger.summary.total_projects}")
+    typer.echo(f"Theorems: {experiment_ledger.summary.total_theorems}")
+    typer.echo(
+        "Changes: "
+        f"improved={experiment_ledger.summary.improved}, "
+        f"regressed={experiment_ledger.summary.regressed}, "
+        f"new={experiment_ledger.summary.new}, "
+        f"removed={experiment_ledger.summary.removed}"
+    )
+
+
+@benchmark_app.command("compare")
+def benchmark_compare(
+    baseline_summary: Annotated[
+        Path | None,
+        typer.Option("--baseline-summary", exists=True, help="Baseline benchmark summary JSON."),
+    ] = None,
+    baseline_ledger: Annotated[
+        Path | None,
+        typer.Option(
+            "--baseline-ledger",
+            exists=True,
+            help="Baseline experiment ledger JSON.",
+        ),
+    ] = None,
+    candidate_summary: Annotated[
+        Path | None,
+        typer.Option("--candidate-summary", exists=True, help="Candidate benchmark summary JSON."),
+    ] = None,
+    candidate_ledger: Annotated[
+        Path | None,
+        typer.Option(
+            "--candidate-ledger",
+            exists=True,
+            help="Candidate experiment ledger JSON.",
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable JSON.")
+    ] = False,
+) -> None:
+    baseline = _load_experiment_ledger_from_options(
+        summary=baseline_summary,
+        ledger=baseline_ledger,
+    )
+    candidate = _load_experiment_ledger_from_options(
+        summary=candidate_summary,
+        ledger=candidate_ledger,
+    )
+    comparison = compare_experiment_ledgers(baseline, candidate)
+    if json_output:
+        typer.echo(json.dumps(comparison.model_dump(mode="json"), ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"Baseline: {comparison.baseline_benchmark}")
+    typer.echo(f"Candidate: {comparison.candidate_benchmark}")
+    typer.echo(f"Theorems compared: {comparison.summary.total_theorems}")
+    typer.echo(
+        "Diffs: "
+        f"improved={comparison.summary.improved}, "
+        f"regressed={comparison.summary.regressed}, "
+        f"new={comparison.summary.new}, "
+        f"removed={comparison.summary.removed}"
+    )
+    for change in comparison.changes[:20]:
+        typer.echo(
+            f"{change.project_id} | {change.theorem_name} | "
+            f"{change.baseline_state.value} -> {change.candidate_state.value} | "
+            f"{change.change.value}"
         )
 
 

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from datetime import UTC, datetime
+from pathlib import Path
 
 from .models import (
     BenchmarkProjectResult,
+    BenchmarkResult,
     ExperimentLedger,
+    ExperimentLedgerChange,
+    ExperimentLedgerComparison,
+    ExperimentLedgerComparisonSummary,
     ExperimentLedgerSummary,
     ExperimentProjectLedger,
     FailureCategory,
@@ -137,6 +143,118 @@ def build_failure_taxonomy(
             key=lambda item: item[0].value,
         )
     ]
+
+
+def load_experiment_ledger(path: Path) -> ExperimentLedger:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict) and "benchmark_name" in payload and "outcomes" in payload:
+        return ExperimentLedger.model_validate(payload)
+    result = BenchmarkResult.model_validate(payload)
+    if result.ledger_path is None:
+        raise ValueError("Benchmark summary does not include ledger_path.")
+    ledger_path = result.ledger_path
+    if not ledger_path.is_absolute():
+        ledger_path = (path.parent / ledger_path).resolve()
+    return ExperimentLedger.model_validate_json(ledger_path.read_text(encoding="utf-8"))
+
+
+def _comparison_change_kind(
+    *,
+    baseline_exists: bool,
+    candidate_exists: bool,
+    baseline_state: TheoremState,
+    candidate_state: TheoremState,
+) -> TheoremOutcomeKind:
+    if not baseline_exists and candidate_exists:
+        return TheoremOutcomeKind.NEW
+    if baseline_exists and not candidate_exists:
+        return TheoremOutcomeKind.REMOVED
+    if baseline_state is candidate_state:
+        return TheoremOutcomeKind.UNCHANGED
+    if _theorem_severity(candidate_state) < _theorem_severity(baseline_state):
+        return TheoremOutcomeKind.IMPROVED
+    return TheoremOutcomeKind.REGRESSED
+
+
+def compare_experiment_ledgers(
+    baseline: ExperimentLedger,
+    candidate: ExperimentLedger,
+) -> ExperimentLedgerComparison:
+    baseline_by_key: dict[tuple[str, str], tuple[TheoremState, Path | None]] = {}
+    candidate_by_key: dict[tuple[str, str], tuple[TheoremState, Path | None]] = {}
+
+    for project in baseline.outcomes:
+        for outcome in project.theorem_outcomes:
+            baseline_by_key[(project.project_id, outcome.theorem_name)] = (
+                outcome.after_state,
+                outcome.file_path,
+            )
+    for project in candidate.outcomes:
+        for outcome in project.theorem_outcomes:
+            candidate_by_key[(project.project_id, outcome.theorem_name)] = (
+                outcome.after_state,
+                outcome.file_path,
+            )
+
+    counts: dict[TheoremOutcomeKind, int] = defaultdict(int)
+    changes: list[ExperimentLedgerChange] = []
+    keys = sorted(set(baseline_by_key) | set(candidate_by_key))
+    for project_id, theorem_name in keys:
+        baseline_entry = baseline_by_key.get((project_id, theorem_name))
+        candidate_entry = candidate_by_key.get((project_id, theorem_name))
+        baseline_exists = baseline_entry is not None
+        candidate_exists = candidate_entry is not None
+        baseline_state = (
+            baseline_entry[0] if baseline_entry is not None else TheoremState.MISSING
+        )
+        candidate_state = (
+            candidate_entry[0] if candidate_entry is not None else TheoremState.MISSING
+        )
+        change = _comparison_change_kind(
+            baseline_exists=baseline_exists,
+            candidate_exists=candidate_exists,
+            baseline_state=baseline_state,
+            candidate_state=candidate_state,
+        )
+        counts[change] += 1
+        if change is TheoremOutcomeKind.UNCHANGED:
+            continue
+        changes.append(
+            ExperimentLedgerChange(
+                project_id=project_id,
+                theorem_name=theorem_name,
+                file_path=(
+                    candidate_entry[1]
+                    if candidate_entry is not None
+                    else (baseline_entry[1] if baseline_entry is not None else None)
+                ),
+                baseline_state=baseline_state,
+                candidate_state=candidate_state,
+                change=change,
+            )
+        )
+
+    return ExperimentLedgerComparison(
+        baseline_benchmark=baseline.benchmark_name,
+        candidate_benchmark=candidate.benchmark_name,
+        summary=ExperimentLedgerComparisonSummary(
+            total_theorems=len(keys),
+            unchanged=counts[TheoremOutcomeKind.UNCHANGED],
+            improved=counts[TheoremOutcomeKind.IMPROVED],
+            regressed=counts[TheoremOutcomeKind.REGRESSED],
+            new=counts[TheoremOutcomeKind.NEW],
+            removed=counts[TheoremOutcomeKind.REMOVED],
+        ),
+        changes=changes,
+    )
+
+
+def build_experiment_ledger_comparison(
+    *,
+    baseline_ledger: ExperimentLedger,
+    candidate_ledger: ExperimentLedger,
+) -> ExperimentLedgerComparison:
+    return compare_experiment_ledgers(baseline_ledger, candidate_ledger)
 
 
 def build_experiment_ledger(

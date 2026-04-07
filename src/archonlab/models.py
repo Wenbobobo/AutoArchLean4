@@ -762,6 +762,37 @@ class ExperimentLedger(BaseModel):
     outcomes: list[ExperimentProjectLedger] = Field(default_factory=list)
 
 
+class ExperimentLedgerChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    theorem_name: str
+    file_path: Path | None = None
+    baseline_state: TheoremState
+    candidate_state: TheoremState
+    change: TheoremOutcomeKind
+
+
+class ExperimentLedgerComparisonSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_theorems: int
+    unchanged: int = 0
+    improved: int = 0
+    regressed: int = 0
+    new: int = 0
+    removed: int = 0
+
+
+class ExperimentLedgerComparison(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    baseline_benchmark: str
+    candidate_benchmark: str
+    summary: ExperimentLedgerComparisonSummary
+    changes: list[ExperimentLedgerChange] = Field(default_factory=list)
+
+
 class ProjectScore(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -3,13 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 
 from archonlab.experiment_ledger import (
+    build_experiment_ledger_comparison,
     build_failure_taxonomy,
     build_theorem_outcome_ledger,
 )
 from archonlab.models import (
+    ExperimentLedger,
+    ExperimentLedgerSummary,
+    ExperimentProjectLedger,
     FailureCategory,
     LeanAnalysisSnapshot,
     LeanDeclaration,
+    RunStatus,
+    TheoremOutcome,
+    TheoremOutcomeKind,
+    TheoremState,
 )
 
 
@@ -83,3 +91,96 @@ def test_theorem_outcome_ledger_classifies_changes_and_failures() -> None:
     assert taxonomy_by_category[FailureCategory.CONTAINS_SORRY].samples == ["baz"]
     assert taxonomy_by_category[FailureCategory.RUN_ERROR].count == 1
     assert taxonomy_by_category[FailureCategory.RUN_ERROR].samples == ["worker timeout"]
+
+
+def test_experiment_ledger_comparison_reports_theorem_level_changes() -> None:
+    baseline = ExperimentLedger(
+        benchmark_name="baseline",
+        benchmark_run_id="run-a",
+        summary=ExperimentLedgerSummary(total_projects=1, total_theorems=2, unchanged=2),
+        outcomes=[
+            ExperimentProjectLedger(
+                project_id="demo",
+                run_id="run-a",
+                run_status=RunStatus.COMPLETED,
+                theorem_outcomes=[
+                    TheoremOutcome(
+                        theorem_name="foo",
+                        file_path=Path("Core.lean"),
+                        declaration_kind="theorem",
+                        before_state=TheoremState.CONTAINS_SORRY,
+                        after_state=TheoremState.CONTAINS_SORRY,
+                        outcome=TheoremOutcomeKind.UNCHANGED,
+                    ),
+                    TheoremOutcome(
+                        theorem_name="helper",
+                        file_path=Path("Core.lean"),
+                        declaration_kind="theorem",
+                        before_state=TheoremState.PROVED,
+                        after_state=TheoremState.PROVED,
+                        outcome=TheoremOutcomeKind.UNCHANGED,
+                    ),
+                ],
+            )
+        ],
+    )
+    candidate = ExperimentLedger(
+        benchmark_name="candidate",
+        benchmark_run_id="run-b",
+        summary=ExperimentLedgerSummary(
+            total_projects=1,
+            total_theorems=3,
+            unchanged=1,
+            improved=1,
+            new=1,
+        ),
+        outcomes=[
+            ExperimentProjectLedger(
+                project_id="demo",
+                run_id="run-b",
+                run_status=RunStatus.COMPLETED,
+                theorem_outcomes=[
+                    TheoremOutcome(
+                        theorem_name="foo",
+                        file_path=Path("Core.lean"),
+                        declaration_kind="theorem",
+                        before_state=TheoremState.CONTAINS_SORRY,
+                        after_state=TheoremState.PROVED,
+                        outcome=TheoremOutcomeKind.IMPROVED,
+                    ),
+                    TheoremOutcome(
+                        theorem_name="helper",
+                        file_path=Path("Core.lean"),
+                        declaration_kind="theorem",
+                        before_state=TheoremState.PROVED,
+                        after_state=TheoremState.PROVED,
+                        outcome=TheoremOutcomeKind.UNCHANGED,
+                    ),
+                    TheoremOutcome(
+                        theorem_name="bar",
+                        file_path=Path("Extra.lean"),
+                        declaration_kind="lemma",
+                        before_state=TheoremState.MISSING,
+                        after_state=TheoremState.CONTAINS_SORRY,
+                        outcome=TheoremOutcomeKind.NEW,
+                        failure_categories=[FailureCategory.CONTAINS_SORRY],
+                    ),
+                ],
+            )
+        ],
+    )
+
+    comparison = build_experiment_ledger_comparison(
+        baseline_ledger=baseline,
+        candidate_ledger=candidate,
+    )
+
+    assert comparison.baseline_benchmark == "baseline"
+    assert comparison.candidate_benchmark == "candidate"
+    assert comparison.summary.improved == 1
+    assert comparison.summary.new == 1
+    change_by_theorem = {item.theorem_name: item for item in comparison.changes}
+    assert change_by_theorem["foo"].change is TheoremOutcomeKind.IMPROVED
+    assert change_by_theorem["foo"].baseline_state is TheoremState.CONTAINS_SORRY
+    assert change_by_theorem["foo"].candidate_state is TheoremState.PROVED
+    assert change_by_theorem["bar"].change is TheoremOutcomeKind.NEW

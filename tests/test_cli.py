@@ -282,6 +282,188 @@ def test_benchmark_run_creates_summary(
     assert ledger_payload["summary"]["total_projects"] == 1
     assert ledger_payload["outcomes"][0]["project_id"] == "demo"
 
+    experiment_ledger_result = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "experiment-ledger",
+            "--summary",
+            str(summary_files[0]),
+            "--json",
+        ],
+    )
+
+    assert experiment_ledger_result.exit_code == 0
+    experiment_ledger_payload = json.loads(experiment_ledger_result.output)
+    assert experiment_ledger_payload["benchmark_name"] == "smoke"
+    assert experiment_ledger_payload["summary"]["total_projects"] == 1
+    assert experiment_ledger_payload["outcomes"][0]["project_id"] == "demo"
+
+
+def test_benchmark_compare_reports_theorem_level_deltas(tmp_path: Path) -> None:
+    baseline_ledger = tmp_path / "baseline-ledger.json"
+    candidate_ledger = tmp_path / "candidate-ledger.json"
+    baseline_ledger.write_text(
+        json.dumps(
+            {
+                "benchmark_name": "baseline-smoke",
+                "benchmark_run_id": "baseline-run",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "summary": {
+                    "total_projects": 1,
+                    "total_theorems": 2,
+                    "unchanged": 2,
+                    "improved": 0,
+                    "regressed": 0,
+                    "new": 0,
+                    "removed": 0,
+                    "failure_taxonomy": [
+                        {
+                            "category": "contains_sorry",
+                            "count": 1,
+                            "samples": ["foo"],
+                        }
+                    ],
+                },
+                "outcomes": [
+                    {
+                        "project_id": "demo",
+                        "run_id": "baseline-run",
+                        "run_status": "completed",
+                        "theorem_outcomes": [
+                            {
+                                "theorem_name": "foo",
+                                "file_path": "Core.lean",
+                                "declaration_kind": "theorem",
+                                "before_state": "contains_sorry",
+                                "after_state": "contains_sorry",
+                                "outcome": "unchanged",
+                                "failure_categories": ["contains_sorry"],
+                            },
+                            {
+                                "theorem_name": "helper",
+                                "file_path": "Core.lean",
+                                "declaration_kind": "theorem",
+                                "before_state": "proved",
+                                "after_state": "proved",
+                                "outcome": "unchanged",
+                                "failure_categories": [],
+                            },
+                        ],
+                        "failure_taxonomy": [
+                            {
+                                "category": "contains_sorry",
+                                "count": 1,
+                                "samples": ["foo"],
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    candidate_ledger.write_text(
+        json.dumps(
+            {
+                "benchmark_name": "candidate-smoke",
+                "benchmark_run_id": "candidate-run",
+                "generated_at": datetime.now(UTC).isoformat(),
+                "summary": {
+                    "total_projects": 1,
+                    "total_theorems": 3,
+                    "unchanged": 1,
+                    "improved": 1,
+                    "regressed": 0,
+                    "new": 1,
+                    "removed": 0,
+                    "failure_taxonomy": [
+                        {
+                            "category": "contains_sorry",
+                            "count": 1,
+                            "samples": ["bar"],
+                        }
+                    ],
+                },
+                "outcomes": [
+                    {
+                        "project_id": "demo",
+                        "run_id": "candidate-run",
+                        "run_status": "completed",
+                        "theorem_outcomes": [
+                            {
+                                "theorem_name": "foo",
+                                "file_path": "Core.lean",
+                                "declaration_kind": "theorem",
+                                "before_state": "contains_sorry",
+                                "after_state": "proved",
+                                "outcome": "improved",
+                                "failure_categories": [],
+                            },
+                            {
+                                "theorem_name": "helper",
+                                "file_path": "Core.lean",
+                                "declaration_kind": "theorem",
+                                "before_state": "proved",
+                                "after_state": "proved",
+                                "outcome": "unchanged",
+                                "failure_categories": [],
+                            },
+                            {
+                                "theorem_name": "bar",
+                                "file_path": "Extra.lean",
+                                "declaration_kind": "lemma",
+                                "before_state": "missing",
+                                "after_state": "contains_sorry",
+                                "outcome": "new",
+                                "failure_categories": ["contains_sorry"],
+                            },
+                        ],
+                        "failure_taxonomy": [
+                            {
+                                "category": "contains_sorry",
+                                "count": 1,
+                                "samples": ["bar"],
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    compare_result = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "compare",
+            "--baseline-ledger",
+            str(baseline_ledger),
+            "--candidate-ledger",
+            str(candidate_ledger),
+            "--json",
+        ],
+    )
+
+    assert compare_result.exit_code == 0
+    compare_payload = json.loads(compare_result.output)
+    assert compare_payload["baseline_benchmark"] == "baseline-smoke"
+    assert compare_payload["candidate_benchmark"] == "candidate-smoke"
+    assert compare_payload["summary"]["improved"] == 1
+    assert compare_payload["summary"]["new"] == 1
+    changes = {
+        (item["project_id"], item["theorem_name"]): item
+        for item in compare_payload["changes"]
+    }
+    assert changes[("demo", "foo")]["change"] == "improved"
+    assert changes[("demo", "foo")]["candidate_state"] == "proved"
+    assert changes[("demo", "bar")]["change"] == "new"
+
 
 def test_worktree_create_and_remove_commands(tmp_path: Path) -> None:
     repo_path = tmp_path / "repo"
