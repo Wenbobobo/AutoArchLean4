@@ -9,6 +9,8 @@ from .models import (
     ExecutionPolicy,
     ExecutorConfig,
     ExecutorKind,
+    LeanAnalyzerConfig,
+    LeanAnalyzerKind,
     ProjectConfig,
     ProviderConfig,
     ProviderKind,
@@ -72,6 +74,15 @@ def _get_str_list(raw: dict[str, object], key: str) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value]
+
+
+def _get_command_list(raw: dict[str, object], key: str) -> list[str]:
+    value = raw.get(key, [])
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
 
 
 def _get_str_dict(raw: dict[str, object], key: str) -> dict[str, str]:
@@ -166,6 +177,16 @@ def _load_provider_pools(raw: object) -> dict[str, ProviderPoolConfig]:
     return pools
 
 
+def _load_lean_analyzer_config(raw: object) -> LeanAnalyzerConfig:
+    if not isinstance(raw, dict):
+        return LeanAnalyzerConfig()
+    return LeanAnalyzerConfig(
+        kind=LeanAnalyzerKind(_get_str(raw, "kind", LeanAnalyzerKind.REGEX.value)),
+        command=_get_command_list(raw, "command"),
+        timeout_seconds=_get_int(raw, "timeout_seconds", 60),
+    )
+
+
 def _load_run_config(base_dir: Path, raw: dict[str, object]) -> RunConfig:
     workflow_spec = (
         _resolve_path(base_dir, str(raw["workflow_spec"]))
@@ -218,6 +239,7 @@ def load_config(config_path: Path) -> AppConfig:
     task_executor_raw = raw.get("task_executor", {})
     task_provider_raw = raw.get("task_provider", {})
     provider_pool_raw = raw.get("provider_pool", {})
+    lean_analyzer_raw = raw.get("lean_analyzer", {})
 
     project_path = _resolve_path(base_dir, project_raw["project_path"])
     archon_path = _resolve_path(base_dir, project_raw["archon_path"])
@@ -232,6 +254,7 @@ def load_config(config_path: Path) -> AppConfig:
             backend=project_raw.get("backend", "archon"),
         ),
         run=_load_run_config(base_dir, run_raw),
+        lean_analyzer=_load_lean_analyzer_config(lean_analyzer_raw),
         executor=executor,
         provider=provider,
         provider_pools=_load_provider_pools(provider_pool_raw),
@@ -260,6 +283,7 @@ def load_workspace_config(config_path: Path) -> WorkspaceConfig:
     task_executor_raw = raw.get("task_executor", {})
     task_provider_raw = raw.get("task_provider", {})
     provider_pool_raw = raw.get("provider_pool", {})
+    lean_analyzer_raw = raw.get("lean_analyzer", {})
     projects_raw = raw.get("projects", [])
     if not isinstance(projects_raw, list) or not projects_raw:
         raise ValueError("Workspace config must define at least one [[projects]] entry.")
@@ -305,6 +329,7 @@ def load_workspace_config(config_path: Path) -> WorkspaceConfig:
     return WorkspaceConfig(
         name=str(workspace_raw.get("name", config_path.parent.name)),
         run=_load_run_config(base_dir, run_raw),
+        lean_analyzer=_load_lean_analyzer_config(lean_analyzer_raw),
         executor=executor,
         provider=provider,
         provider_pools=_load_provider_pools(provider_pool_raw),
@@ -588,6 +613,7 @@ def build_workspace_project_app_config(
                 ),
             }
         ),
+        lean_analyzer=workspace_config.lean_analyzer,
         executor=workspace_config.executor,
         provider=workspace_config.provider,
         provider_pools=workspace_config.provider_pools,

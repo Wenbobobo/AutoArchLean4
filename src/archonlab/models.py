@@ -13,6 +13,11 @@ class WorkflowMode(StrEnum):
     ADAPTIVE_LOOP = "adaptive_loop"
 
 
+class LeanAnalyzerKind(StrEnum):
+    REGEX = "regex"
+    COMMAND = "command"
+
+
 class ProviderKind(StrEnum):
     OPENAI_COMPATIBLE = "openai_compatible"
 
@@ -275,11 +280,20 @@ class RunConfig(BaseModel):
     artifact_root: Path = Path("artifacts")
 
 
+class LeanAnalyzerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: LeanAnalyzerKind = LeanAnalyzerKind.REGEX
+    command: list[str] = Field(default_factory=list)
+    timeout_seconds: int = 60
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     project: ProjectConfig
     run: RunConfig
+    lean_analyzer: LeanAnalyzerConfig = Field(default_factory=LeanAnalyzerConfig)
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     provider_pools: dict[str, ProviderPoolConfig] = Field(default_factory=dict)
@@ -291,6 +305,7 @@ class WorkspaceConfig(BaseModel):
 
     name: str
     run: RunConfig
+    lean_analyzer: LeanAnalyzerConfig = Field(default_factory=LeanAnalyzerConfig)
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     provider_pools: dict[str, ProviderPoolConfig] = Field(default_factory=dict)

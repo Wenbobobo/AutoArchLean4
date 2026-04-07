@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Protocol
 
-from .models import LeanAnalysisSnapshot, LeanDeclaration
+from .models import (
+    LeanAnalysisSnapshot,
+    LeanAnalyzerConfig,
+    LeanAnalyzerKind,
+    LeanDeclaration,
+)
 
 DECL_PATTERN = re.compile(r"^\s*(theorem|lemma|example)\s+([A-Za-z0-9_'.]+)", re.MULTILINE)
 THEOREM_PATTERN = re.compile(r"\b(?:theorem|lemma|example)\b")
@@ -77,6 +84,52 @@ class RegexLeanAnalyzer:
             sorry_count=sorry_count,
             axiom_count=axiom_count,
         )
+
+
+class CommandLeanAnalyzer:
+    def __init__(
+        self,
+        *,
+        command: list[str],
+        timeout_seconds: int = 60,
+    ) -> None:
+        if not command:
+            raise ValueError("lean_analyzer.command is required for command analyzers")
+        self.command = command
+        self.timeout_seconds = timeout_seconds
+
+    def analyze(self, *, project_path: Path, archon_path: Path) -> LeanAnalysisSnapshot:
+        completed = subprocess.run(
+            [
+                *self.command,
+                "--project-path",
+                str(project_path),
+                "--archon-path",
+                str(archon_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=self.timeout_seconds,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
+            raise RuntimeError(f"Lean analyzer command failed: {detail}")
+        payload = completed.stdout.strip()
+        if not payload:
+            raise RuntimeError("Lean analyzer command returned no output")
+        return LeanAnalysisSnapshot.model_validate(json.loads(payload))
+
+
+def build_lean_analyzer(config: LeanAnalyzerConfig | None = None) -> LeanAnalyzer:
+    if config is None or config.kind is LeanAnalyzerKind.REGEX:
+        return RegexLeanAnalyzer()
+    if config.kind is LeanAnalyzerKind.COMMAND:
+        return CommandLeanAnalyzer(
+            command=config.command,
+            timeout_seconds=config.timeout_seconds,
+        )
+    raise ValueError(f"Unsupported lean analyzer kind: {config.kind.value}")
 
 
 def collect_lean_analysis(

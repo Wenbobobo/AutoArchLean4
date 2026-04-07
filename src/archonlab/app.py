@@ -106,15 +106,26 @@ def doctor(
         Path | None,
         typer.Option(
             "--config",
-            help="Optional archonlab.toml to enrich checks with project-specific paths.",
+            help="Optional project or workspace config to enrich checks with local paths.",
         ),
     ] = None,
     json_output: Annotated[
         bool, typer.Option("--json", help="Print machine-readable JSON.")
     ] = False,
 ) -> None:
-    project = load_config(config).project if config else None
-    report = gather_doctor_report(project)
+    project = None
+    lean_analyzer = None
+    if config is not None:
+        resolved_config = config.resolve()
+        try:
+            workspace_config = load_workspace_config(resolved_config)
+            project = workspace_config.projects[0].as_project_config()
+            lean_analyzer = workspace_config.lean_analyzer
+        except (KeyError, ValueError):
+            app_config = load_config(resolved_config)
+            project = app_config.project
+            lean_analyzer = app_config.lean_analyzer
+    report = gather_doctor_report(project, lean_analyzer=lean_analyzer)
     if json_output:
         typer.echo(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2))
         return

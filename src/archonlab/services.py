@@ -10,6 +10,7 @@ from .control import ControlService
 from .events import EventStore
 from .execution_policy import resolve_app_phase_configs
 from .executors import create_executor
+from .lean_analyzer import build_lean_analyzer
 from .models import (
     ActionPhase,
     AppConfig,
@@ -594,14 +595,17 @@ class RunService:
     def preview(self) -> RunPreview:
         self.adapter.ensure_valid()
         progress = self.adapter.read_progress()
+        analyzer = build_lean_analyzer(self.config.lean_analyzer)
         snapshot = collect_project_snapshot(
             project_path=self.config.project.project_path,
             archon_path=self.config.project.archon_path,
+            analyzer=analyzer,
         )
         control_state = self.control.read(self.config.project)
         task_graph = build_task_graph(
             project_path=self.config.project.project_path,
             archon_path=self.config.project.archon_path,
+            analyzer=analyzer,
         )
         workflow, workflow_spec_path = self._resolve_effective_workflow(control_state)
         workflow_spec = (

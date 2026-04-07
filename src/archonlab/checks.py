@@ -5,8 +5,8 @@ import subprocess
 
 from pydantic import BaseModel
 
-from .lean_analyzer import RegexLeanAnalyzer
-from .models import ProjectConfig
+from .lean_analyzer import CommandLeanAnalyzer, RegexLeanAnalyzer
+from .models import LeanAnalyzerConfig, LeanAnalyzerKind, ProjectConfig
 
 
 class ToolStatus(BaseModel):
@@ -56,7 +56,18 @@ def _tool_status(name: str, *, required: bool) -> ToolStatus:
     )
 
 
-def gather_doctor_report(project: ProjectConfig | None = None) -> DoctorReport:
+def _lean_analyzer_detail(config: LeanAnalyzerConfig | None) -> str:
+    if config is None or config.kind is LeanAnalyzerKind.REGEX:
+        return RegexLeanAnalyzer.__name__
+    command = " ".join(config.command) if config.command else "<missing command>"
+    return f"{CommandLeanAnalyzer.__name__} ({command})"
+
+
+def gather_doctor_report(
+    project: ProjectConfig | None = None,
+    *,
+    lean_analyzer: LeanAnalyzerConfig | None = None,
+) -> DoctorReport:
     tools = [
         _tool_status("uv", required=True),
         _tool_status("python3.12", required=True),
@@ -96,7 +107,7 @@ def gather_doctor_report(project: ProjectConfig | None = None) -> DoctorReport:
                 PathStatus(
                     name="lean_analyzer",
                     ok=True,
-                    detail=RegexLeanAnalyzer.__name__,
+                    detail=_lean_analyzer_detail(lean_analyzer),
                 ),
             ]
         )

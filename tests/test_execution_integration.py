@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from archonlab.config import load_config
+from archonlab.config import load_config, load_workspace_config
 from archonlab.execution_policy import (
     collect_required_execution_capabilities,
     collect_required_execution_kinds,
@@ -103,6 +104,69 @@ def test_load_config_parses_named_provider_pools(tmp_path: Path) -> None:
     ]
 
 
+def test_load_config_parses_command_lean_analyzer_section(tmp_path: Path) -> None:
+    project_path = tmp_path / "LeanProject"
+    archon_path = tmp_path / "Archon"
+    project_path.mkdir()
+    archon_path.mkdir()
+    analyzer_script = tmp_path / "fake_analyzer.py"
+    analyzer_script.write_text("print('{}')\n", encoding="utf-8")
+    config_path = tmp_path / "archonlab.toml"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        'project_path = "./LeanProject"\n'
+        'archon_path = "./Archon"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        'artifact_root = "./artifacts"\n'
+        "dry_run = true\n\n"
+        "[lean_analyzer]\n"
+        'kind = "command"\n'
+        f'command = ["{sys.executable}", "{analyzer_script}"]\n'
+        "timeout_seconds = 15\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.lean_analyzer.kind == "command"
+    assert config.lean_analyzer.command == [sys.executable, str(analyzer_script)]
+    assert config.lean_analyzer.timeout_seconds == 15
+
+
+def test_load_workspace_config_parses_command_lean_analyzer_section(tmp_path: Path) -> None:
+    project_path = tmp_path / "LeanProject"
+    archon_path = tmp_path / "Archon"
+    project_path.mkdir()
+    archon_path.mkdir()
+    analyzer_script = tmp_path / "fake_analyzer.py"
+    analyzer_script.write_text("print('{}')\n", encoding="utf-8")
+    config_path = tmp_path / "workspace.toml"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        'artifact_root = "./artifacts"\n'
+        "dry_run = true\n\n"
+        "[lean_analyzer]\n"
+        'kind = "command"\n'
+        f'command = ["{sys.executable}", "{analyzer_script}"]\n'
+        "\n"
+        "[[projects]]\n"
+        'id = "demo"\n'
+        'project_path = "./LeanProject"\n'
+        'archon_path = "./Archon"\n',
+        encoding="utf-8",
+    )
+
+    config = load_workspace_config(config_path)
+
+    assert config.lean_analyzer.kind == "command"
+    assert config.lean_analyzer.command == [sys.executable, str(analyzer_script)]
+
+
 def test_run_service_execute_supports_provider_pool_routing(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:
@@ -140,6 +204,100 @@ def test_run_service_execute_supports_provider_pool_routing(
     assert result.execution.telemetry.provider_pool == "lab"
     assert result.execution.telemetry.provider_member == "member-a"
     assert result.execution.telemetry.retry_count == 0
+
+
+def test_run_service_preview_uses_configured_command_lean_analyzer(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    analyzer_script = tmp_path / "structured_analyzer.py"
+    analyzer_script.write_text(
+        "from __future__ import annotations\n"
+        "import json\n"
+        "\n"
+        "print(json.dumps({\n"
+        f'    "project_id": "{fake_archon_project.name}",\n'
+        f'    "project_path": "{fake_archon_project.resolve()}",\n'
+        '    "lean_file_count": 1,\n'
+        '    "theorem_count": 3,\n'
+        '    "sorry_count": 1,\n'
+        '    "axiom_count": 0,\n'
+        '    "declarations": [\n'
+        '        {\n'
+        '            "name": "injected_goal",\n'
+        '            "file_path": "Injected.lean",\n'
+        '            "declaration_kind": "theorem",\n'
+        '            "dependencies": [],\n'
+        '            "blocked_by_sorry": True,\n'
+        '            "uses_axiom": False\n'
+        '        }\n'
+        '    ]\n'
+        '}))\n',
+        encoding="utf-8",
+    )
+    (fake_archon_project / "Core.lean").write_text(
+        "theorem foo : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n\n"
+        "[lean_analyzer]\n"
+        'kind = "command"\n'
+        f'command = ["{sys.executable}", "{analyzer_script}"]\n',
+        encoding="utf-8",
+    )
+
+    preview = RunService(load_config(config_path)).preview()
+
+    assert preview.snapshot.theorem_count == 3
+    assert preview.snapshot.sorry_count == 1
+    assert any(node.id == "lean:Injected.lean:injected_goal" for node in preview.task_graph.nodes)
+
+
+def test_run_service_preview_falls_back_when_command_lean_analyzer_fails(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    analyzer_script = tmp_path / "failing_analyzer.py"
+    analyzer_script.write_text("raise SystemExit(1)\n", encoding="utf-8")
+    (fake_archon_project / "Core.lean").write_text(
+        "theorem foo : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n\n"
+        "[lean_analyzer]\n"
+        'kind = "command"\n'
+        f'command = ["{sys.executable}", "{analyzer_script}"]\n',
+        encoding="utf-8",
+    )
+
+    preview = RunService(load_config(config_path)).preview()
+
+    assert preview.snapshot.lean_file_count >= 1
+    assert preview.snapshot.theorem_count >= 1
 
 
 def test_run_service_execute_uses_configured_executor(
