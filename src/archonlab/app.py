@@ -20,6 +20,7 @@ from .config import (
 from .control import ControlService
 from .dashboard import create_dashboard_app
 from .events import EventStore
+from .fleet import FleetController
 from .models import (
     ExecutorConfig,
     ExecutorKind,
@@ -1117,6 +1118,98 @@ def queue_plan_fleet(
             f"add={profile.recommended_additional_workers} | executor={executor_kinds} | "
             f"provider={provider_kinds} | model={models} | cost={cost_tiers} | endpoint={endpoints}"
         )
+
+
+@queue_app.command("autoscale")
+def queue_autoscale(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    max_cycles: Annotated[
+        int,
+        typer.Option("--max-cycles", min=1, help="Maximum autoscaling control cycles."),
+    ] = 10,
+    idle_cycles: Annotated[
+        int,
+        typer.Option(
+            "--idle-cycles",
+            min=1,
+            help="Stop after this many consecutive no-progress control cycles.",
+        ),
+    ] = 1,
+    workers: Annotated[
+        int | None,
+        typer.Option(
+            "--workers",
+            min=1,
+            help="Optional cap on workers launched per autoscaling cycle.",
+        ),
+    ] = None,
+    target_jobs_per_worker: Annotated[
+        int,
+        typer.Option(
+            "--target-jobs-per-worker",
+            min=1,
+            help="Heuristic queue load assigned to each planned worker profile.",
+        ),
+    ] = 2,
+    max_jobs_per_worker: Annotated[
+        int | None,
+        typer.Option(
+            "--max-jobs-per-worker",
+            min=1,
+            help="Optional maximum jobs processed by each worker in a cycle.",
+        ),
+    ] = None,
+    poll_seconds: Annotated[
+        float,
+        typer.Option("--poll-seconds", min=0.1, help="Polling interval when the queue is empty."),
+    ] = 2.0,
+    idle_timeout_seconds: Annotated[
+        float,
+        typer.Option(
+            "--idle-timeout-seconds",
+            min=0.1,
+            help="Stop each launched worker after this many idle seconds.",
+        ),
+    ] = 30.0,
+    stale_after_seconds: Annotated[
+        float | None,
+        typer.Option(
+            "--stale-after-seconds",
+            min=0.1,
+            help="Ignore or reap active workers older than this heartbeat age.",
+        ),
+    ] = 120.0,
+) -> None:
+    app_config = load_config(config)
+    queue_store = QueueStore(app_config.run.artifact_root / "archonlab.db")
+    batch_runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(app_config.run.artifact_root),
+        artifact_root=app_config.run.artifact_root,
+        slot_limit=workers or app_config.run.max_parallel,
+    )
+    result = FleetController(
+        queue_store=queue_store,
+        batch_runner=batch_runner,
+    ).run(
+        max_cycles=max_cycles,
+        idle_cycles=idle_cycles,
+        worker_count=workers,
+        target_jobs_per_worker=target_jobs_per_worker,
+        max_jobs_per_worker=max_jobs_per_worker,
+        poll_seconds=poll_seconds,
+        idle_timeout_seconds=idle_timeout_seconds,
+        stale_after_seconds=stale_after_seconds,
+    )
+    typer.echo(f"Cycles: {result.cycles_completed}")
+    typer.echo(f"Stop reason: {result.stop_reason}")
+    typer.echo(f"Processed: {result.total_processed_jobs}")
+    typer.echo(f"Paused: {result.total_paused_jobs}")
+    typer.echo(f"Failed: {result.total_failed_jobs}")
+    typer.echo(f"Workers launched: {result.total_workers_launched}")
 
 
 @queue_app.command("status")

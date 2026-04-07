@@ -972,3 +972,62 @@ def test_queue_plan_fleet_command_summarizes_recommended_worker_profiles(
     assert "Additional workers: 1" in result.output
     assert "model=gpt-5.4-mini" in result.output
     assert "model=gpt-5.4" in result.output
+
+
+def test_queue_autoscale_command_runs_fleet_controller(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_parallel = 2\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run(self, **kwargs) -> object:
+        captured.update(kwargs)
+        return self.result_model(
+            cycles_completed=2,
+            stop_reason="queue_drained",
+            total_processed_jobs=3,
+            total_paused_jobs=0,
+            total_failed_jobs=0,
+            total_workers_launched=2,
+            cycles=[],
+            final_plan=self.queue_store.plan_fleet(),
+        )
+
+    monkeypatch.setattr("archonlab.app.FleetController.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "autoscale",
+            "--config",
+            str(config_path),
+            "--max-cycles",
+            "5",
+            "--idle-cycles",
+            "2",
+            "--target-jobs-per-worker",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Stop reason: queue_drained" in result.output
+    assert "Processed: 3" in result.output
+    assert captured["max_cycles"] == 5
+    assert captured["idle_cycles"] == 2
+    assert captured["target_jobs_per_worker"] == 3
