@@ -138,6 +138,27 @@ def resolve_manifest_phase_configs(
     )
 
 
+def collect_required_execution_kinds(
+    *,
+    executor: ExecutorConfig,
+    provider: ProviderConfig,
+    execution_policy: ExecutionPolicy,
+) -> tuple[list[ExecutorKind], list[ProviderKind]]:
+    executor_kinds = {executor.kind}
+    provider_kinds = {provider.kind}
+    for override in execution_policy.phases.values():
+        if override.executor is not None:
+            executor_kinds.add(override.executor.kind)
+        if override.provider is not None:
+            provider_kinds.add(override.provider.kind)
+    for rule in execution_policy.task_rules:
+        if rule.executor is not None:
+            executor_kinds.add(rule.executor.kind)
+        if rule.provider is not None:
+            provider_kinds.add(rule.provider.kind)
+    return sorted(executor_kinds), sorted(provider_kinds)
+
+
 def build_task_matcher(name: str, raw_matcher: object) -> ExecutionTaskMatcher:
     if not isinstance(raw_matcher, dict):
         raw_matcher = {}

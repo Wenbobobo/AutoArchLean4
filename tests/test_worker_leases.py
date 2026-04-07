@@ -11,6 +11,8 @@ from archonlab.batch import BatchRunner
 from archonlab.control import ControlService
 from archonlab.models import (
     BenchmarkProjectResult,
+    ExecutorKind,
+    ProviderKind,
     QueueJobStatus,
     RunStatus,
     SnapshotDelta,
@@ -314,3 +316,34 @@ def test_queue_store_reaps_stale_worker_and_requeues_running_job(tmp_path: Path)
     assert updated_job.status is QueueJobStatus.QUEUED
     assert updated_job.worker_id is None
     assert updated_job.error_message == f"Recovered from stale worker {worker.worker_id}"
+
+
+def test_queue_store_claim_next_job_respects_worker_executor_capabilities(
+    tmp_path: Path,
+) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    codex_job = queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "codex.toml"},
+        required_executor_kinds=[ExecutorKind.CODEX_EXEC],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+    )
+    dry_run_job = queue_store.enqueue(
+        "benchmark_project",
+        {"manifest_path": "dry-run.toml"},
+        required_executor_kinds=[ExecutorKind.DRY_RUN],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+    )
+    worker = queue_store.register_worker(
+        slot_index=1,
+        worker_id="worker-dry-run",
+        executor_kinds=[ExecutorKind.DRY_RUN],
+        provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+    )
+
+    claimed = queue_store.claim_next_job(worker_id=worker.worker_id)
+
+    assert claimed is not None
+    assert claimed.id == dry_run_job.id
+    assert claimed.required_executor_kinds == [ExecutorKind.DRY_RUN]
+    assert queue_store.get_job(codex_job.id).status is QueueJobStatus.QUEUED

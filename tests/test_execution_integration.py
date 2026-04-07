@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 from archonlab.config import load_config
-from archonlab.models import ExecutorKind
+from archonlab.execution_policy import collect_required_execution_kinds
+from archonlab.models import ExecutorKind, ProviderKind
 from archonlab.services import RunService
 
 
@@ -74,3 +75,53 @@ def test_run_service_execute_uses_configured_executor(
     )
     assert execution_payload["executor"] == "dry_run"
     assert execution_payload["status"] == "completed"
+
+
+def test_collect_required_execution_kinds_includes_phase_and_task_overrides(
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "LeanProject"
+    archon_path = tmp_path / "Archon"
+    project_path.mkdir()
+    archon_path.mkdir()
+    config_path = tmp_path / "archonlab.toml"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        'project_path = "./LeanProject"\n'
+        'archon_path = "./Archon"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        'artifact_root = "./artifacts"\n'
+        "dry_run = false\n\n"
+        "[executor]\n"
+        'kind = "codex_exec"\n'
+        "\n"
+        "[provider]\n"
+        'model = "gpt-5.4-mini"\n'
+        "\n"
+        "[phase_executor.plan]\n"
+        'kind = "dry_run"\n'
+        "\n"
+        "[task_matcher.core_focus]\n"
+        'phase = "prover"\n'
+        'theorem_pattern = "^foo$"\n'
+        "\n"
+        "[task_executor.core_focus]\n"
+        'kind = "openai_compatible"\n',
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    executor_kinds, provider_kinds = collect_required_execution_kinds(
+        executor=config.executor,
+        provider=config.provider,
+        execution_policy=config.execution_policy,
+    )
+
+    assert set(executor_kinds) == {
+        ExecutorKind.CODEX_EXEC,
+        ExecutorKind.DRY_RUN,
+        ExecutorKind.OPENAI_COMPATIBLE,
+    }
+    assert provider_kinds == [ProviderKind.OPENAI_COMPATIBLE]

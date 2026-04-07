@@ -21,7 +21,9 @@ from .models import (
     BatchRunReport,
     BenchmarkManifest,
     BenchmarkProjectConfig,
+    ExecutorKind,
     ProjectConfig,
+    ProviderKind,
     QueueBenchmarkPayload,
     QueueJob,
     QueueJobStatus,
@@ -87,6 +89,8 @@ class BatchRunner:
                         slot_index=resolved_slot_index,
                     )
                 ),
+                executor_kinds=list(ExecutorKind),
+                provider_kinds=list(ProviderKind),
             )
             with report_lock:
                 report.worker_ids.append(worker.worker_id)
@@ -142,6 +146,8 @@ class BatchRunner:
         worker_id: str | None = None,
         note: str | None = "external_worker",
         stale_after_seconds: float | None = None,
+        executor_kinds: list[ExecutorKind] | None = None,
+        provider_kinds: list[ProviderKind] | None = None,
     ) -> BatchRunReport:
         report = BatchRunReport()
         report_lock = threading.Lock()
@@ -159,6 +165,8 @@ class BatchRunner:
                 )
             ),
             stale_after_seconds=stale_after_seconds,
+            executor_kinds=executor_kinds,
+            provider_kinds=provider_kinds,
         )
         report.worker_ids.append(worker.worker_id)
         processed_count = 0
@@ -211,6 +219,8 @@ class BatchRunner:
         poll_seconds: float = 2.0,
         idle_timeout_seconds: float = 30.0,
         stale_after_seconds: float | None = None,
+        executor_kinds: list[ExecutorKind] | None = None,
+        provider_kinds: list[ProviderKind] | None = None,
     ) -> BatchRunReport:
         desired_workers = max(1, worker_count or self.slot_limit)
         aggregate = BatchRunReport()
@@ -224,6 +234,8 @@ class BatchRunner:
                 idle_timeout_seconds=idle_timeout_seconds,
                 note=f"fleet_worker_{index}",
                 stale_after_seconds=stale_after_seconds,
+                executor_kinds=executor_kinds,
+                provider_kinds=provider_kinds,
             )
             with aggregate_lock:
                 aggregate.processed_job_ids.extend(report.processed_job_ids)

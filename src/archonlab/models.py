@@ -482,6 +482,8 @@ class QueueJob(BaseModel):
     pause_reason: str | None = None
     cancel_reason: str | None = None
     worker_id: str | None = None
+    required_executor_kinds: list[ExecutorKind] = Field(default_factory=list)
+    required_provider_kinds: list[ProviderKind] = Field(default_factory=list)
 
     @property
     def id(self) -> str:
@@ -506,6 +508,8 @@ class QueueWorkerLease(BaseModel):
     failed_jobs: int = 0
     heartbeat_age_seconds: float | None = None
     stale: bool = False
+    executor_kinds: list[ExecutorKind] = Field(default_factory=list)
+    provider_kinds: list[ProviderKind] = Field(default_factory=list)
 
     @property
     def heartbeat(self) -> datetime:

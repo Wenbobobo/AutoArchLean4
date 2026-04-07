@@ -228,6 +228,8 @@ def test_queue_worker_command_processes_benchmark_jobs(
             str(config_path),
             "--slot-index",
             "1",
+            "--executor-kinds",
+            "dry_run",
             "--max-jobs",
             "1",
             "--idle-timeout-seconds",
@@ -245,6 +247,7 @@ def test_queue_worker_command_processes_benchmark_jobs(
     )
     assert workers_result.exit_code == 0
     assert "slot=1" in workers_result.output
+    assert "executors=dry_run" in workers_result.output
 
 
 def test_queue_worker_command_can_auto_assign_slot(
@@ -296,6 +299,8 @@ def test_queue_worker_command_can_auto_assign_slot(
             "--config",
             str(config_path),
             "--auto-slot",
+            "--executor-kinds",
+            "dry_run",
             "--max-jobs",
             "1",
             "--idle-timeout-seconds",
@@ -416,6 +421,8 @@ def test_queue_fleet_command_processes_jobs_with_auto_slot_workers(
             str(config_path),
             "--workers",
             "1",
+            "--executor-kinds",
+            "dry_run",
             "--idle-timeout-seconds",
             "0.1",
             "--poll-seconds",

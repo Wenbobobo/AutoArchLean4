@@ -12,6 +12,7 @@ from .batch import BatchRunner
 from .config import load_config
 from .control import ControlService
 from .events import EventStore
+from .models import ExecutorKind, ProviderKind
 from .queue import QueueStore
 
 
@@ -40,6 +41,8 @@ class QueueFleetRequest(BaseModel):
     poll_seconds: float = 2.0
     idle_timeout_seconds: float = 30.0
     stale_after_seconds: float | None = 120.0
+    executor_kinds: list[ExecutorKind] | None = None
+    provider_kinds: list[ProviderKind] | None = None
 
 
 class QueueSweepWorkersRequest(BaseModel):
@@ -147,6 +150,8 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             poll_seconds=body.poll_seconds,
             idle_timeout_seconds=body.idle_timeout_seconds,
             stale_after_seconds=body.stale_after_seconds,
+            executor_kinds=body.executor_kinds,
+            provider_kinds=body.provider_kinds,
         ).model_dump(mode="json")
 
     @app.post("/api/queue/jobs/{job_id}/cancel")
@@ -449,9 +454,11 @@ def render_dashboard_html(project_id: str) -> str:
           const item = document.createElement("div");
           item.className = "run";
           const workerId = job.worker_id || "-";
+          const executors = (job.required_executor_kinds || []).join(",") || "-";
           item.innerHTML = `
             <strong>${{job.job_id}}</strong>
             <div class="meta">${{job.status}} · ${{job.project_id}} · worker=${{workerId}}</div>
+            <div class="meta">requires executors=${{executors}}</div>
           `;
           queueList.appendChild(item);
         }}
@@ -471,12 +478,14 @@ def render_dashboard_html(project_id: str) -> str:
             ? "-"
             : `${{worker.heartbeat_age_seconds.toFixed(1)}}s`;
           const stale = worker.stale ? " · stale" : "";
+          const executors = (worker.executor_kinds || []).join(",") || "-";
           item.innerHTML = `
             <strong>${{worker.worker_id}}</strong>
             <div class="meta">slot=${{worker.slot_index}} · ${{worker.status}}${{stale}}</div>
             <div class="meta">current=${{currentJob}}</div>
             <div class="meta">processed=${{worker.processed_jobs}}</div>
             <div class="meta">failed=${{worker.failed_jobs}}</div>
+            <div class="meta">executors=${{executors}}</div>
             <div class="meta">heartbeat_age=${{heartbeatAge}}</div>
           `;
           workersList.appendChild(item);

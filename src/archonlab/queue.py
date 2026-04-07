@@ -8,9 +8,13 @@ from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from .benchmark import load_benchmark_manifest
+from .execution_policy import collect_required_execution_kinds
 from .models import (
+    ExecutorKind,
+    ProviderKind,
     QueueBenchmarkPayload,
     QueueJob,
     QueueJobKind,
@@ -51,7 +55,9 @@ class QueueStore:
                     error_message TEXT,
                     pause_reason TEXT,
                     cancel_reason TEXT,
-                    worker_id TEXT
+                    worker_id TEXT,
+                    required_executor_kinds TEXT,
+                    required_provider_kinds TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS queue_workers (
@@ -67,15 +73,24 @@ class QueueStore:
                     heartbeat_at TEXT NOT NULL,
                     finished_at TEXT,
                     processed_jobs INTEGER NOT NULL,
-                    failed_jobs INTEGER NOT NULL
+                    failed_jobs INTEGER NOT NULL,
+                    executor_kinds TEXT,
+                    provider_kinds TEXT
                 );
                 """
             )
-            for column in ["pause_reason", "cancel_reason", "worker_id"]:
+            for column in [
+                "pause_reason",
+                "cancel_reason",
+                "worker_id",
+                "required_executor_kinds",
+                "required_provider_kinds",
+            ]:
                 with suppress(sqlite3.OperationalError):
                     self._conn.execute(f"ALTER TABLE queue_jobs ADD COLUMN {column} TEXT")
-            with suppress(sqlite3.OperationalError):
-                self._conn.execute("ALTER TABLE queue_workers ADD COLUMN worktree_root TEXT")
+            for column in ["worktree_root", "executor_kinds", "provider_kinds"]:
+                with suppress(sqlite3.OperationalError):
+                    self._conn.execute(f"ALTER TABLE queue_workers ADD COLUMN {column} TEXT")
             self._conn.commit()
 
     def enqueue(
@@ -86,6 +101,8 @@ class QueueStore:
         priority: int = 0,
         project_id: str | None = None,
         batch_id: str | None = None,
+        required_executor_kinds: list[ExecutorKind] | None = None,
+        required_provider_kinds: list[ProviderKind] | None = None,
     ) -> QueueJob:
         job = QueueJob(
             job_id=self._new_job_id(),
@@ -95,6 +112,8 @@ class QueueStore:
             status=QueueJobStatus.QUEUED,
             priority=priority,
             payload=payload,
+            required_executor_kinds=required_executor_kinds or [],
+            required_provider_kinds=required_provider_kinds or [],
         )
         self._insert(job)
         return job
@@ -109,6 +128,11 @@ class QueueStore:
         priority: int = 0,
     ) -> list[QueueJob]:
         manifest = load_benchmark_manifest(manifest_path)
+        required_executor_kinds, required_provider_kinds = collect_required_execution_kinds(
+            executor=manifest.executor,
+            provider=manifest.provider,
+            execution_policy=manifest.execution_policy,
+        )
         batch_id = self._new_batch_id()
         jobs: list[QueueJob] = []
         for project in manifest.projects:
@@ -127,6 +151,8 @@ class QueueStore:
                     priority=priority,
                     project_id=project.id,
                     batch_id=batch_id,
+                    required_executor_kinds=required_executor_kinds,
+                    required_provider_kinds=required_provider_kinds,
                 )
             )
         return jobs
@@ -168,15 +194,27 @@ class QueueStore:
     def claim_next_job(self, *, worker_id: str | None = None) -> QueueJob | None:
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
-            row = self._conn.execute(
+            rows = self._conn.execute(
                 """
                 SELECT * FROM queue_jobs
                 WHERE status IN (?, ?)
                 ORDER BY priority DESC, created_at ASC
-                LIMIT 1
                 """,
                 (QueueJobStatus.QUEUED.value, QueueJobStatus.PENDING.value),
-            ).fetchone()
+            ).fetchall()
+            worker_row = self._get_worker_locked(worker_id) if worker_id is not None else None
+            worker = self._row_to_worker(worker_row) if worker_row is not None else None
+            row = next(
+                (
+                    candidate
+                    for candidate in rows
+                    if self._job_matches_worker(
+                        self._row_to_job(candidate),
+                        worker,
+                    )
+                ),
+                None,
+            )
             if row is None:
                 self._conn.commit()
                 return None
@@ -312,6 +350,8 @@ class QueueStore:
         worktree_root: Path | None = None,
         worktree_root_factory: Callable[[str, int], Path] | None = None,
         stale_after_seconds: float | None = None,
+        executor_kinds: list[ExecutorKind] | None = None,
+        provider_kinds: list[ProviderKind] | None = None,
     ) -> QueueWorkerLease:
         resolved_worker_id = worker_id or self._new_worker_id()
         with self._lock:
@@ -353,14 +393,20 @@ class QueueStore:
                 thread_name=thread_name,
                 note=note,
                 worktree_root=resolved_worktree_root,
+                executor_kinds=(
+                    executor_kinds if executor_kinds is not None else list(ExecutorKind)
+                ),
+                provider_kinds=(
+                    provider_kinds if provider_kinds is not None else list(ProviderKind)
+                ),
             )
             self._conn.execute(
                 """
                 INSERT INTO queue_workers (
                     worker_id, slot_index, status, current_job_id, last_job_id,
                     thread_name, note, worktree_root, started_at, heartbeat_at, finished_at,
-                    processed_jobs, failed_jobs
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    processed_jobs, failed_jobs, executor_kinds, provider_kinds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     lease.worker_id,
@@ -376,6 +422,14 @@ class QueueStore:
                     lease.finished_at.isoformat() if lease.finished_at else None,
                     lease.processed_jobs,
                     lease.failed_jobs,
+                    json.dumps(
+                        [kind.value for kind in lease.executor_kinds],
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        [kind.value for kind in lease.provider_kinds],
+                        ensure_ascii=False,
+                    ),
                 ),
             )
             self._conn.commit()
@@ -653,10 +707,7 @@ class QueueStore:
 
     def get_worker(self, worker_id: str) -> QueueWorkerLease | None:
         with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM queue_workers WHERE worker_id = ?",
-                (worker_id,),
-            ).fetchone()
+            row = self._get_worker_locked(worker_id)
             if row is None:
                 return None
             return self._row_to_worker(row)
@@ -669,8 +720,8 @@ class QueueStore:
                     job_id, batch_id, kind, project_id, status, priority, payload_json,
                     created_at, updated_at, started_at, finished_at, artifact_dir, result_path,
                     error_message, pause_reason, cancel_reason
-                    , worker_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    , worker_id, required_executor_kinds, required_provider_kinds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -690,6 +741,14 @@ class QueueStore:
                     job.pause_reason,
                     job.cancel_reason,
                     job.worker_id,
+                    json.dumps(
+                        [kind.value for kind in job.required_executor_kinds],
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        [kind.value for kind in job.required_provider_kinds],
+                        ensure_ascii=False,
+                    ),
                 ),
             )
             self._conn.commit()
@@ -714,6 +773,14 @@ class QueueStore:
             pause_reason=row["pause_reason"],
             cancel_reason=row["cancel_reason"],
             worker_id=row["worker_id"],
+            required_executor_kinds=[
+                ExecutorKind(value)
+                for value in json.loads(row["required_executor_kinds"] or "[]")
+            ],
+            required_provider_kinds=[
+                ProviderKind(value)
+                for value in json.loads(row["required_provider_kinds"] or "[]")
+            ],
         )
 
     @staticmethod
@@ -736,6 +803,44 @@ class QueueStore:
             ),
             processed_jobs=row["processed_jobs"],
             failed_jobs=row["failed_jobs"],
+            executor_kinds=[
+                ExecutorKind(value)
+                for value in json.loads(row["executor_kinds"] or "[]")
+            ],
+            provider_kinds=[
+                ProviderKind(value)
+                for value in json.loads(row["provider_kinds"] or "[]")
+            ],
+        )
+
+    def _get_worker_locked(self, worker_id: str | None) -> sqlite3.Row | None:
+        if worker_id is None:
+            return None
+        return cast(
+            sqlite3.Row | None,
+            self._conn.execute(
+                "SELECT * FROM queue_workers WHERE worker_id = ?",
+                (worker_id,),
+            ).fetchone(),
+        )
+
+    @staticmethod
+    def _job_matches_worker(
+        job: QueueJob,
+        worker: QueueWorkerLease | None,
+    ) -> bool:
+        if worker is None:
+            return True
+        if job.required_executor_kinds and not set(job.required_executor_kinds).issubset(
+            set(worker.executor_kinds)
+        ):
+            return False
+        if job.required_provider_kinds and not set(job.required_provider_kinds).issubset(
+            set(worker.provider_kinds)
+        ):
+            return False
+        return not job.required_provider_kinds or set(job.required_provider_kinds).issubset(
+            set(worker.provider_kinds)
         )
 
     @staticmethod

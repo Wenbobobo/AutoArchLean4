@@ -17,6 +17,7 @@ from .models import (
     ExecutorConfig,
     ExecutorKind,
     ProviderConfig,
+    ProviderKind,
     QueueJobStatus,
     WorkflowMode,
     WorktreeLease,
@@ -40,6 +41,24 @@ app.add_typer(worktree_app, name="worktree")
 app.add_typer(control_app, name="control")
 app.add_typer(dashboard_app, name="dashboard")
 app.add_typer(queue_app, name="queue")
+
+
+def _parse_executor_kinds(raw: str | None) -> list[ExecutorKind]:
+    if raw is None:
+        return list(ExecutorKind)
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    if not values:
+        return list(ExecutorKind)
+    return [ExecutorKind(value) for value in values]
+
+
+def _parse_provider_kinds(raw: str | None) -> list[ProviderKind]:
+    if raw is None:
+        return list(ProviderKind)
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    if not values:
+        return list(ProviderKind)
+    return [ProviderKind(value) for value in values]
 
 
 @app.command()
@@ -523,6 +542,20 @@ def queue_fleet(
             help="Reap stale active workers before each fleet worker claims a slot.",
         ),
     ] = 120.0,
+    executor_kinds: Annotated[
+        str | None,
+        typer.Option(
+            "--executor-kinds",
+            help="Comma-separated executor kinds this fleet can run.",
+        ),
+    ] = None,
+    provider_kinds: Annotated[
+        str | None,
+        typer.Option(
+            "--provider-kinds",
+            help="Comma-separated provider kinds this fleet can run.",
+        ),
+    ] = None,
 ) -> None:
     app_config = load_config(config)
     runner = BatchRunner(
@@ -537,6 +570,8 @@ def queue_fleet(
         poll_seconds=poll_seconds,
         idle_timeout_seconds=idle_timeout_seconds,
         stale_after_seconds=stale_after_seconds,
+        executor_kinds=_parse_executor_kinds(executor_kinds),
+        provider_kinds=_parse_provider_kinds(provider_kinds),
     )
     typer.echo(f"Processed: {len(report.processed_job_ids)}")
     typer.echo(f"Paused: {len(report.paused_job_ids)}")
@@ -568,7 +603,11 @@ def queue_status(
         return
     for job in jobs:
         worker = job.worker_id or "-"
-        typer.echo(f"{job.id} | {job.status.value} | {job.project_id} | worker={worker}")
+        requirements = ",".join(kind.value for kind in job.required_executor_kinds) or "-"
+        typer.echo(
+            f"{job.id} | {job.status.value} | {job.project_id} | worker={worker} | "
+            f"requires={requirements}"
+        )
 
 
 @queue_app.command("workers")
@@ -596,9 +635,11 @@ def queue_workers(
     for worker in workers:
         current_job = worker.current_job_id or "-"
         stale = " stale" if worker.stale else ""
+        capabilities = ",".join(kind.value for kind in worker.executor_kinds) or "-"
         typer.echo(
             f"{worker.worker_id} | slot={worker.slot_index} | {worker.status.value} | "
-            f"current={current_job} | processed={worker.processed_jobs}{stale}"
+            f"current={current_job} | processed={worker.processed_jobs}{stale} | "
+            f"executors={capabilities}"
         )
 
 
@@ -651,6 +692,20 @@ def queue_worker(
             help="Reap stale active workers before claiming a slot.",
         ),
     ] = 120.0,
+    executor_kinds: Annotated[
+        str | None,
+        typer.Option(
+            "--executor-kinds",
+            help="Comma-separated executor kinds this worker can run.",
+        ),
+    ] = None,
+    provider_kinds: Annotated[
+        str | None,
+        typer.Option(
+            "--provider-kinds",
+            help="Comma-separated provider kinds this worker can run.",
+        ),
+    ] = None,
 ) -> None:
     app_config = load_config(config)
     runner = BatchRunner(
@@ -667,6 +722,8 @@ def queue_worker(
         worker_id=worker_id,
         note=note,
         stale_after_seconds=stale_after_seconds,
+        executor_kinds=_parse_executor_kinds(executor_kinds),
+        provider_kinds=_parse_provider_kinds(provider_kinds),
     )
     if report.worker_ids:
         lease = runner.queue_store.get_worker(report.worker_ids[0])
