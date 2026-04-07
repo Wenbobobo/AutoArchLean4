@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from .batch import BatchRunner
 from .models import BatchRunReport, FleetControllerCycle, FleetControllerResult
@@ -80,7 +80,7 @@ class SubprocessWorkerLauncher:
         launch_specs: list[dict[str, object]]
         if request.plan_driven:
             launch_specs = [
-                dict(spec)
+                cast(dict[str, object], dict(spec))
                 for spec in batch_runner.plan_fleet_launch_specs(
                     worker_count=request.worker_count,
                     target_jobs_per_worker=request.target_jobs_per_worker,
