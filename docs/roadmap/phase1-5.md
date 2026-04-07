@@ -90,6 +90,7 @@
 - `control pause/resume/hint` CLI
 - workflow DSL 及规则加载器
 - dashboard 中的 pause/resume/hint 操作
+- control plane 现已支持运行时 workflow override / reset
 - queue dashboard/API 现在可解释每个 job 的 phase/reason/focus task/priority 组成
 - queue board 已支持按状态分栏查看 job，并可在 dashboard / CLI 中直接 requeue 终态 job
 - provider/executor 抽象，可切换 `dry_run` / `codex_exec` / OpenAI-compatible HTTP

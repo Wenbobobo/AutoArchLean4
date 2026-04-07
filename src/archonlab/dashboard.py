@@ -12,7 +12,14 @@ from .batch import BatchRunner
 from .config import load_config
 from .control import ControlService
 from .events import EventStore
-from .models import ExecutorKind, ProviderKind, QueueJob, TaskGraph, TaskStatus
+from .models import (
+    ExecutorKind,
+    ProviderKind,
+    QueueJob,
+    TaskGraph,
+    TaskStatus,
+    WorkflowMode,
+)
 from .queue import QueueStore
 from .services import RunService
 
@@ -54,8 +61,15 @@ class QueueSweepWorkersRequest(BaseModel):
     requeue_running_jobs: bool = True
 
 
+class WorkflowOverrideRequest(BaseModel):
+    workflow: WorkflowMode | None = None
+    workflow_spec_path: Path | None = None
+    clear_workflow_spec: bool = False
+
+
 def create_dashboard_app(config_path: Path) -> FastAPI:
-    config = load_config(config_path)
+    resolved_config_path = config_path.resolve()
+    config = load_config(resolved_config_path)
     store = EventStore(config.run.artifact_root / "archonlab.db")
     control = ControlService(config.run.artifact_root)
     queue = QueueStore(config.run.artifact_root / "archonlab.db")
@@ -98,8 +112,14 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
         workflow_spec = preview.workflow_spec
         return {
             "project_id": config.project.name,
-            "workflow": config.run.workflow.value,
+            "workflow": preview.workflow.value,
+            "configured_workflow": config.run.workflow.value,
             "workflow_spec_path": (
+                str(preview.workflow_spec_path)
+                if preview.workflow_spec_path is not None
+                else None
+            ),
+            "configured_workflow_spec_path": (
                 str(config.run.workflow_spec)
                 if config.run.workflow_spec is not None
                 else None
@@ -116,6 +136,43 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             "task_graph_summary": _summarize_task_graph(preview.task_graph),
             "preview": preview.model_dump(mode="json"),
         }
+
+    @app.post("/api/projects/{project_id}/workflow")
+    def set_project_workflow(project_id: str, body: WorkflowOverrideRequest) -> dict[str, Any]:
+        _ensure_project(config.project.name, project_id)
+        if (
+            body.workflow is None
+            and body.workflow_spec_path is None
+            and not body.clear_workflow_spec
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Specify workflow, workflow_spec_path, or clear_workflow_spec.",
+            )
+        if body.workflow_spec_path is not None and body.clear_workflow_spec:
+            raise HTTPException(
+                status_code=400,
+                detail="workflow_spec_path cannot be combined with clear_workflow_spec.",
+            )
+        workflow_spec_path = (
+            _resolve_dashboard_path(resolved_config_path.parent, body.workflow_spec_path)
+            if body.workflow_spec_path is not None
+            else None
+        )
+        if workflow_spec_path is not None and not workflow_spec_path.exists():
+            raise HTTPException(status_code=404, detail="Workflow spec not found")
+        state = control.set_workflow(
+            config.project,
+            workflow=body.workflow,
+            workflow_spec_override=workflow_spec_path,
+            clear_workflow_spec=body.clear_workflow_spec,
+        )
+        return state.model_dump(mode="json")
+
+    @app.post("/api/projects/{project_id}/workflow/reset")
+    def reset_project_workflow(project_id: str) -> dict[str, Any]:
+        _ensure_project(config.project.name, project_id)
+        return control.reset_workflow(config.project).model_dump(mode="json")
 
     @app.post("/api/projects/{project_id}/pause")
     def pause_project(project_id: str, body: PauseRequest) -> dict[str, Any]:
@@ -227,6 +284,12 @@ def _queue_job_or_404(queue: QueueStore, job_id: str) -> QueueJob:
     if job is None:
         raise HTTPException(status_code=404, detail="Queue job not found")
     return job
+
+
+def _resolve_dashboard_path(base_dir: Path, raw_path: Path) -> Path:
+    if raw_path.is_absolute():
+        return raw_path.resolve()
+    return (base_dir / raw_path).resolve()
 
 
 def _summarize_task_graph(task_graph: TaskGraph) -> dict[str, int]:
@@ -376,6 +439,32 @@ def render_dashboard_html(project_id: str) -> str:
         font: inherit;
         background: rgba(255,255,255,0.72);
       }}
+      input, select {{
+        width: 100%;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        padding: 11px 12px;
+        font: inherit;
+        background: rgba(255,255,255,0.72);
+        color: var(--ink);
+      }}
+      label {{
+        display: grid;
+        gap: 6px;
+        font-size: 13px;
+        color: var(--muted);
+      }}
+      .toggle {{
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+        color: var(--muted);
+      }}
+      .toggle input {{
+        width: auto;
+        margin: 0;
+      }}
       .list {{
         display: grid;
         gap: 10px;
@@ -497,6 +586,13 @@ def render_dashboard_html(project_id: str) -> str:
         gap: 10px;
         margin: 12px 0;
       }}
+      .workflow-box {{
+        display: grid;
+        gap: 10px;
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid var(--line);
+      }}
       @media (max-width: 920px) {{
         .grid {{ grid-template-columns: 1fr; }}
         .board-grid {{ grid-template-columns: 1fr; }}
@@ -527,6 +623,33 @@ def render_dashboard_html(project_id: str) -> str:
               placeholder="Write a hint for the next planning/proving cycle."
             ></textarea>
             <button id="hint-button">Inject Hint</button>
+          </div>
+          <div class="workflow-box">
+            <h2>Workflow Override</h2>
+            <label>
+              Mode Override
+              <select id="workflow-mode-select">
+                <option value="">Default Config</option>
+                <option value="adaptive_loop">adaptive_loop</option>
+                <option value="fixed_loop">fixed_loop</option>
+              </select>
+            </label>
+            <label>
+              Workflow Spec Override
+              <input
+                id="workflow-spec-input"
+                type="text"
+                placeholder="./workflows/review-on-stuck.example.toml"
+              />
+            </label>
+            <label class="toggle">
+              <input id="clear-workflow-spec-checkbox" type="checkbox" />
+              Ignore configured workflow spec
+            </label>
+            <div class="controls">
+              <button class="secondary" id="workflow-apply-button">Apply Workflow Override</button>
+              <button class="secondary" id="workflow-reset-button">Reset Workflow Override</button>
+            </div>
           </div>
         </aside>
 
@@ -597,6 +720,11 @@ def render_dashboard_html(project_id: str) -> str:
       const detailMeta = document.getElementById("detail-meta");
       const detailJson = document.getElementById("detail-json");
       const hintInput = document.getElementById("hint-input");
+      const workflowModeSelect = document.getElementById("workflow-mode-select");
+      const workflowSpecInput = document.getElementById("workflow-spec-input");
+      const clearWorkflowSpecCheckbox = document.getElementById("clear-workflow-spec-checkbox");
+      const workflowApplyButton = document.getElementById("workflow-apply-button");
+      const workflowResetButton = document.getElementById("workflow-reset-button");
       const queueSummary = document.getElementById("queue-summary");
       const queueCounts = document.getElementById("queue-counts");
       const queueBoard = document.getElementById("queue-board");
@@ -623,12 +751,22 @@ def render_dashboard_html(project_id: str) -> str:
       function renderControl(state) {{
         const hints = state.hints || [];
         const latestHint = hints.length ? hints[hints.length - 1].text : "No hints yet.";
+        const workflowMode = state.workflow_override || "default";
+        const workflowSpec = state.workflow_spec_override || "-";
+        const clearSpec = state.clear_workflow_spec ? "yes" : "no";
         controlStatus.innerHTML = `
           <div class="pill">Paused: <strong>${{state.paused ? "yes" : "no"}}</strong></div>
           <div class="pill">Hints: <strong>${{hints.length}}</strong></div>
           <div class="pill">Reason: <strong>${{state.pause_reason || "none"}}</strong></div>
+          <div class="pill">Workflow: <strong>${{workflowMode}}</strong></div>
+          <div class="pill">
+            Spec: <strong>${{clearSpec === "yes" ? "disabled" : workflowSpec}}</strong>
+          </div>
           <div class="meta">Latest hint: ${{latestHint}}</div>
         `;
+        workflowModeSelect.value = state.workflow_override || "";
+        workflowSpecInput.value = state.workflow_spec_override || "";
+        clearWorkflowSpecCheckbox.checked = Boolean(state.clear_workflow_spec);
       }}
 
       function renderRuns(runs) {{
@@ -802,6 +940,7 @@ def render_dashboard_html(project_id: str) -> str:
         const workflowSpec = payload.workflow_spec;
         const chips = [
           ["workflow", payload.workflow || "-"],
+          ["configured", payload.configured_workflow || "-"],
           ["phase", action.phase || "-"],
           ["reason", action.reason || "-"],
           ["stage", action.stage || preview.progress?.stage || "-"],
@@ -809,10 +948,19 @@ def render_dashboard_html(project_id: str) -> str:
           ["executor", executor.kind || "-"],
           ["model", provider.model || "-"],
           ["cost_tier", provider.cost_tier || "-"],
-          ["task_graph", `${{graph.total_nodes || 0}} nodes / ${{graph.blocked_nodes || 0}} blocked`],
+          [
+            "task_graph",
+            `${{graph.total_nodes || 0}} nodes / ${{graph.blocked_nodes || 0}} blocked`,
+          ],
         ];
         if (workflowSpec) {{
-          chips.push(["workflow_spec", `${{workflowSpec.name}} (${{workflowSpec.rule_count}} rules)`]);
+          chips.push([
+            "workflow_spec",
+            `${{workflowSpec.name}} (${{workflowSpec.rule_count}} rules)`,
+          ]);
+        }}
+        if (payload.workflow_spec_path) {{
+          chips.push(["spec_path", payload.workflow_spec_path]);
         }}
         projectPreviewMeta.textContent =
           `${{payload.project_id}} · ${{action.phase || "-"}} · ${{action.reason || "-"}}`;
@@ -824,7 +972,8 @@ def render_dashboard_html(project_id: str) -> str:
 
       function renderProjectPreviewError(message) {{
         projectPreviewMeta.textContent = "Current preview is unavailable.";
-        projectPreviewChips.innerHTML = '<div class="chip">error <strong>preview_failed</strong></div>';
+        projectPreviewChips.innerHTML =
+          '<div class="chip">error <strong>preview_failed</strong></div>';
         projectPreviewJson.textContent = message;
       }}
 
@@ -909,6 +1058,31 @@ def render_dashboard_html(project_id: str) -> str:
           body: JSON.stringify({{ text, author: "dashboard" }}),
         }});
         hintInput.value = "";
+        await refresh();
+      }});
+
+      workflowApplyButton.addEventListener("click", async () => {{
+        const workflow = workflowModeSelect.value || null;
+        const workflowSpecPath = workflowSpecInput.value.trim() || null;
+        const clearWorkflowSpec = clearWorkflowSpecCheckbox.checked;
+        await fetchJson(`/api/projects/${{projectId}}/workflow`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{
+            workflow,
+            workflow_spec_path: workflowSpecPath,
+            clear_workflow_spec: clearWorkflowSpec,
+          }}),
+        }});
+        await refresh();
+      }});
+
+      workflowResetButton.addEventListener("click", async () => {{
+        await fetchJson(`/api/projects/${{projectId}}/workflow/reset`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{}}),
+        }});
         await refresh();
       }});
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 from .adapter import ArchonAdapter
 from .control import ControlService
@@ -11,6 +12,7 @@ from .execution_policy import resolve_app_phase_configs
 from .executors import create_executor
 from .models import (
     AppConfig,
+    ControlState,
     EventRecord,
     ExecutionRequest,
     ExecutionStatus,
@@ -21,6 +23,7 @@ from .models import (
     SupervisorAction,
     SupervisorDecision,
     SupervisorReason,
+    WorkflowMode,
 )
 from .planner import select_next_action
 from .project_state import collect_project_snapshot
@@ -54,7 +57,7 @@ class RunService:
         summary = RunSummary(
             run_id=run_id,
             project_id=self.config.project.name,
-            workflow=self.config.run.workflow,
+            workflow=preview.workflow,
             status=RunStatus.STARTED,
             stage=progress.stage,
             dry_run=actual_dry_run,
@@ -70,7 +73,12 @@ class RunService:
                 payload={
                     "stage": progress.stage,
                     "dry_run": actual_dry_run,
-                    "workflow": self.config.run.workflow.value,
+                    "workflow": preview.workflow.value,
+                    "workflow_spec_path": (
+                        str(preview.workflow_spec_path)
+                        if preview.workflow_spec_path is not None
+                        else None
+                    ),
                     "objectives": progress.objectives,
                 },
             ),
@@ -171,6 +179,12 @@ class RunService:
                     "run_id": run_id,
                     "project": self.config.project.model_dump(mode="json"),
                     "run": self.config.run.model_dump(mode="json"),
+                    "effective_workflow": preview.workflow.value,
+                    "effective_workflow_spec_path": (
+                        str(preview.workflow_spec_path)
+                        if preview.workflow_spec_path is not None
+                        else None
+                    ),
                     "executor": self.config.executor.model_dump(mode="json"),
                     "provider": self.config.provider.model_dump(mode="json"),
                     "execution_policy": self.config.execution_policy.model_dump(mode="json"),
@@ -321,9 +335,10 @@ class RunService:
             project_path=self.config.project.project_path,
             archon_path=self.config.project.archon_path,
         )
+        workflow, workflow_spec_path = self._resolve_effective_workflow(control_state)
         workflow_spec = (
-            load_workflow_spec(self.config.run.workflow_spec)
-            if self.config.run.workflow_spec is not None
+            load_workflow_spec(workflow_spec_path)
+            if workflow_spec_path is not None
             else None
         )
         recent_events = self.event_store.list_recent_project_events(
@@ -338,7 +353,7 @@ class RunService:
         )
         predicted_action = select_next_action(
             adapter=self.adapter,
-            workflow=self.config.run.workflow,
+            workflow=workflow,
             snapshot=snapshot,
             task_graph=task_graph,
             supervisor=provisional_supervisor,
@@ -364,7 +379,7 @@ class RunService:
         )
         action = select_next_action(
             adapter=self.adapter,
-            workflow=self.config.run.workflow,
+            workflow=workflow,
             snapshot=snapshot,
             task_graph=task_graph,
             supervisor=supervisor,
@@ -380,6 +395,8 @@ class RunService:
                 action=action,
             )
         return RunPreview(
+            workflow=workflow,
+            workflow_spec_path=workflow_spec_path,
             progress=progress,
             snapshot=snapshot,
             control=control_state,
@@ -390,6 +407,18 @@ class RunService:
             resolved_executor=resolved_executor,
             resolved_provider=resolved_provider,
         )
+
+    def _resolve_effective_workflow(
+        self,
+        control_state: ControlState,
+    ) -> tuple[WorkflowMode, Path | None]:
+        workflow = control_state.workflow_override or self.config.run.workflow
+        if control_state.clear_workflow_spec:
+            return workflow, None
+        workflow_spec_path = (
+            control_state.workflow_spec_override or self.config.run.workflow_spec
+        )
+        return workflow, workflow_spec_path
 
     @staticmethod
     def _new_run_id() -> str:

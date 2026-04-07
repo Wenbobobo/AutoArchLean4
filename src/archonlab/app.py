@@ -426,6 +426,79 @@ def control_hint(
     typer.echo(f"Hints: {len(state.hints)}")
 
 
+@control_app.command("workflow")
+def control_workflow(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    workflow: Annotated[
+        WorkflowMode | None,
+        typer.Option("--workflow", help="Override workflow mode for future runs."),
+    ] = None,
+    workflow_spec: Annotated[
+        Path | None,
+        typer.Option("--workflow-spec", help="Optional override workflow spec path."),
+    ] = None,
+    clear_workflow_spec: Annotated[
+        bool,
+        typer.Option("--clear-workflow-spec", help="Disable the configured workflow spec."),
+    ] = False,
+) -> None:
+    if workflow is None and workflow_spec is None and not clear_workflow_spec:
+        raise typer.BadParameter(
+            "Specify --workflow, --workflow-spec, or --clear-workflow-spec."
+        )
+    if workflow_spec is not None and clear_workflow_spec:
+        raise typer.BadParameter(
+            "--workflow-spec cannot be combined with --clear-workflow-spec."
+        )
+    app_config = load_config(config)
+    resolved_spec = None
+    if workflow_spec is not None:
+        resolved_spec = workflow_spec
+        if not resolved_spec.is_absolute():
+            resolved_spec = (config.resolve().parent / resolved_spec).resolve()
+        else:
+            resolved_spec = resolved_spec.resolve()
+        if not resolved_spec.exists():
+            raise typer.BadParameter(f"Workflow spec does not exist: {resolved_spec}")
+    state = ControlService(app_config.run.artifact_root).set_workflow(
+        app_config.project,
+        workflow=workflow,
+        workflow_spec_override=resolved_spec,
+        clear_workflow_spec=clear_workflow_spec,
+    )
+    typer.echo(
+        "Workflow override updated: "
+        f"workflow={state.workflow_override or '-'} "
+        f"workflow_spec={state.workflow_spec_override or '-'} "
+        f"clear_workflow_spec={'yes' if state.clear_workflow_spec else 'no'}"
+    )
+
+
+@control_app.command("clear-workflow")
+def control_clear_workflow(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+) -> None:
+    app_config = load_config(config)
+    state = ControlService(app_config.run.artifact_root).reset_workflow(app_config.project)
+    typer.echo(f"Workflow override cleared: {state.project_id}")
+
+
+@control_app.command("reset-workflow")
+def control_reset_workflow(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+) -> None:
+    control_clear_workflow(config=config)
+
+
 @dashboard_app.command("serve")
 def dashboard_serve(
     config: Annotated[

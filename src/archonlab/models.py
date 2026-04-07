@@ -259,6 +259,8 @@ class RunResult(BaseModel):
 class RunPreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    workflow: WorkflowMode
+    workflow_spec_path: Path | None = None
     progress: ProgressSnapshot
     snapshot: ProjectSnapshot
     control: ControlState
@@ -481,6 +483,9 @@ class ControlState(BaseModel):
     paused: bool = False
     pause_reason: str | None = None
     hints: list[HintRecord] = Field(default_factory=list)
+    workflow_override: WorkflowMode | None = None
+    workflow_spec_override: Path | None = None
+    clear_workflow_spec: bool = False
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

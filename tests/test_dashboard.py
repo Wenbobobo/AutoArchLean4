@@ -133,9 +133,61 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert preview_response.status_code == 200
     preview_payload = preview_response.json()
     assert preview_payload["workflow"] == "adaptive_loop"
+    assert preview_payload["configured_workflow"] == "adaptive_loop"
     assert preview_payload["preview"]["action"]["phase"] == "plan"
     assert preview_payload["preview"]["action"]["reason"] == "bootstrap_first_iteration"
     assert preview_payload["task_graph_summary"]["total_nodes"] >= 1
+
+    workflow_override_response = client.post(
+        "/api/projects/DemoProject/workflow",
+        json={"workflow": "fixed_loop", "clear_workflow_spec": True},
+    )
+    assert workflow_override_response.status_code == 200
+    workflow_override = workflow_override_response.json()
+    assert workflow_override["workflow_override"] == "fixed_loop"
+    assert workflow_override["clear_workflow_spec"] is True
+
+    fixed_preview_response = client.get("/api/projects/DemoProject/preview")
+    assert fixed_preview_response.status_code == 200
+    fixed_preview = fixed_preview_response.json()
+    assert fixed_preview["workflow"] == "fixed_loop"
+    assert fixed_preview["workflow_spec_path"] is None
+    assert fixed_preview["preview"]["action"]["reason"] == "fixed_loop_baseline"
+
+    workflow_spec = tmp_path / "workflow-override.toml"
+    workflow_spec.write_text(
+        "[workflow]\n"
+        'name = "dashboard-override"\n'
+        'description = "Override plan reason."\n\n'
+        "[[rules]]\n"
+        'name = "rewrite_plan_reason"\n'
+        'when_phase = "plan"\n'
+        "when_has_review_sessions = false\n"
+        'phase = "plan"\n'
+        'reason = "from_dashboard_spec"\n',
+        encoding="utf-8",
+    )
+    workflow_spec_response = client.post(
+        "/api/projects/DemoProject/workflow",
+        json={"workflow_spec_path": "workflow-override.toml"},
+    )
+    assert workflow_spec_response.status_code == 200
+    workflow_spec_override = workflow_spec_response.json()
+    assert workflow_spec_override["workflow_spec_override"] == str(workflow_spec.resolve())
+
+    spec_preview_response = client.get("/api/projects/DemoProject/preview")
+    assert spec_preview_response.status_code == 200
+    spec_preview = spec_preview_response.json()
+    assert spec_preview["workflow"] == "adaptive_loop"
+    assert spec_preview["workflow_spec_path"] == str(workflow_spec.resolve())
+    assert spec_preview["preview"]["action"]["reason"] == "from_dashboard_spec"
+
+    workflow_reset_response = client.post("/api/projects/DemoProject/workflow/reset")
+    assert workflow_reset_response.status_code == 200
+    workflow_reset = workflow_reset_response.json()
+    assert workflow_reset["workflow_override"] is None
+    assert workflow_reset["workflow_spec_override"] is None
+    assert workflow_reset["clear_workflow_spec"] is False
 
     pause_response = client.post(
         "/api/projects/DemoProject/pause",

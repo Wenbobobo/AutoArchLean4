@@ -55,6 +55,8 @@ uv run archonlab queue status --config archonlab.toml
 uv run archonlab queue workers --config archonlab.toml
 uv run archonlab control pause --config archonlab.toml --reason "manual_hold"
 uv run archonlab control hint --config archonlab.toml --text "Try `rw` before `simp`."
+uv run archonlab control workflow --config archonlab.toml --workflow fixed_loop --clear-workflow-spec
+uv run archonlab control clear-workflow --config archonlab.toml
 uv run archonlab dashboard serve --config archonlab.toml --port 8000
 uv run archonlab worktree create --repo-path /path/to/repo --name phase4-run
 ```
@@ -79,6 +81,7 @@ queue/batch 层已经支持 benchmark 作业排队、slot-aware 并发处理、p
 benchmark project 入队前现在会先做一次 `preview()`，按当前预测的 next action 派生 executor/provider 约束和 job priority。
 queue job 现在还会持久化一份精简的 preview 摘要，dashboard/API 能直接解释当前 phase、reason、focus task 和 priority 组成。
 dashboard 里的 queue 现在是状态分栏的 board，并支持查看 job detail、直接 cancel、直接 requeue。
+control plane 现在也支持运行时 workflow override，可临时切 `adaptive_loop / fixed_loop` 或替换 workflow spec。
 queue worker 现在会留下可查询的 lease / heartbeat / 当前 job telemetry。
 你现在还可以单独启动 `queue worker` 进程，让多个外部 worker 共享同一个 sqlite 队列。
 独立 worker 现在支持 `--auto-slot`，可以自动抢占当前空闲 slot，而不必人工分配编号。

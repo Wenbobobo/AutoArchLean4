@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .models import ControlState, HintRecord, ProjectConfig
+from .models import ControlState, HintRecord, ProjectConfig, WorkflowMode
 
 
 class ControlService:
@@ -64,6 +64,45 @@ class ControlService:
                 f"- [{hint.ts.isoformat()}] ({hint.author}) {hint.text.strip()}\n"
             )
         return updated_state
+
+    def set_workflow(
+        self,
+        project: ProjectConfig,
+        *,
+        workflow: WorkflowMode | None = None,
+        workflow_spec_override: Path | None = None,
+        clear_workflow_spec: bool = False,
+    ) -> ControlState:
+        if workflow_spec_override is not None and clear_workflow_spec:
+            raise ValueError(
+                "workflow_spec_override cannot be combined with clear_workflow_spec."
+            )
+        state = self.read(project).model_copy(
+            update={
+                "workflow_override": workflow,
+                "workflow_spec_override": (
+                    workflow_spec_override.resolve()
+                    if workflow_spec_override is not None
+                    else None
+                ),
+                "clear_workflow_spec": clear_workflow_spec,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._write(project, state)
+        return state
+
+    def reset_workflow(self, project: ProjectConfig) -> ControlState:
+        state = self.read(project).model_copy(
+            update={
+                "workflow_override": None,
+                "workflow_spec_override": None,
+                "clear_workflow_spec": False,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._write(project, state)
+        return state
 
     def _write(self, project: ProjectConfig, state: ControlState) -> None:
         self._state_path(project).write_text(

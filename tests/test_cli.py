@@ -143,6 +143,8 @@ def test_control_commands_pause_resume_and_hint(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:
     config_path = tmp_path / "archonlab.toml"
+    workflow_spec = tmp_path / "workflow.toml"
+    workflow_spec.write_text("[workflow]\nname = \"demo\"\n", encoding="utf-8")
     config_path.write_text(
         "[project]\n"
         'name = "demo"\n'
@@ -170,12 +172,83 @@ def test_control_commands_pause_resume_and_hint(
             str(config_path),
         ],
     )
+    workflow_result = runner.invoke(
+        app,
+        [
+            "control",
+            "workflow",
+            "--config",
+            str(config_path),
+            "--workflow",
+            "fixed_loop",
+            "--workflow-spec",
+            str(workflow_spec),
+        ],
+    )
     resume_result = runner.invoke(app, ["control", "resume", "--config", str(config_path)])
+    clear_workflow_result = runner.invoke(
+        app,
+        ["control", "clear-workflow", "--config", str(config_path)],
+    )
 
     assert pause_result.exit_code == 0
     assert hint_result.exit_code == 0
+    assert workflow_result.exit_code == 0
     assert resume_result.exit_code == 0
+    assert clear_workflow_result.exit_code == 0
     assert (fake_archon_project / ".archon" / "USER_HINTS.md").exists()
+
+
+def test_control_workflow_commands_apply_and_clear_override(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    workflow_spec = tmp_path / "workflow-override.toml"
+    workflow_spec.write_text(
+        "[workflow]\n"
+        'name = "cli-override"\n'
+        'description = "Override"\n',
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+
+    workflow_result = runner.invoke(
+        app,
+        [
+            "control",
+            "workflow",
+            "--config",
+            str(config_path),
+            "--workflow",
+            "fixed_loop",
+            "--workflow-spec",
+            str(workflow_spec),
+        ],
+    )
+    status_result = runner.invoke(app, ["control", "status", "--config", str(config_path)])
+    reset_result = runner.invoke(
+        app,
+        ["control", "clear-workflow", "--config", str(config_path)],
+    )
+
+    assert workflow_result.exit_code == 0
+    assert "workflow=fixed_loop" in workflow_result.output
+    assert status_result.exit_code == 0
+    assert '"workflow_override": "fixed_loop"' in status_result.output
+    assert '"workflow_spec_override":' in status_result.output
+    assert reset_result.exit_code == 0
+    assert "Workflow override cleared: demo" in reset_result.output
 
 
 def test_queue_worker_command_processes_benchmark_jobs(
