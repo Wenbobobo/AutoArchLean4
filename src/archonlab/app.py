@@ -26,7 +26,7 @@ from .experiment_ledger import (
     compare_experiment_ledgers,
     load_experiment_ledger,
 )
-from .fleet import FleetController
+from .fleet import FleetController, create_worker_launcher
 from .ledger import load_benchmark_ledger
 from .models import (
     ExecutorConfig,
@@ -591,6 +591,13 @@ def workspace_run(
             help="Ignore or reap active workers older than this heartbeat age.",
         ),
     ] = 120.0,
+    launcher: Annotated[
+        str,
+        typer.Option(
+            "--launcher",
+            help="Worker launcher kind used by autoscaling control cycles.",
+        ),
+    ] = "in_process",
 ) -> None:
     workspace_config = load_workspace_config(config)
     queue_store = QueueStore(workspace_config.run.artifact_root / "archonlab.db")
@@ -617,9 +624,14 @@ def workspace_run(
         artifact_root=workspace_config.run.artifact_root,
         slot_limit=workers or workspace_config.run.max_parallel,
     )
+    try:
+        worker_launcher = create_worker_launcher(launcher, config)
+    except ValueError as error:
+        raise typer.BadParameter(_exception_message(error), param_hint="--launcher") from error
     result = FleetController(
         queue_store=queue_store,
         batch_runner=batch_runner,
+        worker_launcher=worker_launcher,
     ).run(
         max_cycles=max_cycles,
         idle_cycles=idle_cycles,
@@ -1560,6 +1572,13 @@ def queue_autoscale(
             help="Ignore or reap active workers older than this heartbeat age.",
         ),
     ] = 120.0,
+    launcher: Annotated[
+        str,
+        typer.Option(
+            "--launcher",
+            help="Worker launcher kind used by autoscaling control cycles.",
+        ),
+    ] = "in_process",
 ) -> None:
     artifact_root, max_parallel = _resolve_queue_runtime(config)
     queue_store = QueueStore(artifact_root / "archonlab.db")
@@ -1569,9 +1588,14 @@ def queue_autoscale(
         artifact_root=artifact_root,
         slot_limit=workers or max_parallel,
     )
+    try:
+        worker_launcher = create_worker_launcher(launcher, config)
+    except ValueError as error:
+        raise typer.BadParameter(_exception_message(error), param_hint="--launcher") from error
     result = FleetController(
         queue_store=queue_store,
         batch_runner=batch_runner,
+        worker_launcher=worker_launcher,
     ).run(
         max_cycles=max_cycles,
         idle_cycles=idle_cycles,
@@ -1899,6 +1923,10 @@ def queue_worker(
             help="Comma-separated endpoint classes this worker can run.",
         ),
     ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable worker report JSON."),
+    ] = False,
 ) -> None:
     artifact_root, _ = _resolve_queue_runtime(config)
     runner = BatchRunner(
@@ -1921,6 +1949,9 @@ def queue_worker(
         cost_tiers=_parse_csv_strings(cost_tiers),
         endpoint_classes=_parse_csv_strings(endpoint_classes),
     )
+    if json_output:
+        typer.echo(report.model_dump_json(indent=2))
+        return
     if report.worker_ids:
         lease = runner.queue_store.get_worker(report.worker_ids[0])
         if lease is not None:

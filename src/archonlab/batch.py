@@ -245,7 +245,7 @@ class BatchRunner:
         aggregate = BatchRunReport()
         aggregate_lock = threading.Lock()
         launch_specs = (
-            self._planned_fleet_launch_specs(
+            self.plan_fleet_launch_specs(
                 worker_count=worker_count,
                 target_jobs_per_worker=target_jobs_per_worker,
                 max_jobs_per_worker=max_jobs_per_worker,
@@ -283,6 +283,25 @@ class BatchRunner:
             for future in futures:
                 future.result()
         return aggregate
+
+    def plan_fleet_launch_specs(
+        self,
+        *,
+        worker_count: int | None,
+        target_jobs_per_worker: int,
+        max_jobs_per_worker: int | None,
+        poll_seconds: float,
+        idle_timeout_seconds: float,
+        stale_after_seconds: float | None,
+    ) -> list[dict[str, Any]]:
+        return self._planned_fleet_launch_specs(
+            worker_count=worker_count,
+            target_jobs_per_worker=target_jobs_per_worker,
+            max_jobs_per_worker=max_jobs_per_worker,
+            poll_seconds=poll_seconds,
+            idle_timeout_seconds=idle_timeout_seconds,
+            stale_after_seconds=stale_after_seconds,
+        )
 
     def _run_job(
         self,

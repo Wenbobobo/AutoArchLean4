@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from archonlab.batch import BatchRunner
 from archonlab.control import ControlService
-from archonlab.fleet import FleetController, InProcessWorkerLauncher, WorkerLaunchRequest
+from archonlab.fleet import (
+    FleetController,
+    InProcessWorkerLauncher,
+    SubprocessWorkerLauncher,
+    WorkerLaunchRequest,
+)
 from archonlab.models import BatchRunReport, QueueJobStatus
 from archonlab.queue import QueueStore
 
@@ -160,3 +166,108 @@ def test_in_process_worker_launcher_delegates_to_batch_runner(tmp_path: Path, mo
         "cost_tiers": None,
         "endpoint_classes": None,
     }
+
+
+def test_subprocess_worker_launcher_spawns_json_queue_workers_and_merges_reports(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    batch_runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(tmp_path / "control"),
+        artifact_root=tmp_path / "artifacts",
+        slot_limit=2,
+    )
+    monkeypatch.setattr(
+        batch_runner,
+        "plan_fleet_launch_specs",
+        lambda **kwargs: [
+            {
+                "slot_index": None,
+                "max_jobs": 2,
+                "poll_seconds": 0.5,
+                "idle_timeout_seconds": 3.0,
+                "note": "planned_fleet:cheap:1",
+                "stale_after_seconds": 30.0,
+                "executor_kinds": [],
+                "provider_kinds": [],
+                "models": ["gpt-5.4-mini"],
+                "cost_tiers": ["cheap"],
+                "endpoint_classes": ["lab"],
+            },
+            {
+                "slot_index": None,
+                "max_jobs": 1,
+                "poll_seconds": 0.5,
+                "idle_timeout_seconds": 3.0,
+                "note": "planned_fleet:premium:1",
+                "stale_after_seconds": 30.0,
+                "executor_kinds": [],
+                "provider_kinds": [],
+                "models": ["gpt-5.4"],
+                "cost_tiers": ["premium"],
+                "endpoint_classes": ["lab"],
+            },
+        ],
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        capture_output: bool = False,
+        text: bool = False,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, capture_output, text, check
+        calls.append(command)
+        payload = (
+            BatchRunReport(
+                processed_job_ids=[f"job-{len(calls)}"],
+                worker_ids=[f"worker-{len(calls)}"],
+            )
+            .model_dump_json()
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=payload, stderr="")
+
+    monkeypatch.setattr("archonlab.fleet.subprocess.run", fake_run)
+
+    launcher = SubprocessWorkerLauncher(
+        config_path=tmp_path / "workspace.toml",
+        python_executable="/usr/bin/python3",
+        repo_root=tmp_path,
+        pythonpath_root=tmp_path / "src",
+    )
+    report = launcher.launch(
+        batch_runner=batch_runner,
+        request=WorkerLaunchRequest(
+            worker_count=2,
+            plan_driven=True,
+            target_jobs_per_worker=2,
+            max_jobs_per_worker=3,
+            poll_seconds=0.5,
+            idle_timeout_seconds=3.0,
+            stale_after_seconds=30.0,
+        ),
+    )
+
+    assert report.processed_job_ids == ["job-1", "job-2"]
+    assert report.worker_ids == ["worker-1", "worker-2"]
+    assert len(calls) == 2
+    assert calls[0][:6] == [
+        "/usr/bin/python3",
+        "-m",
+        "archonlab.app",
+        "queue",
+        "worker",
+        "--config",
+    ]
+    assert "--json" in calls[0]
+    assert "--auto-slot" in calls[0]
+    assert "--models" in calls[0]
+    assert "gpt-5.4-mini" in calls[0]
+    assert "--cost-tiers" in calls[1]
+    assert "premium" in calls[1]

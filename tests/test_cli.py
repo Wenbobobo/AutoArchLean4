@@ -461,6 +461,65 @@ def test_workspace_run_command_skips_control_paused_session_without_autoscaling(
     assert session.status is SessionStatus.PAUSED
 
 
+def test_workspace_run_command_selects_subprocess_launcher(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+
+    class FakeLauncher:
+        pass
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "archonlab.app.create_worker_launcher",
+        lambda kind, config_path: (
+            captured.update({"kind": kind, "config_path": config_path}) or FakeLauncher()
+        ),
+    )
+
+    def fake_run(self, **kwargs) -> object:
+        captured["launcher_type"] = type(self.worker_launcher).__name__
+        return self.result_model(
+            cycles_completed=0,
+            stop_reason="queue_drained",
+            total_processed_jobs=0,
+            total_paused_jobs=0,
+            total_failed_jobs=0,
+            total_workers_launched=0,
+            cycles=[],
+            final_plan=self.queue_store.plan_fleet(),
+        )
+
+    monkeypatch.setattr("archonlab.app.FleetController.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "run",
+            "--config",
+            str(config_path),
+            "--launcher",
+            "subprocess",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["kind"] == "subprocess"
+    assert captured["config_path"] == config_path
+    assert captured["launcher_type"] == "FakeLauncher"
+
+
 def test_run_start_creates_artifacts(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:
@@ -2101,3 +2160,115 @@ def test_queue_autoscale_command_runs_fleet_controller(
     assert captured["max_cycles"] == 5
     assert captured["idle_cycles"] == 2
     assert captured["target_jobs_per_worker"] == 3
+
+
+def test_queue_autoscale_command_selects_subprocess_launcher(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+
+    class FakeLauncher:
+        pass
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "archonlab.app.create_worker_launcher",
+        lambda kind, config_path: (
+            captured.update({"kind": kind, "config_path": config_path}) or FakeLauncher()
+        ),
+    )
+
+    def fake_run(self, **kwargs) -> object:
+        captured["launcher_type"] = type(self.worker_launcher).__name__
+        return self.result_model(
+            cycles_completed=0,
+            stop_reason="queue_drained",
+            total_processed_jobs=0,
+            total_paused_jobs=0,
+            total_failed_jobs=0,
+            total_workers_launched=0,
+            cycles=[],
+            final_plan=self.queue_store.plan_fleet(),
+        )
+
+    monkeypatch.setattr("archonlab.app.FleetController.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "autoscale",
+            "--config",
+            str(config_path),
+            "--launcher",
+            "subprocess",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["kind"] == "subprocess"
+    assert captured["config_path"] == config_path
+    assert captured["launcher_type"] == "FakeLauncher"
+
+
+def test_queue_worker_command_supports_json_output(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "archonlab.app.BatchRunner.run_worker",
+        lambda self, **kwargs: BatchRunReport(
+            processed_job_ids=["job-1"],
+            paused_job_ids=[],
+            failed_job_ids=[],
+            worker_ids=["worker-1"],
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "worker",
+            "--config",
+            str(config_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["processed_job_ids"] == ["job-1"]
+    assert payload["worker_ids"] == ["worker-1"]

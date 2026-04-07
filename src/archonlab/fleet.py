@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import concurrent.futures
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Protocol
 
 from .batch import BatchRunner
@@ -50,6 +55,149 @@ class InProcessWorkerLauncher:
             cost_tiers=None,
             endpoint_classes=None,
         )
+
+
+class SubprocessWorkerLauncher:
+    def __init__(
+        self,
+        *,
+        config_path: Path,
+        python_executable: str | None = None,
+        repo_root: Path | None = None,
+        pythonpath_root: Path | None = None,
+    ) -> None:
+        self.config_path = config_path
+        self.python_executable = python_executable or sys.executable
+        self.repo_root = repo_root or Path(__file__).resolve().parents[2]
+        self.pythonpath_root = pythonpath_root or (self.repo_root / "src")
+
+    def launch(
+        self,
+        *,
+        batch_runner: BatchRunner,
+        request: WorkerLaunchRequest,
+    ) -> BatchRunReport:
+        launch_specs: list[dict[str, object]]
+        if request.plan_driven:
+            launch_specs = [
+                dict(spec)
+                for spec in batch_runner.plan_fleet_launch_specs(
+                    worker_count=request.worker_count,
+                    target_jobs_per_worker=request.target_jobs_per_worker,
+                    max_jobs_per_worker=request.max_jobs_per_worker,
+                    poll_seconds=request.poll_seconds,
+                    idle_timeout_seconds=request.idle_timeout_seconds,
+                    stale_after_seconds=request.stale_after_seconds,
+                )
+            ]
+        else:
+            launch_specs = [
+                {
+                    "slot_index": None,
+                    "max_jobs": request.max_jobs_per_worker,
+                    "poll_seconds": request.poll_seconds,
+                    "idle_timeout_seconds": request.idle_timeout_seconds,
+                    "note": f"fleet_worker_{index}",
+                    "stale_after_seconds": request.stale_after_seconds,
+                    "executor_kinds": None,
+                    "provider_kinds": None,
+                    "models": None,
+                    "cost_tiers": None,
+                    "endpoint_classes": None,
+                }
+                for index in range(1, max(1, request.worker_count or batch_runner.slot_limit) + 1)
+            ]
+        if not launch_specs:
+            return BatchRunReport()
+
+        aggregate = BatchRunReport()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(launch_specs)) as pool:
+            futures = [pool.submit(self._launch_spec, spec) for spec in launch_specs]
+            for future in futures:
+                report = future.result()
+                aggregate.processed_job_ids.extend(report.processed_job_ids)
+                aggregate.paused_job_ids.extend(report.paused_job_ids)
+                aggregate.failed_job_ids.extend(report.failed_job_ids)
+                aggregate.worker_ids.extend(report.worker_ids)
+        return aggregate
+
+    def _launch_spec(self, spec: dict[str, object]) -> BatchRunReport:
+        command = [
+            self.python_executable,
+            "-m",
+            "archonlab.app",
+            "queue",
+            "worker",
+            "--config",
+            str(self.config_path),
+            "--json",
+        ]
+        slot_index = spec.get("slot_index")
+        if isinstance(slot_index, int):
+            command.extend(["--slot-index", str(slot_index)])
+        else:
+            command.append("--auto-slot")
+        self._append_optional_arg(command, "--max-jobs", spec.get("max_jobs"))
+        self._append_optional_arg(command, "--poll-seconds", spec.get("poll_seconds"))
+        self._append_optional_arg(
+            command,
+            "--idle-timeout-seconds",
+            spec.get("idle_timeout_seconds"),
+        )
+        self._append_optional_arg(command, "--note", spec.get("note"))
+        self._append_optional_arg(
+            command,
+            "--stale-after-seconds",
+            spec.get("stale_after_seconds"),
+        )
+        self._append_csv_arg(command, "--executor-kinds", spec.get("executor_kinds"))
+        self._append_csv_arg(command, "--provider-kinds", spec.get("provider_kinds"))
+        self._append_csv_arg(command, "--models", spec.get("models"))
+        self._append_csv_arg(command, "--cost-tiers", spec.get("cost_tiers"))
+        self._append_csv_arg(command, "--endpoint-classes", spec.get("endpoint_classes"))
+
+        env = os.environ.copy()
+        existing_pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = (
+            str(self.pythonpath_root)
+            if not existing_pythonpath
+            else f"{self.pythonpath_root}{os.pathsep}{existing_pythonpath}"
+        )
+        completed = subprocess.run(
+            command,
+            cwd=self.repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            error_detail = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
+            raise RuntimeError(f"Worker launcher failed: {error_detail}")
+        stdout = completed.stdout.strip()
+        if not stdout:
+            return BatchRunReport()
+        return BatchRunReport.model_validate_json(stdout)
+
+    @staticmethod
+    def _append_optional_arg(command: list[str], flag: str, value: object) -> None:
+        if value is None:
+            return
+        command.extend([flag, str(value)])
+
+    @staticmethod
+    def _append_csv_arg(command: list[str], flag: str, value: object) -> None:
+        if not isinstance(value, list) or not value:
+            return
+        command.extend([flag, ",".join(str(item) for item in value)])
+
+
+def create_worker_launcher(kind: str, config_path: Path) -> WorkerLauncher:
+    if kind == "in_process":
+        return InProcessWorkerLauncher()
+    if kind == "subprocess":
+        return SubprocessWorkerLauncher(config_path=config_path)
+    raise ValueError(f"Unsupported worker launcher: {kind}")
 
 
 class FleetController:
