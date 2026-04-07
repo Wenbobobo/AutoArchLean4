@@ -14,6 +14,7 @@ from typing import TypedDict, cast
 from pydantic import ValidationError
 
 from .benchmark import load_benchmark_manifest
+from .events import EventStore
 from .models import (
     ActionPhase,
     ExecutionCapability,
@@ -22,6 +23,7 @@ from .models import (
     ExecutorConfig,
     ExecutorKind,
     ProjectConfig,
+    ProjectSession,
     ProviderConfig,
     ProviderKind,
     QueueBenchmarkPayload,
@@ -31,11 +33,14 @@ from .models import (
     QueueJobKind,
     QueueJobPreview,
     QueueJobStatus,
+    QueueSessionPayload,
     QueueWorkerLease,
     RunConfig,
     RunPreview,
+    SessionStatus,
     WorkerStatus,
     WorkflowMode,
+    WorkspaceProjectConfig,
 )
 
 
@@ -77,6 +82,8 @@ class QueueStore:
                     batch_id TEXT,
                     kind TEXT NOT NULL,
                     project_id TEXT NOT NULL,
+                    workspace_id TEXT,
+                    session_id TEXT,
                     status TEXT NOT NULL,
                     priority INTEGER NOT NULL,
                     payload_json TEXT NOT NULL,
@@ -124,6 +131,8 @@ class QueueStore:
                 "pause_reason",
                 "cancel_reason",
                 "worker_id",
+                "workspace_id",
+                "session_id",
                 "required_executor_kinds",
                 "required_provider_kinds",
                 "required_models",
@@ -147,11 +156,13 @@ class QueueStore:
 
     def enqueue(
         self,
-        kind: str,
+        kind: QueueJobKind | str,
         payload: dict[str, object],
         *,
         priority: int = 0,
         project_id: str | None = None,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
         batch_id: str | None = None,
         required_executor_kinds: list[ExecutorKind] | None = None,
         required_provider_kinds: list[ProviderKind] | None = None,
@@ -160,11 +171,14 @@ class QueueStore:
         required_endpoint_classes: list[str] | None = None,
         preview: QueueJobPreview | None = None,
     ) -> QueueJob:
+        normalized_kind = self._normalize_job_kind(kind)
         job = QueueJob(
             job_id=self._new_job_id(),
             batch_id=batch_id,
-            kind=QueueJobKind.BENCHMARK_PROJECT,
+            kind=normalized_kind,
             project_id=project_id or self._infer_project_id(payload),
+            workspace_id=workspace_id,
+            session_id=session_id,
             status=QueueJobStatus.QUEUED,
             priority=priority,
             payload=payload,
@@ -177,6 +191,106 @@ class QueueStore:
         )
         self._insert(job)
         return job
+
+    def enqueue_workspace_sessions(
+        self,
+        workspace_config_path: Path,
+        *,
+        project_ids: list[str] | None = None,
+        max_iterations: int | None = None,
+        dry_run: bool | None = None,
+        priority: int = 0,
+        note: str | None = None,
+    ) -> list[QueueJob]:
+        from .config import load_workspace_config
+
+        resolved_workspace_config_path = workspace_config_path.resolve()
+        workspace_config = load_workspace_config(resolved_workspace_config_path)
+        event_store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+        selected_project_ids = set(project_ids) if project_ids is not None else None
+        batch_id = self._new_batch_id()
+        jobs: list[QueueJob] = []
+        for project in workspace_config.projects:
+            if not project.enabled:
+                continue
+            if selected_project_ids is not None and project.id not in selected_project_ids:
+                continue
+            session = self._resolve_workspace_session(
+                workspace_id=workspace_config.name,
+                project=project,
+                event_store=event_store,
+                default_workflow=project.workflow or workspace_config.run.workflow,
+                default_dry_run=(
+                    project.dry_run
+                    if project.dry_run is not None
+                    else workspace_config.run.dry_run
+                ),
+                default_max_iterations=(
+                    project.max_iterations
+                    if project.max_iterations is not None
+                    else workspace_config.run.max_iterations
+                ),
+                max_iterations=max_iterations,
+                dry_run=dry_run,
+                note=note,
+            )
+            jobs.append(
+                self.enqueue_session_quantum(
+                    resolved_workspace_config_path,
+                    session_id=session.session_id,
+                    priority=priority,
+                    batch_id=batch_id,
+                )
+            )
+        return jobs
+
+    def enqueue_session_quantum(
+        self,
+        workspace_config_path: Path,
+        *,
+        session_id: str,
+        priority: int = 0,
+        batch_id: str | None = None,
+    ) -> QueueJob:
+        from .config import load_workspace_config
+
+        resolved_workspace_config_path = workspace_config_path.resolve()
+        active_job = self.get_active_session_job(session_id)
+        if active_job is not None:
+            return active_job
+
+        workspace_config = load_workspace_config(resolved_workspace_config_path)
+        event_store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+        session = event_store.get_session(session_id)
+        if session is None:
+            raise KeyError(f"Unknown project session: {session_id}")
+
+        requirements = self._derive_session_requirements(
+            workspace_config_path=resolved_workspace_config_path,
+            session=session,
+            base_priority=priority,
+        )
+        payload = QueueSessionPayload(
+            workspace_config_path=resolved_workspace_config_path,
+            workspace_id=session.workspace_id,
+            project_id=session.project_id,
+            session_id=session.session_id,
+        )
+        return self.enqueue(
+            QueueJobKind.SESSION_QUANTUM,
+            payload.model_dump(mode="json"),
+            priority=requirements["priority"],
+            project_id=session.project_id,
+            workspace_id=session.workspace_id,
+            session_id=session.session_id,
+            batch_id=batch_id,
+            required_executor_kinds=requirements["required_executor_kinds"],
+            required_provider_kinds=requirements["required_provider_kinds"],
+            required_models=requirements["required_models"],
+            required_cost_tiers=requirements["required_cost_tiers"],
+            required_endpoint_classes=requirements["required_endpoint_classes"],
+            preview=requirements["preview"],
+        )
 
     def enqueue_benchmark_manifest(
         self,
@@ -257,6 +371,39 @@ class QueueStore:
             row = self._conn.execute(
                 "SELECT * FROM queue_jobs WHERE job_id = ?",
                 (job_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._row_to_job(row)
+
+    def list_session_jobs(self, session_id: str, *, limit: int = 50) -> list[QueueJob]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM queue_jobs
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            ).fetchall()
+            return [self._row_to_job(row) for row in rows]
+
+    def get_active_session_job(self, session_id: str) -> QueueJob | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT * FROM queue_jobs
+                WHERE session_id = ? AND status IN (?, ?, ?)
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (
+                    session_id,
+                    QueueJobStatus.QUEUED.value,
+                    QueueJobStatus.PENDING.value,
+                    QueueJobStatus.RUNNING.value,
+                ),
             ).fetchone()
             if row is None:
                 return None
@@ -1092,18 +1239,21 @@ class QueueStore:
             self._conn.execute(
                 """
                 INSERT INTO queue_jobs (
-                    job_id, batch_id, kind, project_id, status, priority, payload_json,
+                    job_id, batch_id, kind, project_id, workspace_id, session_id,
+                    status, priority, payload_json,
                     created_at, updated_at, started_at, finished_at, artifact_dir, result_path,
                     error_message, pause_reason, cancel_reason
                     , worker_id, required_executor_kinds, required_provider_kinds,
                     required_models, required_cost_tiers, required_endpoint_classes, preview_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
                     job.batch_id,
                     job.kind.value,
                     job.project_id,
+                    job.workspace_id,
+                    job.session_id,
                     job.status.value,
                     job.priority,
                     json.dumps(job.payload, ensure_ascii=False, sort_keys=True),
@@ -1144,6 +1294,8 @@ class QueueStore:
             batch_id=row["batch_id"],
             kind=QueueJobKind(row["kind"]),
             project_id=row["project_id"],
+            workspace_id=row["workspace_id"],
+            session_id=row["session_id"],
             status=QueueJobStatus(row["status"]),
             priority=row["priority"],
             payload=json.loads(row["payload_json"]),
@@ -1277,6 +1429,9 @@ class QueueStore:
 
     @staticmethod
     def _infer_project_id(payload: dict[str, object]) -> str:
+        project_id = payload.get("project_id")
+        if isinstance(project_id, str):
+            return project_id
         manifest_path = payload.get("manifest_path")
         if isinstance(manifest_path, str):
             return Path(manifest_path).stem
@@ -1365,21 +1520,106 @@ class QueueStore:
             ),
         }
 
+    def _derive_session_requirements(
+        self,
+        *,
+        workspace_config_path: Path,
+        session: ProjectSession,
+        base_priority: int,
+    ) -> ProjectRequirements:
+        from .config import build_workspace_project_app_config, load_workspace_config
+        from .services import RunService
+
+        workspace_config = load_workspace_config(workspace_config_path)
+        app_config = build_workspace_project_app_config(
+            workspace_config,
+            project_id=session.project_id,
+        )
+        app_config = app_config.model_copy(
+            update={
+                "run": app_config.run.model_copy(
+                    update={
+                        "max_iterations": session.max_iterations,
+                        "dry_run": session.dry_run,
+                    }
+                )
+            }
+        )
+        service = RunService(app_config)
+        preview = service.preview()
+        if preview.resolved_capability is None:
+            final_priority = base_priority
+            return {
+                "priority": final_priority,
+                "required_executor_kinds": [],
+                "required_provider_kinds": [],
+                "required_models": [],
+                "required_cost_tiers": [],
+                "required_endpoint_classes": [],
+                "resolved_capability": None,
+                "preview": self._build_queue_preview(
+                    preview=preview,
+                    base_priority=base_priority,
+                    final_priority=final_priority,
+                    include_dynamic_bonuses=False,
+                ),
+            }
+        resolved_capability = preview.resolved_capability
+        requirement = ExecutionRequirement.from_capability(resolved_capability)
+        final_priority = self._derive_priority(
+            base_priority,
+            task_priority=preview.action.task_priority,
+            objective_relevant=preview.action.objective_relevant,
+        )
+        return {
+            "priority": final_priority,
+            "required_executor_kinds": requirement.executor_kinds,
+            "required_provider_kinds": requirement.provider_kinds,
+            "required_models": requirement.models,
+            "required_cost_tiers": requirement.cost_tiers,
+            "required_endpoint_classes": requirement.endpoint_classes,
+            "resolved_capability": resolved_capability,
+            "preview": self._build_queue_preview(
+                preview=preview,
+                base_priority=base_priority,
+                final_priority=final_priority,
+            ),
+        }
+
     def _refresh_job_requirements(self, job: QueueJob) -> ProjectRequirements | None:
         if job.kind is not QueueJobKind.BENCHMARK_PROJECT:
-            return None
+            if job.kind is not QueueJobKind.SESSION_QUANTUM:
+                return None
+            try:
+                session_payload = QueueSessionPayload.model_validate(job.payload)
+            except ValidationError:
+                return None
+            from .config import load_workspace_config
+
+            workspace_config = load_workspace_config(session_payload.workspace_config_path)
+            session = EventStore(workspace_config.run.artifact_root / "archonlab.db").get_session(
+                session_payload.session_id
+            )
+            if session is None:
+                return None
+            base_priority = job.preview.base_priority if job.preview is not None else job.priority
+            return self._derive_session_requirements(
+                workspace_config_path=session_payload.workspace_config_path,
+                session=session,
+                base_priority=base_priority,
+            )
         try:
-            payload = QueueBenchmarkPayload.model_validate(job.payload)
+            benchmark_payload = QueueBenchmarkPayload.model_validate(job.payload)
         except ValidationError:
             return None
-        manifest = load_benchmark_manifest(payload.manifest_path)
+        manifest = load_benchmark_manifest(benchmark_payload.manifest_path)
         base_priority = job.preview.base_priority if job.preview is not None else job.priority
         return self._derive_project_requirements(
-            project_id=payload.project.id,
-            project_path=payload.project.project_path,
-            archon_path=payload.project.archon_path,
-            workflow=payload.project.workflow,
-            max_iterations=payload.project.max_iterations,
+            project_id=benchmark_payload.project.id,
+            project_path=benchmark_payload.project.project_path,
+            archon_path=benchmark_payload.project.archon_path,
+            workflow=benchmark_payload.project.workflow,
+            max_iterations=benchmark_payload.project.max_iterations,
             artifact_root=manifest.benchmark.artifact_root,
             executor=manifest.executor,
             provider=manifest.provider,
@@ -1463,3 +1703,70 @@ class QueueStore:
     @staticmethod
     def _new_worker_id() -> str:
         return f"worker-{uuid.uuid4().hex[:8]}"
+
+    @staticmethod
+    def _normalize_job_kind(kind: QueueJobKind | str) -> QueueJobKind:
+        if isinstance(kind, QueueJobKind):
+            return kind
+        aliases = {
+            "benchmark": QueueJobKind.BENCHMARK_PROJECT,
+            QueueJobKind.BENCHMARK_PROJECT.value: QueueJobKind.BENCHMARK_PROJECT,
+            "session": QueueJobKind.SESSION_QUANTUM,
+            QueueJobKind.SESSION_QUANTUM.value: QueueJobKind.SESSION_QUANTUM,
+        }
+        resolved = aliases.get(kind, kind)
+        return QueueJobKind(resolved)
+
+    def _resolve_workspace_session(
+        self,
+        *,
+        workspace_id: str,
+        project: WorkspaceProjectConfig,
+        event_store: EventStore,
+        default_workflow: WorkflowMode,
+        default_dry_run: bool,
+        default_max_iterations: int,
+        max_iterations: int | None,
+        dry_run: bool | None,
+        note: str | None,
+    ) -> ProjectSession:
+        existing = event_store.list_sessions(
+            workspace_id=workspace_id,
+            project_id=project.id,
+            limit=1,
+        )
+        if existing and existing[0].status in {
+            SessionStatus.PENDING,
+            SessionStatus.RUNNING,
+            SessionStatus.PAUSED,
+        }:
+            current = existing[0]
+            if max_iterations is not None and current.max_iterations != max_iterations:
+                return event_store.update_session(
+                    current.session_id,
+                    max_iterations=max_iterations,
+                    note=note,
+                )
+            if note is not None and current.note != note:
+                return event_store.update_session(
+                    current.session_id,
+                    note=note,
+                )
+            return current
+        session = ProjectSession(
+            session_id=self._new_session_id(project.id),
+            workspace_id=workspace_id,
+            project_id=project.id,
+            workflow=default_workflow,
+            dry_run=default_dry_run if dry_run is None else dry_run,
+            max_iterations=max_iterations or default_max_iterations,
+            note=note,
+        )
+        event_store.register_session(session)
+        return session
+
+    @staticmethod
+    def _new_session_id(project_id: str) -> str:
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        safe_project_id = project_id.replace("/", "-")
+        return f"session-{safe_project_id}-{timestamp}-{uuid.uuid4().hex[:8]}"

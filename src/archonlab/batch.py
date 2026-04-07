@@ -16,7 +16,9 @@ from .benchmark import (
     load_benchmark_manifest,
     run_benchmark_project,
 )
+from .config import build_workspace_project_app_config, load_workspace_config
 from .control import ControlService
+from .events import EventStore
 from .models import (
     BatchRunReport,
     BenchmarkManifest,
@@ -27,11 +29,16 @@ from .models import (
     QueueBenchmarkPayload,
     QueueFleetProfile,
     QueueJob,
+    QueueJobKind,
     QueueJobStatus,
+    QueueSessionPayload,
     QueueWorkerLease,
+    SessionQuantumResult,
+    SessionStatus,
     WorkerStatus,
 )
 from .queue import QueueStore
+from .services import RunService
 
 
 class BenchmarkRunnerResult(Protocol):
@@ -283,64 +290,78 @@ class BatchRunner:
         report_lock: threading.Lock,
         worker_id: str,
     ) -> None:
-        manifest_path = Path(str(job.payload["manifest_path"])).resolve()
         artifact_dir = self.artifact_root / "jobs" / job.id
         artifact_dir.mkdir(parents=True, exist_ok=True)
+        session_result: SessionQuantumResult | None = None
+        session_payload: QueueSessionPayload | None = None
         try:
-            manifest = load_benchmark_manifest(manifest_path)
-            project_payload = self._project_payload(job)
-            projects = (
-                [project_payload.project]
-                if project_payload is not None
-                else manifest.projects
-            )
-            paused_reason = self._paused_reason(projects)
-            if paused_reason is not None:
-                status_path = artifact_dir / "status.json"
-                status_path.write_text(
-                    json.dumps(
-                        {"job_id": job.id, "reason": paused_reason},
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-                paused_job = self.queue_store.finish_job(
-                    job.id,
-                    status=QueueJobStatus.PAUSED,
+            if job.kind is QueueJobKind.SESSION_QUANTUM:
+                (
+                    result_status,
+                    summary_path,
+                    session_result,
+                    session_payload,
+                ) = self._run_session_job(
                     artifact_dir=artifact_dir,
-                    result_path=status_path,
-                    pause_reason=paused_reason,
-                    worker_id=worker_id,
-                )
-                if not self._job_finish_applied(
-                    paused_job,
-                    expected_status=QueueJobStatus.PAUSED,
-                    worker_id=worker_id,
-                ):
-                    return
-                self.queue_store.release_job_from_worker(
-                    worker_id,
-                    job_id=job.id,
-                    failed=False,
-                )
-                with report_lock:
-                    report.paused_job_ids.append(job.id)
-                return
-
-            if project_payload is not None:
-                result_status, summary_path = self._run_project_job(
-                    artifact_dir=artifact_dir,
-                    manifest=manifest,
-                    payload=project_payload,
+                    job=job,
                     worker_id=worker_id,
                 )
             else:
-                result_status, summary_path = self._run_manifest_job(
-                    artifact_dir=artifact_dir,
-                    manifest_path=manifest_path,
-                    job=job,
+                manifest_path = Path(str(job.payload["manifest_path"])).resolve()
+                manifest = load_benchmark_manifest(manifest_path)
+                project_payload = self._project_payload(job)
+                projects = (
+                    [project_payload.project]
+                    if project_payload is not None
+                    else manifest.projects
                 )
+                paused_reason = self._paused_reason(projects)
+                if paused_reason is not None:
+                    status_path = artifact_dir / "status.json"
+                    status_path.write_text(
+                        json.dumps(
+                            {"job_id": job.id, "reason": paused_reason},
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                    paused_job = self.queue_store.finish_job(
+                        job.id,
+                        status=QueueJobStatus.PAUSED,
+                        artifact_dir=artifact_dir,
+                        result_path=status_path,
+                        pause_reason=paused_reason,
+                        worker_id=worker_id,
+                    )
+                    if not self._job_finish_applied(
+                        paused_job,
+                        expected_status=QueueJobStatus.PAUSED,
+                        worker_id=worker_id,
+                    ):
+                        return
+                    self.queue_store.release_job_from_worker(
+                        worker_id,
+                        job_id=job.id,
+                        failed=False,
+                    )
+                    with report_lock:
+                        report.paused_job_ids.append(job.id)
+                    return
+
+                if project_payload is not None:
+                    result_status, summary_path = self._run_project_job(
+                        artifact_dir=artifact_dir,
+                        manifest=manifest,
+                        payload=project_payload,
+                        worker_id=worker_id,
+                    )
+                else:
+                    result_status, summary_path = self._run_manifest_job(
+                        artifact_dir=artifact_dir,
+                        manifest_path=manifest_path,
+                        job=job,
+                    )
 
             finished_job = self.queue_store.finish_job(
                 job.id,
@@ -360,6 +381,23 @@ class BatchRunner:
                 job_id=job.id,
                 failed=result_status is QueueJobStatus.FAILED,
             )
+            if (
+                session_result is not None
+                and session_payload is not None
+                and session_result.status is SessionStatus.PENDING
+            ):
+                next_job = self.queue_store.enqueue_session_quantum(
+                    session_payload.workspace_config_path,
+                    session_id=session_payload.session_id,
+                    priority=job.preview.base_priority if job.preview is not None else job.priority,
+                    batch_id=job.batch_id,
+                )
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                summary["next_job_id"] = next_job.id
+                summary_path.write_text(
+                    json.dumps(summary, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
         except Exception as exc:  # noqa: BLE001
             error_path = artifact_dir / "error.json"
             error_path.write_text(
@@ -570,6 +608,50 @@ class BatchRunner:
             else QueueJobStatus.FAILED
         )
         return final_status, summary_path
+
+    def _run_session_job(
+        self,
+        *,
+        artifact_dir: Path,
+        job: QueueJob,
+        worker_id: str,
+    ) -> tuple[QueueJobStatus, Path, SessionQuantumResult, QueueSessionPayload]:
+        payload = QueueSessionPayload.model_validate(job.payload)
+        workspace_config = load_workspace_config(payload.workspace_config_path)
+        app_config = build_workspace_project_app_config(
+            workspace_config,
+            project_id=payload.project_id,
+        )
+        event_store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+        session = event_store.get_session(payload.session_id)
+        if session is None:
+            raise KeyError(f"Unknown project session: {payload.session_id}")
+        app_config = app_config.model_copy(
+            update={
+                "run": app_config.run.model_copy(
+                    update={
+                        "max_iterations": session.max_iterations,
+                        "dry_run": session.dry_run,
+                    }
+                )
+            }
+        )
+        result = RunService(app_config).run_session_quantum(
+            payload.session_id,
+            note=f"queue_worker:{worker_id}",
+        )
+        summary_path = artifact_dir / "summary.json"
+        summary_path.write_text(
+            json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if result.status is SessionStatus.FAILED:
+            queue_status = QueueJobStatus.FAILED
+        elif result.status is SessionStatus.PAUSED and result.run_id is None:
+            queue_status = QueueJobStatus.PAUSED
+        else:
+            queue_status = QueueJobStatus.COMPLETED
+        return queue_status, summary_path, result, payload
 
     def _paused_reason(self, projects: list[BenchmarkProjectConfig]) -> str | None:
         for project in projects:

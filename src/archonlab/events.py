@@ -219,8 +219,10 @@ class EventStore:
         *,
         status: SessionStatus | None = None,
         completed_iterations: int | None = None,
+        max_iterations: int | None = None,
         last_run_id: str | None = None,
         error_message: str | None = None,
+        clear_error_message: bool = False,
         note: str | None = None,
     ) -> ProjectSession:
         current = self.get_session(session_id)
@@ -243,7 +245,8 @@ class EventStore:
         self._conn.execute(
             """
             UPDATE project_sessions
-            SET status = ?, completed_iterations = ?, updated_at = ?, started_at = ?,
+            SET status = ?, completed_iterations = ?, max_iterations = ?,
+                updated_at = ?, started_at = ?,
                 finished_at = ?, last_run_id = ?, error_message = ?, note = ?
             WHERE session_id = ?
             """,
@@ -254,11 +257,18 @@ class EventStore:
                     if completed_iterations is not None
                     else current.completed_iterations
                 ),
+                max_iterations if max_iterations is not None else current.max_iterations,
                 now.isoformat(),
                 started_at.isoformat() if started_at is not None else None,
                 finished_at.isoformat() if finished_at is not None else None,
                 last_run_id if last_run_id is not None else current.last_run_id,
-                error_message if error_message is not None else current.error_message,
+                (
+                    None
+                    if clear_error_message
+                    else (
+                        error_message if error_message is not None else current.error_message
+                    )
+                ),
                 note if note is not None else current.note,
                 session_id,
             ),

@@ -25,6 +25,7 @@ from .models import (
     RunStatus,
     RunSummary,
     SessionIteration,
+    SessionQuantumResult,
     SessionStatus,
     SupervisorAction,
     SupervisorDecision,
@@ -439,6 +440,100 @@ class RunService:
             run_ids=run_ids,
             stop_reason=stop_reason,
         )
+
+    def run_session_quantum(
+        self,
+        session_id: str,
+        *,
+        note: str | None = None,
+    ) -> SessionQuantumResult:
+        session = self.event_store.get_session(session_id)
+        if session is None:
+            raise KeyError(f"Unknown project session: {session_id}")
+        if session.status in {SessionStatus.COMPLETED, SessionStatus.CANCELED}:
+            raise ValueError(f"Session {session_id} is already terminal: {session.status.value}")
+        if session.completed_iterations >= session.max_iterations:
+            paused = self.event_store.update_session(
+                session_id,
+                status=SessionStatus.PAUSED,
+                note=note,
+            )
+            return SessionQuantumResult(
+                session_id=paused.session_id,
+                workspace_id=paused.workspace_id,
+                project_id=paused.project_id,
+                status=paused.status,
+                dry_run=paused.dry_run,
+                max_iterations=paused.max_iterations,
+                completed_iterations=paused.completed_iterations,
+                stop_reason="max_iterations_reached",
+            )
+
+        self.event_store.update_session(
+            session_id,
+            status=SessionStatus.RUNNING,
+            clear_error_message=True,
+            note=note,
+        )
+        try:
+            result = self.start(dry_run=session.dry_run)
+            iteration_index = session.completed_iterations + 1
+            action_phase = (
+                result.action.phase
+                if isinstance(result.action.phase, ActionPhase)
+                else ActionPhase(str(result.action.phase))
+            )
+            self.event_store.append_session_iteration(
+                SessionIteration(
+                    session_id=session.session_id,
+                    iteration_index=iteration_index,
+                    project_id=self.config.project.name,
+                    run_id=result.run_id,
+                    status=result.status,
+                    action_phase=action_phase,
+                    action_reason=result.action.reason,
+                    finished_at=datetime.now(UTC),
+                )
+            )
+            if str(result.action.phase) == ActionPhase.STOP.value:
+                status = SessionStatus.COMPLETED
+                stop_reason = f"stop:{result.action.reason}"
+            elif iteration_index >= session.max_iterations:
+                status = SessionStatus.PAUSED
+                stop_reason = "max_iterations_reached"
+            else:
+                status = SessionStatus.PENDING
+                stop_reason = "quantum_complete"
+            updated = self.event_store.update_session(
+                session.session_id,
+                status=status,
+                completed_iterations=iteration_index,
+                last_run_id=result.run_id,
+                clear_error_message=True,
+                note=note,
+            )
+            return SessionQuantumResult(
+                session_id=updated.session_id,
+                workspace_id=updated.workspace_id,
+                project_id=updated.project_id,
+                status=updated.status,
+                dry_run=updated.dry_run,
+                max_iterations=updated.max_iterations,
+                completed_iterations=updated.completed_iterations,
+                run_id=result.run_id,
+                action_phase=action_phase,
+                action_reason=result.action.reason,
+                stop_reason=stop_reason,
+            )
+        except Exception as exc:
+            self.event_store.update_session(
+                session.session_id,
+                status=SessionStatus.FAILED,
+                completed_iterations=session.completed_iterations,
+                error_message=str(exc),
+                note=note,
+            )
+            raise
 
     def preview(self) -> RunPreview:
         self.adapter.ensure_valid()

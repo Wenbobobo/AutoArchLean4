@@ -654,6 +654,112 @@ def test_queue_requeue_command_requeues_terminal_job(
     assert requeued.priority == 4
 
 
+def test_queue_enqueue_workspace_and_session_status_commands(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+
+    enqueue_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "enqueue-workspace",
+            "--config",
+            str(config_path),
+        ],
+    )
+    status_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "session-status",
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert enqueue_result.exit_code == 0
+    assert "Enqueued sessions: 1" in enqueue_result.output
+    assert status_result.exit_code == 0
+    assert "demo-project" in status_result.output
+    assert "pending" in status_result.output
+
+
+def test_queue_resume_session_command_extends_budget_and_enqueues_quantum(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    session = ProjectSession(
+        session_id="session-demo-project-1",
+        workspace_id="demo-workspace",
+        project_id="demo-project",
+        status=SessionStatus.PAUSED,
+        max_iterations=1,
+    )
+    store.register_session(session)
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "resume-session",
+            "--config",
+            str(config_path),
+            "--session-id",
+            session.session_id,
+            "--max-iterations",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert f"Session: {session.session_id}" in result.output
+    assert "Enqueued job:" in result.output
+
+    updated = store.get_session(session.session_id)
+    assert updated is not None
+    assert updated.max_iterations == 3
+
+    jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
+    assert len(jobs) == 1
+    assert jobs[0].session_id == session.session_id
+
+
 def test_queue_fleet_command_processes_jobs_with_auto_slot_workers(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:

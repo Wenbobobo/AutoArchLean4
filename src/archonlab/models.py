@@ -76,6 +76,7 @@ class ExecutionStatus(StrEnum):
 
 class QueueJobKind(StrEnum):
     BENCHMARK_PROJECT = "benchmark_project"
+    SESSION_QUANTUM = "session_quantum"
 
 
 class QueueJobStatus(StrEnum):
@@ -464,6 +465,22 @@ class RunLoopResult(BaseModel):
     stop_reason: str
 
 
+class SessionQuantumResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    workspace_id: str
+    project_id: str
+    status: SessionStatus
+    dry_run: bool
+    max_iterations: int
+    completed_iterations: int
+    run_id: str | None = None
+    action_phase: ActionPhase | None = None
+    action_reason: str | None = None
+    stop_reason: str
+
+
 class RunPreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -759,6 +776,16 @@ class QueueBenchmarkPayload(BaseModel):
     cleanup_worktrees: bool = True
 
 
+class QueueSessionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_config_path: Path
+    workspace_id: str
+    project_id: str
+    session_id: str
+    quantum: int = 1
+
+
 class QueueJob(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -766,6 +793,8 @@ class QueueJob(BaseModel):
     batch_id: str | None = None
     kind: QueueJobKind
     project_id: str
+    workspace_id: str | None = None
+    session_id: str | None = None
     status: QueueJobStatus
     priority: int = 0
     payload: dict[str, Any] = Field(default_factory=dict)

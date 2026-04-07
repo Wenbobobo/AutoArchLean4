@@ -861,6 +861,46 @@ def queue_enqueue_benchmark(
         typer.echo(f"{job.id} | {job.project_id} | {job.status.value}")
 
 
+@queue_app.command("enqueue-workspace")
+def queue_enqueue_workspace(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    project_id: Annotated[
+        str | None,
+        typer.Option("--project-id", help="Optional project filter."),
+    ] = None,
+    max_iterations: Annotated[
+        int | None,
+        typer.Option("--max-iterations", min=1, help="Optional session iteration cap."),
+    ] = None,
+    priority: Annotated[
+        int,
+        typer.Option("--priority", help="Base queue priority for created session jobs."),
+    ] = 0,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", help="Optional session note."),
+    ] = None,
+) -> None:
+    workspace_config = load_workspace_config(config)
+    queue_store = QueueStore(workspace_config.run.artifact_root / "archonlab.db")
+    jobs = queue_store.enqueue_workspace_sessions(
+        config,
+        project_ids=[project_id] if project_id is not None else None,
+        max_iterations=max_iterations,
+        priority=priority,
+        note=note,
+    )
+    typer.echo(f"Enqueued sessions: {len(jobs)}")
+    for job in jobs:
+        typer.echo(
+            f"{job.id} | project={job.project_id} | session={job.session_id or '-'} | "
+            f"status={job.status.value}"
+        )
+
+
 @queue_app.command("run")
 def queue_run(
     config: Annotated[
@@ -1112,6 +1152,47 @@ def queue_status(
         )
 
 
+@queue_app.command("session-status")
+def queue_session_status(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    session_id: Annotated[
+        str | None,
+        typer.Option("--session-id", help="Optional session filter."),
+    ] = None,
+    project_id: Annotated[
+        str | None,
+        typer.Option("--project-id", help="Optional project filter."),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, max=200, help="Number of sessions to show."),
+    ] = 50,
+) -> None:
+    workspace_config = load_workspace_config(config)
+    event_store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+    queue_store = QueueStore(workspace_config.run.artifact_root / "archonlab.db")
+    sessions = event_store.list_sessions(
+        workspace_id=workspace_config.name,
+        project_id=project_id,
+        limit=limit,
+    )
+    if session_id is not None:
+        sessions = [session for session in sessions if session.session_id == session_id]
+    if not sessions:
+        typer.echo("No project sessions.")
+        return
+    for session in sessions:
+        active_job = queue_store.get_active_session_job(session.session_id)
+        typer.echo(
+            f"{session.session_id} | {session.project_id} | {session.status.value} | "
+            f"iterations={session.completed_iterations}/{session.max_iterations} | "
+            f"job={(active_job.id if active_job is not None else '-')}"
+        )
+
+
 @queue_app.command("workers")
 def queue_workers(
     config: Annotated[
@@ -1331,6 +1412,76 @@ def queue_requeue(
     app_config = load_config(config)
     job = QueueStore(app_config.run.artifact_root / "archonlab.db").requeue(job_id)
     typer.echo(f"Requeued: {job.id} | priority={job.priority}")
+
+
+@queue_app.command("resume-session")
+def queue_resume_session(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    session_id: Annotated[
+        str,
+        typer.Option("--session-id", help="Project session identifier."),
+    ] = "",
+    max_iterations: Annotated[
+        int | None,
+        typer.Option(
+            "--max-iterations",
+            min=1,
+            help="Optional new absolute session iteration cap before resuming.",
+        ),
+    ] = None,
+    priority: Annotated[
+        int,
+        typer.Option("--priority", help="Base queue priority for the resumed session job."),
+    ] = 0,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", help="Optional updated session note."),
+    ] = None,
+) -> None:
+    if not session_id:
+        raise typer.BadParameter("--session-id is required")
+    workspace_config = load_workspace_config(config)
+    event_store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+    session = event_store.get_session(session_id)
+    if session is None:
+        raise typer.BadParameter(f"Unknown project session: {session_id}")
+    if session.workspace_id != workspace_config.name:
+        raise typer.BadParameter(
+            f"Session {session_id} does not belong to workspace {workspace_config.name}"
+        )
+    if session.status in {SessionStatus.COMPLETED, SessionStatus.CANCELED}:
+        raise typer.BadParameter(f"Cannot resume terminal session: {session.status.value}")
+    resolved_max_iterations = max_iterations
+    if (
+        resolved_max_iterations is not None
+        and resolved_max_iterations < session.completed_iterations
+    ):
+        raise typer.BadParameter(
+            "The new --max-iterations must be >= the current completed iteration count."
+        )
+    if resolved_max_iterations is None and session.completed_iterations >= session.max_iterations:
+        raise typer.BadParameter(
+            "Session budget is exhausted; provide a larger --max-iterations to resume."
+        )
+    updated = event_store.update_session(
+        session_id,
+        status=SessionStatus.PENDING,
+        max_iterations=resolved_max_iterations,
+        clear_error_message=True,
+        note=note,
+    )
+    job = QueueStore(workspace_config.run.artifact_root / "archonlab.db").enqueue_session_quantum(
+        config,
+        session_id=updated.session_id,
+        priority=priority,
+    )
+    typer.echo(f"Session: {updated.session_id}")
+    typer.echo(f"Status: {updated.status.value}")
+    typer.echo(f"Max iterations: {updated.max_iterations}")
+    typer.echo(f"Enqueued job: {job.id}")
 
 
 def main() -> None:
