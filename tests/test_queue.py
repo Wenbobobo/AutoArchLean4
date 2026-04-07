@@ -190,7 +190,7 @@ def test_queue_store_builds_fleet_plan_from_active_jobs_and_dedicated_workers(
     assert plan.dedicated_workers == 1
     assert plan.generic_workers == 1
     assert plan.recommended_total_workers == 2
-    assert plan.recommended_additional_workers == 1
+    assert plan.recommended_additional_workers == 0
 
     cheap_profile = next(
         profile for profile in plan.profiles if profile.required_models == ["gpt-5.4-mini"]
@@ -213,6 +213,6 @@ def test_queue_store_builds_fleet_plan_from_active_jobs_and_dedicated_workers(
     assert premium_profile.active_jobs == 1
     assert premium_profile.dedicated_workers == 0
     assert premium_profile.recommended_total_workers == 1
-    assert premium_profile.recommended_additional_workers == 1
+    assert premium_profile.recommended_additional_workers == 0
     assert premium_profile.dominant_phase is ActionPhase.PROVER
     assert premium_profile.project_ids == ["demo-c"]

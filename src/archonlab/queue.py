@@ -1154,6 +1154,11 @@ class QueueStore:
                 for worker in active_workers
                 if self._worker_matches_profile_exact(worker, exemplar)
             ]
+            matching_workers = [
+                worker
+                for worker in active_workers
+                if self._job_matches_worker(exemplar, worker)
+            ]
             dedicated_worker_ids.update(worker.worker_id for worker in dedicated_workers)
             recommended_total_workers = max(
                 profile_running,
@@ -1174,7 +1179,7 @@ class QueueStore:
                     dedicated_workers=len(dedicated_workers),
                     recommended_total_workers=recommended_total_workers,
                     recommended_additional_workers=max(
-                        recommended_total_workers - len(dedicated_workers),
+                        recommended_total_workers - len(matching_workers),
                         0,
                     ),
                     dominant_phase=self._dominant_phase(aggregate["phase_counts"]),
