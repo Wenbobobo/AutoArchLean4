@@ -5,6 +5,7 @@ import subprocess
 
 from pydantic import BaseModel
 
+from .lean_analyzer import RegexLeanAnalyzer
 from .models import ProjectConfig
 
 
@@ -91,6 +92,11 @@ def gather_doctor_report(project: ProjectConfig | None = None) -> DoctorReport:
                     name="archon_state",
                     ok=(project.project_path / ".archon" / "PROGRESS.md").exists(),
                     detail=str(project.project_path / ".archon" / "PROGRESS.md"),
+                ),
+                PathStatus(
+                    name="lean_analyzer",
+                    ok=True,
+                    detail=RegexLeanAnalyzer.__name__,
                 ),
             ]
         )

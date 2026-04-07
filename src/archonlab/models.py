@@ -573,6 +573,30 @@ class ProjectSnapshot(BaseModel):
     ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class LeanDeclaration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    file_path: Path
+    declaration_kind: str
+    dependencies: list[str] = Field(default_factory=list)
+    blocked_by_sorry: bool = False
+    uses_axiom: bool = False
+
+
+class LeanAnalysisSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    project_path: Path
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    declarations: list[LeanDeclaration] = Field(default_factory=list)
+    lean_file_count: int = 0
+    theorem_count: int = 0
+    sorry_count: int = 0
+    axiom_count: int = 0
+
+
 class ProjectScore(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

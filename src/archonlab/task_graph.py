@@ -4,15 +4,20 @@ import re
 from pathlib import Path
 
 from .adapter import ArchonAdapter
+from .lean_analyzer import LeanAnalyzer, collect_lean_analysis
 from .models import ProjectConfig, TaskEdge, TaskGraph, TaskNode, TaskSource, TaskStatus
 
-DECL_PATTERN = re.compile(r"^\s*(theorem|lemma|example)\s+([A-Za-z0-9_'.]+)", re.MULTILINE)
 OBJECTIVE_PATTERN = re.compile(
     r"\*\*(?P<file>[^*]+)\*\*\s*[-—]\s*(?:fill\s+theorem\s+)?`(?P<theorem>[^`]+)`"
 )
 
 
-def build_task_graph(*, project_path: Path, archon_path: Path) -> TaskGraph:
+def build_task_graph(
+    *,
+    project_path: Path,
+    archon_path: Path,
+    analyzer: LeanAnalyzer | None = None,
+) -> TaskGraph:
     resolved_project_path = project_path.resolve()
     resolved_archon_path = archon_path.resolve()
     project = ProjectConfig(
@@ -23,53 +28,51 @@ def build_task_graph(*, project_path: Path, archon_path: Path) -> TaskGraph:
     adapter = ArchonAdapter(project)
     adapter.ensure_valid()
     progress = adapter.read_progress()
+    analysis = collect_lean_analysis(
+        project_path=resolved_project_path,
+        archon_path=resolved_archon_path,
+        analyzer=analyzer,
+    )
 
     nodes: dict[str, TaskNode] = {}
     edges: list[TaskEdge] = []
-    declaration_blocks: dict[str, str] = {}
     theorem_to_id: dict[str, str] = {}
 
     for index, objective in enumerate(progress.objectives, start=1):
         objective_node = _objective_to_node(objective, index=index)
         nodes[objective_node.id] = objective_node
 
-    for lean_file in sorted(resolved_project_path.rglob("*.lean")):
-        relative_file = lean_file.relative_to(resolved_project_path)
-        content = lean_file.read_text(encoding="utf-8")
-        declarations = list(DECL_PATTERN.finditer(content))
-        for i, match in enumerate(declarations):
-            theorem_name = match.group(2)
-            start = match.start()
-            end = declarations[i + 1].start() if i + 1 < len(declarations) else len(content)
-            block = content[start:end]
-            status = TaskStatus.BLOCKED if "sorry" in block else TaskStatus.COMPLETED
-            node_id = f"lean:{relative_file}:{theorem_name}"
-            nodes[node_id] = TaskNode(
-                id=node_id,
-                title=theorem_name,
-                status=status,
-                sources=[TaskSource.LEAN_DECLARATION],
-                file_path=relative_file,
-                theorem_name=theorem_name,
-                priority=0,
-                blockers=["contains_sorry"] if status is TaskStatus.BLOCKED else [],
-                metadata={"declaration_kind": match.group(1)},
-            )
-            declaration_blocks[node_id] = block
-            theorem_to_id[theorem_name] = node_id
+    for declaration in analysis.declarations:
+        status = TaskStatus.BLOCKED if declaration.blocked_by_sorry else TaskStatus.COMPLETED
+        node_id = f"lean:{declaration.file_path}:{declaration.name}"
+        nodes[node_id] = TaskNode(
+            id=node_id,
+            title=declaration.name,
+            status=status,
+            sources=[TaskSource.LEAN_DECLARATION],
+            file_path=declaration.file_path,
+            theorem_name=declaration.name,
+            priority=0,
+            blockers=["contains_sorry"] if status is TaskStatus.BLOCKED else [],
+            metadata={"declaration_kind": declaration.declaration_kind},
+        )
+        theorem_to_id[declaration.name] = node_id
 
-    for node_id, block in declaration_blocks.items():
-        for theorem_name, dependency_id in theorem_to_id.items():
-            if dependency_id == node_id:
+    for declaration in analysis.declarations:
+        source_id = theorem_to_id.get(declaration.name)
+        if source_id is None:
+            continue
+        for dependency in declaration.dependencies:
+            dependency_id = theorem_to_id.get(dependency)
+            if dependency_id is None or dependency_id == source_id:
                 continue
-            if re.search(rf"\b{re.escape(theorem_name)}\b", block):
-                edges.append(
-                    TaskEdge(
-                        source_id=node_id,
-                        target_id=dependency_id,
-                        kind="depends_on",
-                    )
+            edges.append(
+                TaskEdge(
+                    source_id=source_id,
+                    target_id=dependency_id,
+                    kind="depends_on",
                 )
+            )
 
     for objective_node in list(nodes.values()):
         if TaskSource.OBJECTIVE not in objective_node.sources:
