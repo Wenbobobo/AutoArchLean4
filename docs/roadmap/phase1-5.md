@@ -64,6 +64,7 @@
 - benchmark queue 的单个 job 现在对应单个 benchmark project，而不是整份 manifest
 - queue worker lease / heartbeat telemetry 已落地
 - 独立 `queue worker` 进程模式已落地，可跨进程共享队列
+- 独立 `queue worker` 现已支持 auto-slot，可自动认领空闲 slot
 - Phase 4 的最小契约测试已经覆盖 task graph、supervisor、worktree
 
 ## Phase 5: workflow 与最小 UI
@@ -87,6 +88,7 @@
 - provider/executor 抽象，可切换 `dry_run` / `codex_exec` / OpenAI-compatible HTTP
 - `run start --execute` 已接通 executor
 - phase-aware execution policy 已接通，可按 `plan / prover / review` 选不同 executor/provider
+- task/theorem-aware execution policy 已接通，可按 file/theorem/status/source 单独改 executor/provider
 - benchmark queue / batch runner 已支持 slot-aware 并发
 
 ## 优先级原则

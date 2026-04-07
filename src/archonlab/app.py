@@ -542,6 +542,13 @@ def queue_worker(
         int,
         typer.Option("--slot-index", min=1, help="Stable worker slot index."),
     ] = 1,
+    auto_slot: Annotated[
+        bool,
+        typer.Option(
+            "--auto-slot/--manual-slot",
+            help="Automatically claim the next free worker slot.",
+        ),
+    ] = False,
     max_jobs: Annotated[
         int | None,
         typer.Option("--max-jobs", min=1, help="Optional maximum jobs for this worker."),
@@ -575,13 +582,18 @@ def queue_worker(
         slot_limit=1,
     )
     report = runner.run_worker(
-        slot_index=slot_index,
+        slot_index=None if auto_slot else slot_index,
         max_jobs=max_jobs,
         poll_seconds=poll_seconds,
         idle_timeout_seconds=idle_timeout_seconds,
         worker_id=worker_id,
         note=note,
     )
+    if report.worker_ids:
+        lease = runner.queue_store.get_worker(report.worker_ids[0])
+        if lease is not None:
+            typer.echo(f"Worker id: {lease.worker_id}")
+            typer.echo(f"Worker slot: {lease.slot_index}")
     typer.echo(f"Processed: {len(report.processed_job_ids)}")
     typer.echo(f"Paused: {len(report.paused_job_ids)}")
     typer.echo(f"Failed: {len(report.failed_job_ids)}")

@@ -91,7 +91,10 @@ def select_next_action(
         prompt_preview=prompt_preview,
         task_id=focus_task.id if focus_task is not None else None,
         task_title=focus_task.title if focus_task is not None else None,
+        theorem_name=focus_task.theorem_name if focus_task is not None else None,
         file_path=focus_task.file_path if focus_task is not None else None,
+        task_status=focus_task.status if focus_task is not None else None,
+        task_sources=focus_task.sources if focus_task is not None else [],
         supervisor_action=supervisor.action,
         supervisor_reason=supervisor.reason,
     )

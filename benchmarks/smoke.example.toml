@@ -33,6 +33,19 @@ kind = "codex_exec"
 [phase_provider.review]
 model = "gpt-5.4-mini"
 
+[task_matcher.core_focus]
+phase = "prover"
+file_path_pattern = "Core\\.lean$"
+theorem_pattern = "^main_theorem$"
+task_status = "blocked"
+task_sources = ["lean_declaration"]
+
+[task_executor.core_focus]
+kind = "codex_exec"
+
+[task_provider.core_focus]
+model = "gpt-5.4"
+
 [[projects]]
 id = "example-project"
 path = "../path/to/lean-project"

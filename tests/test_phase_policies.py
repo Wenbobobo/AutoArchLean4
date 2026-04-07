@@ -9,6 +9,8 @@ from archonlab.models import (
     ExecutionResult,
     ExecutionStatus,
     ExecutorKind,
+    TaskSource,
+    TaskStatus,
 )
 from archonlab.services import RunService
 
@@ -161,3 +163,125 @@ def test_run_service_can_route_phase_specific_executor_and_provider(
     assert resolved[1]["resolved_model"] == "prover-model"
     assert resolved[2]["resolved_executor"] is ExecutorKind.CODEX_EXEC
     assert resolved[2]["resolved_model"] == "review-model"
+
+
+def test_run_service_can_route_task_specific_executor_and_provider(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = false\n\n"
+        "[executor]\n"
+        'kind = "openai_compatible"\n'
+        "\n"
+        "[provider]\n"
+        'model = "baseline-model"\n'
+        "[phase_provider.prover]\n"
+        'model = "phase-model"\n'
+        "\n"
+        "[task_matcher.core_focus]\n"
+        'phase = "prover"\n'
+        'file_path_pattern = "Core\\\\.lean$"\n'
+        'theorem_pattern = "^foo$"\n'
+        'task_status = "blocked"\n'
+        'task_sources = ["lean_declaration"]\n'
+        "\n"
+        "[task_executor.core_focus]\n"
+        'kind = "codex_exec"\n'
+        "\n"
+        "[task_provider.core_focus]\n"
+        'model = "task-model"\n',
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+
+    resolved: list[dict[str, object]] = []
+
+    class CapturingExecutor:
+        def execute(
+            self,
+            request_or_prompt: ExecutionRequest | str,
+            system_prompt: str | None = None,
+        ) -> ExecutionResult:
+            del system_prompt
+            assert isinstance(request_or_prompt, ExecutionRequest)
+            return ExecutionResult(
+                executor=resolved[-1]["executor_kind"],
+                status=ExecutionStatus.COMPLETED,
+                response_text=str(resolved[-1]["model"]),
+                metadata={
+                    "provider": "captured",
+                    "model": resolved[-1]["model"],
+                },
+            )
+
+    monkeypatch.setattr(
+        "archonlab.services.create_executor",
+        lambda **kwargs: resolved.append(
+            {
+                "executor_kind": kwargs["executor_config"].kind,
+                "model": kwargs["provider_config"].model,
+            }
+        )
+        or CapturingExecutor(),
+    )
+
+    service = RunService(config)
+
+    monkeypatch.setattr(
+        "archonlab.services.select_next_action",
+        lambda *args, **kwargs: AdapterAction(
+            phase="prover",
+            reason="task_specific_policy",
+            stage="prover",
+            prompt_preview="target foo",
+            task_id="lean:Core.lean:foo",
+            task_title="foo",
+            theorem_name="foo",
+            file_path=Path("Core.lean"),
+            task_status=TaskStatus.BLOCKED,
+            task_sources=[TaskSource.LEAN_DECLARATION],
+        ),
+    )
+    first_result = service.start(dry_run=False)
+
+    monkeypatch.setattr(
+        "archonlab.services.select_next_action",
+        lambda *args, **kwargs: AdapterAction(
+            phase="prover",
+            reason="phase_fallback_policy",
+            stage="prover",
+            prompt_preview="target bar",
+            task_id="lean:Aux.lean:bar",
+            task_title="bar",
+            theorem_name="bar",
+            file_path=Path("Aux.lean"),
+            task_status=TaskStatus.BLOCKED,
+            task_sources=[TaskSource.LEAN_DECLARATION],
+        ),
+    )
+    second_result = service.start(dry_run=False)
+
+    assert first_result.execution is not None
+    assert first_result.execution.executor is ExecutorKind.CODEX_EXEC
+    assert first_result.execution.metadata["model"] == "task-model"
+
+    assert second_result.execution is not None
+    assert second_result.execution.executor is ExecutorKind.OPENAI_COMPATIBLE
+    assert second_result.execution.metadata["model"] == "phase-model"
+
+    assert resolved[0]["executor_kind"] is ExecutorKind.CODEX_EXEC
+    assert resolved[0]["model"] == "task-model"
+    assert resolved[1]["executor_kind"] is ExecutorKind.OPENAI_COMPATIBLE
+    assert resolved[1]["model"] == "phase-model"

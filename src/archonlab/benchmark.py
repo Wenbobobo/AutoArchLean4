@@ -44,6 +44,9 @@ def load_benchmark_manifest(manifest_path: Path) -> BenchmarkManifest:
     provider_raw = raw.get("provider", {})
     phase_executor_raw = raw.get("phase_executor", {})
     phase_provider_raw = raw.get("phase_provider", {})
+    task_matcher_raw = raw.get("task_matcher", {})
+    task_executor_raw = raw.get("task_executor", {})
+    task_provider_raw = raw.get("task_provider", {})
 
     projects = [
         BenchmarkProjectConfig(
@@ -100,6 +103,9 @@ def load_benchmark_manifest(manifest_path: Path) -> BenchmarkManifest:
             base_provider=provider,
             phase_executor_raw=phase_executor_raw if isinstance(phase_executor_raw, dict) else {},
             phase_provider_raw=phase_provider_raw if isinstance(phase_provider_raw, dict) else {},
+            task_matcher_raw=task_matcher_raw if isinstance(task_matcher_raw, dict) else {},
+            task_executor_raw=task_executor_raw if isinstance(task_executor_raw, dict) else {},
+            task_provider_raw=task_provider_raw if isinstance(task_provider_raw, dict) else {},
         ),
     )
 

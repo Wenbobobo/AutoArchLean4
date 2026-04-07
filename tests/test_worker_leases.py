@@ -265,3 +265,16 @@ def test_batch_worker_uses_worker_specific_worktree_root(
     assert captured["worktree_root"] == (
         tmp_path / "batch-artifacts" / "queue-worktrees" / worker_id
     )
+
+
+def test_queue_store_auto_assigns_next_available_worker_slot(tmp_path: Path) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+
+    first = queue_store.register_worker(slot_index=1, worker_id="worker-a")
+    second = queue_store.register_worker(slot_index=None, worker_id="worker-b")
+    queue_store.stop_worker(first.worker_id)
+    third = queue_store.register_worker(slot_index=None, worker_id="worker-c")
+
+    assert first.slot_index == 1
+    assert second.slot_index == 2
+    assert third.slot_index == 1

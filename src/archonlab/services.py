@@ -192,7 +192,12 @@ class RunService:
                     "prompt_path": str(prompt_path),
                     "task_id": action.task_id,
                     "task_title": action.task_title,
+                    "theorem_name": action.theorem_name,
                     "file_path": str(action.file_path) if action.file_path is not None else None,
+                    "task_status": (
+                        action.task_status.value if action.task_status is not None else None
+                    ),
+                    "task_sources": [source.value for source in action.task_sources],
                     "supervisor_action": (
                         action.supervisor_action.value
                         if action.supervisor_action is not None
@@ -242,6 +247,7 @@ class RunService:
             resolved_executor, resolved_provider = resolve_app_phase_configs(
                 self.config,
                 phase=action.phase,
+                action=action,
             )
             executor = create_executor(
                 executor_config=resolved_executor,

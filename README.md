@@ -46,6 +46,7 @@ uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --use-wo
 uv run archonlab queue enqueue-benchmark --config archonlab.toml --manifest benchmarks/smoke.example.toml
 uv run archonlab queue run --config archonlab.toml --slots 4
 uv run archonlab queue worker --config archonlab.toml --slot-index 1 --max-jobs 10
+uv run archonlab queue worker --config archonlab.toml --auto-slot --max-jobs 10
 uv run archonlab queue status --config archonlab.toml
 uv run archonlab queue workers --config archonlab.toml
 uv run archonlab control pause --config archonlab.toml --reason "manual_hold"
@@ -73,6 +74,7 @@ benchmark 则已经支持在隔离 `git worktree` 中运行。
 queue/batch 层已经支持 benchmark 作业排队、slot-aware 并发处理、pause-aware 跳过和 job 级 artifacts。
 queue worker 现在会留下可查询的 lease / heartbeat / 当前 job telemetry。
 你现在还可以单独启动 `queue worker` 进程，让多个外部 worker 共享同一个 sqlite 队列。
+独立 worker 现在支持 `--auto-slot`，可以自动抢占当前空闲 slot，而不必人工分配编号。
 
 ## 执行器配置
 
@@ -124,6 +126,30 @@ model = "gpt-5.4-mini"
 - `prover` 走更强模型或 OpenAI-compatible endpoint
 - `review` 走 `codex_exec`
 
+## Task Policy
+
+如果 phase 级策略还不够细，可以继续按 theorem/task 匹配 executor/provider。
+
+```toml
+[task_matcher.core_focus]
+phase = "prover"
+file_path_pattern = "Core\\.lean$"
+theorem_pattern = "^foo$"
+task_status = "blocked"
+task_sources = ["lean_declaration"]
+
+[task_executor.core_focus]
+kind = "codex_exec"
+
+[task_provider.core_focus]
+model = "gpt-5.4"
+```
+
+常见用法是：
+- 只让关键 theorem 走更强模型
+- 对某个文件或 theorem family 单独切换 provider
+- 保持 `plan/review` 便宜，把预算集中到最难的 prover task
+
 ## Worker Pool
 
 有两种跑法：
@@ -132,6 +158,8 @@ model = "gpt-5.4-mini"
   适合单机内快速起一个本地线程池。
 - `queue worker --slot-index N`
   适合起多个独立 worker 进程，共享同一个队列数据库。
+- `queue worker --auto-slot`
+  适合 worker 数量不固定时自动认领空闲 slot。
 
 `queue worker` 模式下，每个 worker 都会：
 - 注册自己的 lease

@@ -81,9 +81,11 @@ class BatchRunner:
                 slot_index=slot_index,
                 worker_id=worker_id,
                 thread_name=threading.current_thread().name,
-                worktree_root=self._worker_worktree_root(
-                    worker_id=worker_id,
-                    slot_index=slot_index,
+                worktree_root_factory=lambda resolved_worker_id, resolved_slot_index: (
+                    self._worker_worktree_root(
+                        worker_id=resolved_worker_id,
+                        slot_index=resolved_slot_index,
+                    )
                 ),
             )
             with report_lock:
@@ -133,7 +135,7 @@ class BatchRunner:
     def run_worker(
         self,
         *,
-        slot_index: int,
+        slot_index: int | None,
         max_jobs: int | None = None,
         poll_seconds: float = 2.0,
         idle_timeout_seconds: float = 30.0,
@@ -148,9 +150,11 @@ class BatchRunner:
             worker_id=resolved_worker_id,
             thread_name=threading.current_thread().name,
             note=note,
-            worktree_root=self._worker_worktree_root(
-                worker_id=resolved_worker_id,
-                slot_index=slot_index,
+            worktree_root_factory=lambda assigned_worker_id, assigned_slot_index: (
+                self._worker_worktree_root(
+                    worker_id=assigned_worker_id,
+                    slot_index=assigned_slot_index,
+                )
             ),
         )
         report.worker_ids.append(worker.worker_id)

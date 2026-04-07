@@ -41,6 +41,9 @@ uv run archonlab queue workers --config archonlab.toml
 # 9. 如果你想分离成独立 worker 进程
 uv run archonlab queue worker --config archonlab.toml --slot-index 1 --max-jobs 1
 
+# 9b. 如果你不想手工分配 worker slot
+uv run archonlab queue worker --config archonlab.toml --auto-slot --max-jobs 1
+
 # 10. 启动控制面 dashboard
 uv run archonlab dashboard serve --config archonlab.toml --port 8000
 
@@ -59,6 +62,7 @@ uv run archonlab dashboard serve --config archonlab.toml --port 8000
 - `execution.json` 里有没有真实 executor 输出
 - `queue workers` 能不能看到 slot / current job / processed 统计
 - 独立 `queue worker` 跑完后，worker 是否进入 `stopped`
+- `--auto-slot` 启动的 worker 能不能自动拿到空闲 slot
 - 日志里是正常推进还是反复 stuck
 
 ## 你第一次不用做什么

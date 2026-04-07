@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -304,21 +305,17 @@ class QueueStore:
     def register_worker(
         self,
         *,
-        slot_index: int,
+        slot_index: int | None,
         worker_id: str | None = None,
         thread_name: str | None = None,
         note: str | None = None,
         worktree_root: Path | None = None,
+        worktree_root_factory: Callable[[str, int], Path] | None = None,
     ) -> QueueWorkerLease:
-        lease = QueueWorkerLease(
-            worker_id=worker_id or self._new_worker_id(),
-            slot_index=slot_index,
-            status=WorkerStatus.IDLE,
-            thread_name=thread_name,
-            note=note,
-            worktree_root=worktree_root,
-        )
+        resolved_worker_id = worker_id or self._new_worker_id()
         with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            resolved_slot_index = slot_index or self._next_available_slot_locked()
             active_row = self._conn.execute(
                 """
                 SELECT worker_id FROM queue_workers
@@ -326,16 +323,31 @@ class QueueStore:
                 LIMIT 1
                 """,
                 (
-                    slot_index,
+                    resolved_slot_index,
                     WorkerStatus.IDLE.value,
                     WorkerStatus.RUNNING.value,
                 ),
             ).fetchone()
-            if active_row is not None and str(active_row["worker_id"]) != lease.worker_id:
+            if active_row is not None and str(active_row["worker_id"]) != resolved_worker_id:
                 active_worker_id = str(active_row["worker_id"])
+                self._conn.rollback()
                 raise RuntimeError(
-                    f"Slot {slot_index} is already held by {active_worker_id}"
+                    f"Slot {resolved_slot_index} is already held by {active_worker_id}"
                 )
+            resolved_worktree_root = worktree_root
+            if resolved_worktree_root is None and worktree_root_factory is not None:
+                resolved_worktree_root = worktree_root_factory(
+                    resolved_worker_id,
+                    resolved_slot_index,
+                )
+            lease = QueueWorkerLease(
+                worker_id=resolved_worker_id,
+                slot_index=resolved_slot_index,
+                status=WorkerStatus.IDLE,
+                thread_name=thread_name,
+                note=note,
+                worktree_root=resolved_worktree_root,
+            )
             self._conn.execute(
                 """
                 INSERT INTO queue_workers (
@@ -362,6 +374,24 @@ class QueueStore:
             )
             self._conn.commit()
         return lease
+
+    def _next_available_slot_locked(self, *, start_at: int = 1) -> int:
+        rows = self._conn.execute(
+            """
+            SELECT slot_index FROM queue_workers
+            WHERE status IN (?, ?)
+            ORDER BY slot_index ASC
+            """,
+            (
+                WorkerStatus.IDLE.value,
+                WorkerStatus.RUNNING.value,
+            ),
+        ).fetchall()
+        occupied = {int(row["slot_index"]) for row in rows}
+        candidate = start_at
+        while candidate in occupied:
+            candidate += 1
+        return candidate
 
     def list_workers(self, *, include_stopped: bool = True) -> list[QueueWorkerLease]:
         with self._lock:

@@ -207,7 +207,10 @@ class AdapterAction(BaseModel):
     prompt_preview: str | None = None
     task_id: str | None = None
     task_title: str | None = None
+    theorem_name: str | None = None
     file_path: Path | None = None
+    task_status: TaskStatus | None = None
+    task_sources: list[TaskSource] = Field(default_factory=list)
     supervisor_action: SupervisorAction | None = None
     supervisor_reason: SupervisorReason | None = None
 
@@ -524,7 +527,34 @@ class ExecutionPhaseOverride(BaseModel):
     provider: ProviderConfig | None = None
 
 
+class ExecutionTaskMatcher(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    phase: ActionPhase | None = None
+    task_id: str | None = None
+    task_title: str | None = None
+    theorem_name: str | None = None
+    file_path: Path | None = None
+    task_status: TaskStatus | None = None
+    task_sources: list[TaskSource] = Field(default_factory=list)
+    task_id_pattern: str | None = None
+    task_title_pattern: str | None = None
+    theorem_pattern: str | None = None
+    file_path_pattern: str | None = None
+
+
+class ExecutionTaskOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    matcher: ExecutionTaskMatcher
+    executor: ExecutorConfig | None = None
+    provider: ProviderConfig | None = None
+
+
 class ExecutionPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     phases: dict[ActionPhase, ExecutionPhaseOverride] = Field(default_factory=dict)
+    task_rules: list[ExecutionTaskOverride] = Field(default_factory=list)
