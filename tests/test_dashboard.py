@@ -127,6 +127,8 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert 'id="workspace-runtime-summary"' in index_response.text
     assert 'id="workspace-provider-runtime"' in index_response.text
     assert 'id="workspace-provider-health"' in index_response.text
+    assert 'id="workspace-enqueue-button"' in index_response.text
+    assert 'id="workspace-resume-button"' in index_response.text
 
     runs_response = client.get("/api/runs")
     assert runs_response.status_code == 200
@@ -534,6 +536,8 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert 'id="workspace-runtime-summary"' in index_response.text
     assert 'id="workspace-provider-runtime"' in index_response.text
     assert 'id="workspace-provider-health"' in index_response.text
+    assert 'id="workspace-enqueue-button"' in index_response.text
+    assert 'id="workspace-resume-button"' in index_response.text
 
     overview_response = client.get("/api/workspace/overview")
     assert overview_response.status_code == 200
@@ -565,6 +569,29 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert overview["provider_health"][0]["members"][1]["status"] == "quarantined"
     alpha_session = next(item for item in overview["sessions"] if item["project_id"] == "alpha")
     assert alpha_session["remaining_iterations"] == 4
+
+    enqueue_response = client.post(
+        "/api/workspace/enqueue",
+        json={"project_id": "alpha", "priority": 9, "note": "from_dashboard"},
+    )
+    assert enqueue_response.status_code == 200
+    enqueue_payload = enqueue_response.json()
+    assert len(enqueue_payload) == 1
+    assert enqueue_payload[0]["project_id"] == "alpha"
+    assert enqueue_payload[0]["session_id"] == "session-alpha-1"
+
+    resume_response = client.post(
+        "/api/workspace/resume",
+        json={"project_id": "beta", "resume_reason": "dashboard_resume"},
+    )
+    assert resume_response.status_code == 200
+    resume_payload = resume_response.json()
+    assert len(resume_payload["resumed"]) == 1
+    assert resume_payload["resumed"][0]["session"]["project_id"] == "beta"
+    assert resume_payload["resumed"][0]["job"]["session_id"] == "session-beta-1"
+    resumed_beta = store.get_session("session-beta-1")
+    assert resumed_beta is not None
+    assert resumed_beta.last_resume_reason == "dashboard_resume"
 
     beta_preview_response = client.get("/api/projects/beta/preview")
     assert beta_preview_response.status_code == 200

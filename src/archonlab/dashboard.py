@@ -73,6 +73,22 @@ class QueueSweepWorkersRequest(BaseModel):
     requeue_running_jobs: bool = True
 
 
+class WorkspaceEnqueueRequest(BaseModel):
+    project_id: str | None = None
+    max_iterations: int | None = None
+    dry_run: bool | None = None
+    priority: int = 0
+    note: str | None = None
+
+
+class WorkspaceResumeRequest(BaseModel):
+    project_id: str | None = None
+    max_iterations: int | None = None
+    priority: int = 0
+    resume_reason: str | None = None
+    note: str | None = None
+
+
 class WorkflowOverrideRequest(BaseModel):
     workflow: WorkflowMode | None = None
     workflow_spec_path: Path | None = None
@@ -245,6 +261,62 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             limit_sessions=limit_sessions,
         )
 
+    @app.post("/api/workspace/enqueue")
+    def enqueue_workspace(body: WorkspaceEnqueueRequest) -> list[dict[str, Any]]:
+        resolved_workspace = _require_workspace_mode(workspace_config)
+        if body.project_id is not None and body.project_id not in {
+            project.id for project in resolved_workspace.projects
+        }:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown workspace project: {body.project_id}",
+            )
+        jobs = queue.enqueue_workspace_sessions(
+            resolved_config_path,
+            project_ids=[body.project_id] if body.project_id is not None else None,
+            max_iterations=body.max_iterations,
+            dry_run=body.dry_run,
+            priority=body.priority,
+            note=body.note,
+        )
+        return [job.model_dump(mode="json") for job in jobs]
+
+    @app.post("/api/workspace/resume")
+    def resume_workspace(body: WorkspaceResumeRequest) -> dict[str, Any]:
+        resolved_workspace = _require_workspace_mode(workspace_config)
+        if body.project_id is not None and body.project_id not in {
+            project.id for project in resolved_workspace.projects
+        }:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown workspace project: {body.project_id}",
+            )
+        result = queue.resume_workspace_sessions(
+            resolved_config_path,
+            project_ids=[body.project_id] if body.project_id is not None else None,
+            max_iterations=body.max_iterations,
+            priority=body.priority,
+            resume_reason=body.resume_reason,
+            note=body.note,
+        )
+        return {
+            "resumed": [
+                {
+                    "session": session.model_dump(mode="json"),
+                    "job": job.model_dump(mode="json"),
+                }
+                for session, job in result.resumed
+            ],
+            "skipped": [
+                {
+                    "project_id": item.project_id,
+                    "session_id": item.session_id,
+                    "reason": item.reason,
+                }
+                for item in result.skipped
+            ],
+        }
+
     @app.get("/api/queue/jobs")
     def list_queue_jobs(limit: int = 50) -> list[dict[str, Any]]:
         return [job.model_dump(mode="json") for job in queue.list_jobs(limit=limit)]
@@ -362,6 +434,12 @@ def _resolve_dashboard_path(base_dir: Path, raw_path: Path) -> Path:
     if raw_path.is_absolute():
         return raw_path.resolve()
     return (base_dir / raw_path).resolve()
+
+
+def _require_workspace_mode(workspace_config: WorkspaceConfig | None) -> WorkspaceConfig:
+    if workspace_config is None:
+        raise HTTPException(status_code=400, detail="Workspace mode is required for this action.")
+    return workspace_config
 
 
 def _build_workspace_overview(
@@ -1034,9 +1112,15 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
 
       <section class="panel" style="margin-top: 18px;">
         <div class="section-head">
-          <h2>Workspace Overview</h2>
-          <div class="meta" id="workspace-overview-meta">
-            Aggregate sessions, queue pressure, and worker health across the workspace.
+          <div>
+            <h2>Workspace Overview</h2>
+            <div class="meta" id="workspace-overview-meta">
+              Aggregate sessions, queue pressure, and worker health across the workspace.
+            </div>
+          </div>
+          <div class="compact-controls">
+            <button class="secondary" id="workspace-enqueue-button">Enqueue Workspace</button>
+            <button class="secondary" id="workspace-resume-button">Resume Sessions</button>
           </div>
         </div>
         <div class="preview-grid">
@@ -1144,6 +1228,8 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       const workspaceProviderRuntime = document.getElementById("workspace-provider-runtime");
       const workspaceProviderHealth = document.getElementById("workspace-provider-health");
       const workspaceWorkerPool = document.getElementById("workspace-worker-pool");
+      const workspaceEnqueueButton = document.getElementById("workspace-enqueue-button");
+      const workspaceResumeButton = document.getElementById("workspace-resume-button");
       let latestJobs = [];
       let selectedQueueJobId = null;
 
@@ -1625,6 +1711,9 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         workspaceOverviewMeta.textContent =
           `${{payload.workspace}} · ${{payload.project_count}} projects · ` +
           `${{payload.session_count}} sessions`;
+        const workspaceMode = payload.mode === "workspace";
+        workspaceEnqueueButton.disabled = !workspaceMode;
+        workspaceResumeButton.disabled = !workspaceMode;
         workspaceOverviewSummary.innerHTML = renderFacts([
           ["mode", payload.mode || "-"],
           ["projects", `${{payload.project_count || 0}}`],
@@ -1741,6 +1830,8 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
 
       function renderWorkspaceOverviewError(message) {{
         workspaceOverviewMeta.textContent = "Workspace overview unavailable.";
+        workspaceEnqueueButton.disabled = true;
+        workspaceResumeButton.disabled = true;
         workspaceOverviewSummary.innerHTML =
           '<div class="meta">Workspace overview unavailable.</div>';
         workspaceRuntimeSummary.innerHTML =
@@ -1895,6 +1986,24 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify({{ stale_after_seconds: 120, requeue_running_jobs: true }}),
+        }});
+        await refresh();
+      }});
+
+      workspaceEnqueueButton.addEventListener("click", async () => {{
+        await fetchJson(`/api/workspace/enqueue`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{ note: "dashboard_enqueue_workspace" }}),
+        }});
+        await refresh();
+      }});
+
+      workspaceResumeButton.addEventListener("click", async () => {{
+        await fetchJson(`/api/workspace/resume`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{ resume_reason: "dashboard_resume_workspace" }}),
         }});
         await refresh();
       }});
