@@ -42,6 +42,8 @@ def collect_project_snapshot(
         analysis_backend=analysis.backend,
         analysis_fallback_used=analysis.fallback_used,
         analysis_fallback_reason=analysis.fallback_reason,
+        proof_gap_count=len(analysis.proof_gaps),
+        diagnostic_count=len(analysis.diagnostics),
         lean_file_count=analysis.lean_file_count,
         theorem_count=analysis.theorem_count,
         sorry_count=analysis.sorry_count,

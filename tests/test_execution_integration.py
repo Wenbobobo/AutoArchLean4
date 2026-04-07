@@ -225,6 +225,23 @@ def test_run_service_preview_uses_configured_command_lean_analyzer(
         '    "theorem_count": 3,\n'
         '    "sorry_count": 1,\n'
         '    "axiom_count": 0,\n'
+        '    "proof_gaps": [\n'
+        '        {\n'
+        '            "kind": "unsolved_goal",\n'
+        '            "theorem_name": "injected_goal",\n'
+        '            "file_path": "Injected.lean",\n'
+        '            "message": "goal remains"\n'
+        '        }\n'
+        '    ],\n'
+        '    "diagnostics": [\n'
+        '        {\n'
+        '            "severity": "error",\n'
+        '            "message": "type mismatch",\n'
+        '            "theorem_name": "injected_goal",\n'
+        '            "file_path": "Injected.lean",\n'
+        '            "code": "lean.type_mismatch"\n'
+        '        }\n'
+        '    ],\n'
         '    "declarations": [\n'
         '        {\n'
         '            "name": "injected_goal",\n'
@@ -264,7 +281,18 @@ def test_run_service_preview_uses_configured_command_lean_analyzer(
     assert preview.snapshot.sorry_count == 1
     assert preview.snapshot.analysis_backend == "command"
     assert preview.snapshot.analysis_fallback_used is False
-    assert any(node.id == "lean:Injected.lean:injected_goal" for node in preview.task_graph.nodes)
+    assert preview.snapshot.proof_gap_count == 1
+    assert preview.snapshot.diagnostic_count == 1
+    node = next(
+        node
+        for node in preview.task_graph.nodes
+        if node.id == "lean:Injected.lean:injected_goal"
+    )
+    assert node.blockers == [
+        "contains_sorry",
+        "proof_gap:unsolved_goal",
+        "diagnostic:lean.type_mismatch",
+    ]
 
 
 def test_run_service_preview_falls_back_when_command_lean_analyzer_fails(
@@ -303,6 +331,8 @@ def test_run_service_preview_falls_back_when_command_lean_analyzer_fails(
     assert preview.snapshot.analysis_backend == "regex"
     assert preview.snapshot.analysis_fallback_used is True
     assert "Lean analyzer command failed" in (preview.snapshot.analysis_fallback_reason or "")
+    assert preview.snapshot.proof_gap_count >= 1
+    assert preview.snapshot.diagnostic_count == 0
     assert preview.supervisor.action.value == "investigate_infra"
     assert preview.supervisor.reason.value == "analyzer_degraded"
 

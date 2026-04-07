@@ -11,6 +11,7 @@ from .models import (
     LeanAnalyzerConfig,
     LeanAnalyzerKind,
     LeanDeclaration,
+    LeanProofGap,
 )
 
 DECL_PATTERN = re.compile(r"^\s*(theorem|lemma|example)\s+([A-Za-z0-9_'.]+)", re.MULTILINE)
@@ -28,6 +29,7 @@ class RegexLeanAnalyzer:
         del archon_path
         resolved_project_path = project_path.resolve()
         declarations: list[LeanDeclaration] = []
+        proof_gaps: list[LeanProofGap] = []
         declaration_blocks: dict[str, str] = {}
         lean_file_count = 0
         theorem_count = 0
@@ -56,6 +58,24 @@ class RegexLeanAnalyzer:
                         uses_axiom="axiom" in block,
                     )
                 )
+                if "sorry" in block:
+                    proof_gaps.append(
+                        LeanProofGap(
+                            kind="contains_sorry",
+                            theorem_name=name,
+                            file_path=relative_file,
+                            message="declaration contains sorry",
+                        )
+                    )
+                if "axiom" in block:
+                    proof_gaps.append(
+                        LeanProofGap(
+                            kind="uses_axiom",
+                            theorem_name=name,
+                            file_path=relative_file,
+                            message="declaration uses axiom",
+                        )
+                    )
                 declaration_blocks[name] = block
 
         known_names = {declaration.name for declaration in declarations}
@@ -80,6 +100,7 @@ class RegexLeanAnalyzer:
             project_path=resolved_project_path,
             backend="regex",
             declarations=declarations,
+            proof_gaps=proof_gaps,
             lean_file_count=lean_file_count,
             theorem_count=theorem_count,
             sorry_count=sorry_count,

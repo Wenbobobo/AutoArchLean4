@@ -676,6 +676,8 @@ class ProjectSnapshot(BaseModel):
     analysis_backend: str = "regex"
     analysis_fallback_used: bool = False
     analysis_fallback_reason: str | None = None
+    proof_gap_count: int = 0
+    diagnostic_count: int = 0
     lean_file_count: int
     theorem_count: int
     sorry_count: int
@@ -694,6 +696,25 @@ class LeanDeclaration(BaseModel):
     uses_axiom: bool = False
 
 
+class LeanProofGap(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str
+    message: str | None = None
+    file_path: Path | None = None
+    theorem_name: str | None = None
+
+
+class LeanDiagnostic(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    severity: str = "error"
+    message: str
+    code: str | None = None
+    file_path: Path | None = None
+    theorem_name: str | None = None
+
+
 class LeanAnalysisSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -704,6 +725,8 @@ class LeanAnalysisSnapshot(BaseModel):
     fallback_used: bool = False
     fallback_reason: str | None = None
     declarations: list[LeanDeclaration] = Field(default_factory=list)
+    proof_gaps: list[LeanProofGap] = Field(default_factory=list)
+    diagnostics: list[LeanDiagnostic] = Field(default_factory=list)
     lean_file_count: int = 0
     theorem_count: int = 0
     sorry_count: int = 0

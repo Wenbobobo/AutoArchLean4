@@ -104,6 +104,7 @@ def _smoke_check_lean_analyzer(
     )
     detail = (
         f"{detail} | backend={snapshot.backend} | theorem_count={snapshot.theorem_count} | "
+        f"proof_gaps={len(snapshot.proof_gaps)} | diagnostics={len(snapshot.diagnostics)} | "
         f"fallback={'yes' if snapshot.fallback_used else 'no'}"
     )
     if snapshot.fallback_reason:

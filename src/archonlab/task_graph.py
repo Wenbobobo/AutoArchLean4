@@ -7,6 +7,8 @@ from .adapter import ArchonAdapter
 from .lean_analyzer import LeanAnalyzer, collect_lean_analysis
 from .models import (
     LeanDeclaration,
+    LeanDiagnostic,
+    LeanProofGap,
     ProjectConfig,
     TaskEdge,
     TaskGraph,
@@ -52,6 +54,19 @@ def build_task_graph(
 
     for declaration in analysis.declarations:
         node_id = f"lean:{declaration.file_path}:{declaration.name}"
+        proof_gap_blockers = _proof_gap_blockers_for_declaration(
+            declaration=declaration,
+            proof_gaps=analysis.proof_gaps,
+        )
+        diagnostic_blockers = _diagnostic_blockers_for_declaration(
+            declaration=declaration,
+            diagnostics=analysis.diagnostics,
+        )
+        blockers = _dedupe_preserve_order(
+            _direct_declaration_blockers(declaration)
+            + proof_gap_blockers
+            + diagnostic_blockers
+        )
         nodes[node_id] = TaskNode(
             id=node_id,
             title=declaration.name,
@@ -60,8 +75,12 @@ def build_task_graph(
             file_path=declaration.file_path,
             theorem_name=declaration.name,
             priority=0,
-            blockers=_direct_declaration_blockers(declaration),
-            metadata={"declaration_kind": declaration.declaration_kind},
+            blockers=blockers,
+            metadata={
+                "declaration_kind": declaration.declaration_kind,
+                "proof_gap_count": len(proof_gap_blockers),
+                "diagnostic_count": len(diagnostic_blockers),
+            },
         )
         theorem_to_id[declaration.name] = node_id
 
@@ -169,6 +188,59 @@ def _direct_declaration_blockers(declaration: LeanDeclaration) -> list[str]:
     if declaration.uses_axiom:
         blockers.append("uses_axiom")
     return blockers
+
+
+def _proof_gap_blockers_for_declaration(
+    *,
+    declaration: LeanDeclaration,
+    proof_gaps: list[LeanProofGap],
+) -> list[str]:
+    blockers: list[str] = []
+    for gap in proof_gaps:
+        if not _issue_matches_declaration(
+            declaration=declaration,
+            theorem_name=gap.theorem_name,
+            file_path=gap.file_path,
+        ):
+            continue
+        if gap.kind in {"contains_sorry", "uses_axiom"}:
+            blockers.append(gap.kind)
+        else:
+            blockers.append(f"proof_gap:{gap.kind}")
+    return blockers
+
+
+def _diagnostic_blockers_for_declaration(
+    *,
+    declaration: LeanDeclaration,
+    diagnostics: list[LeanDiagnostic],
+) -> list[str]:
+    blockers: list[str] = []
+    for diagnostic in diagnostics:
+        if not _issue_matches_declaration(
+            declaration=declaration,
+            theorem_name=diagnostic.theorem_name,
+            file_path=diagnostic.file_path,
+        ):
+            continue
+        if diagnostic.code:
+            blockers.append(f"diagnostic:{diagnostic.code}")
+        else:
+            blockers.append(f"diagnostic:{diagnostic.severity}")
+    return blockers
+
+
+def _issue_matches_declaration(
+    *,
+    declaration: LeanDeclaration,
+    theorem_name: str | None,
+    file_path: Path | None,
+) -> bool:
+    if theorem_name is not None and theorem_name != declaration.name:
+        return False
+    if file_path is not None and file_path != declaration.file_path:
+        return False
+    return theorem_name is not None or file_path is not None
 
 
 def _resolve_declaration_blockers(

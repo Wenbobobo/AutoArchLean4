@@ -46,6 +46,12 @@ def test_gather_doctor_report_smoke_checks_configured_command_lean_analyzer(
         '    "theorem_count": 3,\n'
         '    "sorry_count": 0,\n'
         '    "axiom_count": 0,\n'
+        '    "proof_gaps": [\n'
+        '        {"kind": "unsolved_goal", "theorem_name": "demo", "file_path": "Core.lean"}\n'
+        '    ],\n'
+        '    "diagnostics": [\n'
+        '        {"severity": "warning", "message": "lint", "file_path": "Core.lean"}\n'
+        '    ],\n'
         '    "declarations": []\n'
         '}))\n',
         encoding="utf-8",
@@ -68,6 +74,8 @@ def test_gather_doctor_report_smoke_checks_configured_command_lean_analyzer(
     assert analyzer_status.detail.startswith("CommandLeanAnalyzer")
     assert "backend=command" in analyzer_status.detail
     assert "theorem_count=3" in analyzer_status.detail
+    assert "proof_gaps=1" in analyzer_status.detail
+    assert "diagnostics=1" in analyzer_status.detail
     assert "fallback=no" in analyzer_status.detail
 
 
@@ -117,4 +125,6 @@ def test_gather_doctor_report_marks_failed_command_lean_analyzer_with_regex_fall
     assert analyzer_status.ok is False
     assert "fallback=yes" in analyzer_status.detail
     assert "backend=regex" in analyzer_status.detail
+    assert "proof_gaps=1" in analyzer_status.detail
+    assert "diagnostics=0" in analyzer_status.detail
     assert "failing_sidecar.py" in analyzer_status.detail

@@ -251,6 +251,39 @@ def test_supervisor_policy_treats_axiom_blocked_ratio_as_infra_issue(tmp_path: P
     assert decision.summary
 
 
+def test_supervisor_policy_uses_structured_proof_gap_count_for_blocked_ratio(
+    tmp_path: Path,
+) -> None:
+    from archonlab.supervisor import decide_supervisor_action
+    from archonlab.task_graph import build_task_graph
+
+    project_path, archon_path, _ = _make_fake_project(tmp_path, include_sorry=False)
+    graph = build_task_graph(project_path=project_path, archon_path=archon_path)
+
+    decision = decide_supervisor_action(
+        snapshot=_snapshot_for_graph(
+            graph_project_id=graph.project_id,
+            project_path=project_path,
+            archon_path=archon_path,
+            sorry_count=0,
+            axiom_count=0,
+        ).model_copy(update={"proof_gap_count": 2}),
+        task_graph=graph.model_copy(
+            update={
+                "nodes": [
+                    node.model_copy(update={"status": TaskStatus.BLOCKED})
+                    for node in graph.nodes
+                ]
+            }
+        ),
+        recent_events=[EventRecord(run_id="run-1", kind="run.started", project_id="demo")],
+    )
+
+    assert decision.action is SupervisorAction.INVESTIGATE_INFRA
+    assert decision.reason is SupervisorReason.HIGH_BLOCKED_RATIO
+    assert decision.evidence["proof_gap_count"] == 2
+
+
 def test_supervisor_policy_treats_analyzer_fallback_as_infra_issue(tmp_path: Path) -> None:
     from archonlab.supervisor import decide_supervisor_action
     from archonlab.task_graph import build_task_graph
