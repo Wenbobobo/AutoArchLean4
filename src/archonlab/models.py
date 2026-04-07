@@ -1413,6 +1413,7 @@ class WorkspaceLoopResult(BaseModel):
     total_paused_jobs: int = 0
     total_failed_jobs: int = 0
     total_workers_launched: int = 0
+    error_message: str | None = None
     cycles: list[WorkspaceLoopCycle] = Field(default_factory=list)
 
 

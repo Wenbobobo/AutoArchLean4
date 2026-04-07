@@ -204,7 +204,15 @@ class WorkspaceLoopController:
                     time.sleep(sleep_seconds)
         except Exception as exc:  # noqa: BLE001
             result.finished_at = datetime.now(UTC)
-            result.stop_reason = f"workspace_loop_failed:{type(exc).__name__}"
+            result.stop_reason = "loop_failed"
+            result.error_message = str(exc)
+            self._write_json(
+                artifact_dir / "error.json",
+                {
+                    "loop_run_id": result.loop_run_id or result.loop_id,
+                    "error": str(exc),
+                },
+            )
             self._persist_result(event_store, artifact_dir, result)
             raise
 

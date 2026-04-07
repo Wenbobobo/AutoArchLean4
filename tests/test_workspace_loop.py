@@ -331,3 +331,63 @@ def test_workspace_loop_controller_persists_summary_and_cycle_artifacts(
     assert persisted is not None
     assert persisted.loop_run_id == result.loop_id
     assert persisted.project_id == "alpha"
+
+
+def test_workspace_loop_controller_persists_failure_artifacts_before_reraising(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+
+    def fail_run(self, **kwargs) -> object:
+        del kwargs
+        raise RuntimeError("fleet exploded")
+
+    monkeypatch.setattr("archonlab.workspace_loop.FleetController.run", fail_run)
+
+    controller = WorkspaceLoopController(config_path)
+
+    try:
+        controller.run(
+            project_id="alpha",
+            max_cycles=1,
+            idle_cycles=1,
+            sleep_seconds=0.0,
+            fleet_max_cycles=1,
+            fleet_idle_cycles=1,
+            queue_poll_seconds=0.01,
+            queue_idle_timeout_seconds=0.01,
+        )
+    except RuntimeError as error:
+        assert str(error) == "fleet exploded"
+    else:
+        raise AssertionError("WorkspaceLoopController.run should re-raise fleet failures")
+
+    loop_runs = EventStore(artifact_root / "archonlab.db").list_workspace_loop_runs(
+        workspace_id="demo-workspace",
+        limit=10,
+    )
+    assert len(loop_runs) == 1
+    failed_run = loop_runs[0]
+    assert failed_run.stop_reason == "loop_failed"
+    assert failed_run.error_message == "fleet exploded"
+    assert failed_run.artifact_dir is not None
+
+    summary_path = failed_run.artifact_dir / "summary.json"
+    error_path = failed_run.artifact_dir / "error.json"
+    assert summary_path.exists()
+    assert error_path.exists()
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    error_payload = json.loads(error_path.read_text(encoding="utf-8"))
+    assert summary["stop_reason"] == "loop_failed"
+    assert summary["error_message"] == "fleet exploded"
+    assert error_payload["error"] == "fleet exploded"
