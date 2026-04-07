@@ -227,6 +227,7 @@ class RunService:
             executor = create_executor(
                 executor_config=resolved_executor,
                 provider_config=resolved_provider,
+                provider_pools=self.config.provider_pools,
             )
             execution_result = executor.execute(
                 ExecutionRequest(
@@ -286,6 +287,11 @@ class RunService:
                         ),
                         "error_message": execution_result.error_message,
                         "metadata": execution_result.metadata,
+                        "telemetry": (
+                            execution_result.telemetry.model_dump(mode="json")
+                            if execution_result.telemetry is not None
+                            else None
+                        ),
                     },
                 ),
                 jsonl_path=events_jsonl,
@@ -308,6 +314,12 @@ class RunService:
                             "resolved_executor": resolved_executor.model_dump(mode="json"),
                             "resolved_provider": resolved_provider.model_dump(mode="json"),
                             "error_message": execution_result.error_message,
+                            "metadata": execution_result.metadata,
+                            "telemetry": (
+                                execution_result.telemetry.model_dump(mode="json")
+                                if execution_result.telemetry is not None
+                                else None
+                            ),
                         },
                     ),
                     jsonl_path=events_jsonl,

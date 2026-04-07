@@ -427,6 +427,8 @@ def apply_provider_patch(base: ProviderConfig, raw_patch: object) -> ProviderCon
     if "kind" in raw_patch:
         patch["kind"] = ProviderKind(str(raw_patch["kind"]))
     for field in [
+        "pool",
+        "member_name",
         "model",
         "cost_tier",
         "endpoint_class",
@@ -434,6 +436,8 @@ def apply_provider_patch(base: ProviderConfig, raw_patch: object) -> ProviderCon
         "api_key_env",
         "endpoint_path",
         "headers",
+        "input_cost_per_1k_tokens",
+        "output_cost_per_1k_tokens",
     ]:
         if field in raw_patch:
             patch[field] = raw_patch[field]

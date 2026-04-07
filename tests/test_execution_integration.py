@@ -13,6 +13,7 @@ from archonlab.models import (
     ExecutionRequirement,
     ExecutorKind,
     ProviderKind,
+    ProviderPoolConfig,
 )
 from archonlab.services import RunService
 
@@ -56,6 +57,89 @@ def test_load_config_parses_executor_and_provider_sections(tmp_path: Path) -> No
     assert config.provider.endpoint_class == "lab"
     assert config.provider.base_url == "http://localhost:8000/v1"
     assert config.provider.api_key_env == "LAB_KEY"
+
+
+def test_load_config_parses_named_provider_pools(tmp_path: Path) -> None:
+    project_path = tmp_path / "LeanProject"
+    archon_path = tmp_path / "Archon"
+    project_path.mkdir()
+    archon_path.mkdir()
+    config_path = tmp_path / "archonlab.toml"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        'project_path = "./LeanProject"\n'
+        'archon_path = "./Archon"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        'artifact_root = "./artifacts"\n'
+        "dry_run = false\n\n"
+        "[provider]\n"
+        'pool = "research"\n'
+        "\n"
+        "[provider_pool.research]\n"
+        "quarantine_seconds = 120\n"
+        "max_consecutive_failures = 1\n"
+        "\n"
+        "[[provider_pool.research.members]]\n"
+        'name = "primary"\n'
+        'base_url = "http://localhost:8000/v1"\n'
+        'model = "gpt-5.4-mini"\n'
+        "\n"
+        "[[provider_pool.research.members]]\n"
+        'name = "backup"\n'
+        'base_url = "http://localhost:9000/v1"\n'
+        'model = "gpt-5.4"\n',
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.provider.pool == "research"
+    assert isinstance(config.provider_pools["research"], ProviderPoolConfig)
+    assert [member.name for member in config.provider_pools["research"].members] == [
+        "primary",
+        "backup",
+    ]
+
+
+def test_run_service_execute_supports_provider_pool_routing(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = false\n\n"
+        "[executor]\n"
+        'kind = "dry_run"\n'
+        "\n"
+        "[provider]\n"
+        'pool = "lab"\n'
+        "\n"
+        "[provider_pool.lab]\n"
+        "max_consecutive_failures = 1\n"
+        "quarantine_seconds = 60\n"
+        "\n"
+        "[[provider_pool.lab.members]]\n"
+        'name = "member-a"\n'
+        'model = "gpt-5.4-mini"\n',
+        encoding="utf-8",
+    )
+
+    result = RunService(load_config(config_path)).start(dry_run=False)
+
+    assert result.execution is not None
+    assert result.execution.telemetry is not None
+    assert result.execution.telemetry.provider_pool == "lab"
+    assert result.execution.telemetry.provider_member == "member-a"
+    assert result.execution.telemetry.retry_count == 0
 
 
 def test_run_service_execute_uses_configured_executor(

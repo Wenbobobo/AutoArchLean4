@@ -152,6 +152,8 @@ class ProviderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: ProviderKind = ProviderKind.OPENAI_COMPATIBLE
+    pool: str | None = None
+    member_name: str | None = None
     model: str | None = None
     cost_tier: str | None = None
     endpoint_class: str | None = None
@@ -159,6 +161,74 @@ class ProviderConfig(BaseModel):
     api_key_env: str = "OPENAI_API_KEY"
     endpoint_path: str = "/v1/responses"
     headers: dict[str, str] = Field(default_factory=dict)
+    input_cost_per_1k_tokens: float | None = None
+    output_cost_per_1k_tokens: float | None = None
+
+
+class ProviderPoolMemberConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    enabled: bool = True
+    priority: int = 0
+    kind: ProviderKind | None = None
+    model: str | None = None
+    cost_tier: str | None = None
+    endpoint_class: str | None = None
+    base_url: str | None = None
+    api_key_env: str | None = None
+    endpoint_path: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    input_cost_per_1k_tokens: float | None = None
+    output_cost_per_1k_tokens: float | None = None
+
+    def as_provider_config(self, base: ProviderConfig) -> ProviderConfig:
+        return base.model_copy(
+            update={
+                "kind": self.kind or base.kind,
+                "pool": base.pool,
+                "member_name": self.name,
+                "model": self.model if self.model is not None else base.model,
+                "cost_tier": (
+                    self.cost_tier if self.cost_tier is not None else base.cost_tier
+                ),
+                "endpoint_class": (
+                    self.endpoint_class
+                    if self.endpoint_class is not None
+                    else base.endpoint_class
+                ),
+                "base_url": self.base_url if self.base_url is not None else base.base_url,
+                "api_key_env": (
+                    self.api_key_env if self.api_key_env is not None else base.api_key_env
+                ),
+                "endpoint_path": (
+                    self.endpoint_path
+                    if self.endpoint_path is not None
+                    else base.endpoint_path
+                ),
+                "headers": {**base.headers, **self.headers},
+                "input_cost_per_1k_tokens": (
+                    self.input_cost_per_1k_tokens
+                    if self.input_cost_per_1k_tokens is not None
+                    else base.input_cost_per_1k_tokens
+                ),
+                "output_cost_per_1k_tokens": (
+                    self.output_cost_per_1k_tokens
+                    if self.output_cost_per_1k_tokens is not None
+                    else base.output_cost_per_1k_tokens
+                ),
+            }
+        )
+
+
+class ProviderPoolConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    strategy: str = "ordered_failover"
+    max_consecutive_failures: int = 2
+    quarantine_seconds: int = 300
+    members: list[ProviderPoolMemberConfig] = Field(default_factory=list)
 
 
 class ExecutorConfig(BaseModel):
@@ -195,6 +265,7 @@ class AppConfig(BaseModel):
     run: RunConfig
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
+    provider_pools: dict[str, ProviderPoolConfig] = Field(default_factory=dict)
     execution_policy: ExecutionPolicy = Field(default_factory=lambda: ExecutionPolicy())
 
 
@@ -205,6 +276,7 @@ class WorkspaceConfig(BaseModel):
     run: RunConfig
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
+    provider_pools: dict[str, ProviderPoolConfig] = Field(default_factory=dict)
     execution_policy: ExecutionPolicy = Field(default_factory=lambda: ExecutionPolicy())
     projects: list[WorkspaceProjectConfig] = Field(default_factory=list)
 
@@ -387,6 +459,7 @@ class ExecutionResult(BaseModel):
     command: list[str] = Field(default_factory=list)
     error_message: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    telemetry: ExecutionTelemetry | None = None
 
     @property
     def text(self) -> str:
@@ -947,6 +1020,30 @@ class BatchRunReport(BaseModel):
     paused_job_ids: list[str] = Field(default_factory=list)
     failed_job_ids: list[str] = Field(default_factory=list)
     worker_ids: list[str] = Field(default_factory=list)
+
+
+class ExecutionUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+class ExecutionTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    latency_ms: int | None = None
+    retry_count: int = 0
+    provider_pool: str | None = None
+    provider_member: str | None = None
+    attempted_members: list[str] = Field(default_factory=list)
+    usage: ExecutionUsage | None = None
+    cost_estimate: float | None = None
+    status_code: int | None = None
+    health_status: str | None = None
 
 
 class FleetControllerCycle(BaseModel):

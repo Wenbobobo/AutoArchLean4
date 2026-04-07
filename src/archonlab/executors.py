@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
+import time
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 from urllib import error, request
@@ -14,9 +18,13 @@ from .models import (
     ExecutionRequest,
     ExecutionResult,
     ExecutionStatus,
+    ExecutionTelemetry,
+    ExecutionUsage,
     ExecutorConfig,
     ExecutorKind,
     ProviderConfig,
+    ProviderPoolConfig,
+    ProviderPoolMemberConfig,
 )
 
 
@@ -62,7 +70,35 @@ class ExecutorProvider:
 ExecutorFactory = Callable[[ExecutorConfig, ProviderConfig], Executor]
 
 
+@dataclass
+class _ProviderPoolHealthState:
+    consecutive_failures: int = 0
+    quarantined_until: datetime | None = None
+
+
+_PROVIDER_POOL_HEALTH_LOCK = threading.Lock()
+_PROVIDER_POOL_HEALTH: dict[tuple[str, str], _ProviderPoolHealthState] = {}
+
+
 def create_executor(
+    *,
+    executor_config: ExecutorConfig,
+    provider_config: ProviderConfig,
+    provider_pools: dict[str, ProviderPoolConfig] | None = None,
+) -> Executor:
+    if provider_config.pool is not None:
+        return ProviderPoolExecutor(
+            executor_config=executor_config,
+            provider_config=provider_config,
+            provider_pools=provider_pools or {},
+        )
+    return _create_direct_executor(
+        executor_config=executor_config,
+        provider_config=provider_config,
+    )
+
+
+def _create_direct_executor(
     *,
     executor_config: ExecutorConfig,
     provider_config: ProviderConfig,
@@ -81,8 +117,10 @@ def _build_dry_run_executor(
     executor_config: ExecutorConfig,
     provider_config: ProviderConfig,
 ) -> Executor:
-    del executor_config, provider_config
-    return DryRunExecutor()
+    return DryRunExecutor(
+        executor_config=executor_config,
+        provider_config=provider_config,
+    )
 
 
 def _build_openai_executor(
@@ -114,11 +152,21 @@ _EXECUTOR_FACTORIES: dict[ExecutorKind, ExecutorFactory] = {
 
 
 class DryRunExecutor:
+    def __init__(
+        self,
+        *,
+        executor_config: ExecutorConfig | None = None,
+        provider_config: ProviderConfig | None = None,
+    ) -> None:
+        self.executor_config = executor_config or ExecutorConfig(kind=ExecutorKind.DRY_RUN)
+        self.provider_config = provider_config or ProviderConfig()
+
     def execute(
         self,
         request_or_prompt: ExecutionRequest | str,
         system_prompt: str | None = None,
     ) -> ExecutionResult:
+        started_at, started_perf = _telemetry_clock()
         request_data = (
             request_or_prompt
             if isinstance(request_or_prompt, ExecutionRequest)
@@ -141,12 +189,18 @@ class DryRunExecutor:
             executor_dir.mkdir(parents=True, exist_ok=True)
             output_path = executor_dir / "dry-run-output.txt"
             output_path.write_text(output_text, encoding="utf-8")
-        return ExecutionResult(
+        result = ExecutionResult(
             executor=ExecutorKind.DRY_RUN,
             status=ExecutionStatus.COMPLETED,
             response_text=output_text,
             output_path=output_path,
             metadata={"provider": "dry_run"},
+        )
+        return _with_execution_telemetry(
+            result,
+            started_at=started_at,
+            started_perf=started_perf,
+            provider_config=self.provider_config,
         )
 
 
@@ -176,6 +230,7 @@ class OpenAICompatibleHttpExecutor:
         request_or_prompt: ExecutionRequest | str,
         system_prompt: str | None = None,
     ) -> ExecutionResult:
+        started_at, started_perf = _telemetry_clock()
         request_data = (
             request_or_prompt
             if isinstance(request_or_prompt, ExecutionRequest)
@@ -230,7 +285,7 @@ class OpenAICompatibleHttpExecutor:
             raw_response = exc.read().decode("utf-8", errors="replace")
             if response_path is not None:
                 response_path.write_text(raw_response, encoding="utf-8")
-            return ExecutionResult(
+            result = ExecutionResult(
                 executor=ExecutorKind.OPENAI_COMPATIBLE,
                 status=ExecutionStatus.FAILED,
                 request_path=request_path,
@@ -241,14 +296,41 @@ class OpenAICompatibleHttpExecutor:
                     "status_code": exc.code,
                 },
             )
+            return _with_execution_telemetry(
+                result,
+                started_at=started_at,
+                started_perf=started_perf,
+                provider_config=self.provider_config,
+                status_code=exc.code,
+            )
+        except (error.URLError, OSError, TimeoutError) as exc:
+            result = ExecutionResult(
+                executor=ExecutorKind.OPENAI_COMPATIBLE,
+                status=ExecutionStatus.FAILED,
+                request_path=request_path,
+                response_path=response_path,
+                error_message=str(exc),
+                metadata={"provider": "openai_compatible_http"},
+            )
+            return _with_execution_telemetry(
+                result,
+                started_at=started_at,
+                started_perf=started_perf,
+                provider_config=self.provider_config,
+            )
 
         if response_path is not None:
             response_path.write_text(raw_response, encoding="utf-8")
         parsed = json.loads(raw_response)
         response_text = _extract_openai_text(parsed)
+        usage = _extract_openai_usage(parsed)
+        cost_estimate = _estimate_cost(
+            provider_config=self.provider_config,
+            usage=usage,
+        )
         if output_path is not None:
             output_path.write_text(response_text, encoding="utf-8")
-        return ExecutionResult(
+        result = ExecutionResult(
             executor=ExecutorKind.OPENAI_COMPATIBLE,
             status=ExecutionStatus.COMPLETED,
             response_text=response_text,
@@ -259,6 +341,15 @@ class OpenAICompatibleHttpExecutor:
                 "provider": "openai_compatible_http",
                 "status_code": status_code,
             },
+        )
+        return _with_execution_telemetry(
+            result,
+            started_at=started_at,
+            started_perf=started_perf,
+            provider_config=self.provider_config,
+            usage=usage,
+            cost_estimate=cost_estimate,
+            status_code=status_code,
         )
 
     def _endpoint_url(self) -> str:
@@ -305,6 +396,7 @@ class CodexExecExecutor:
         request_or_prompt: ExecutionRequest | str,
         system_prompt: str | None = None,
     ) -> ExecutionResult:
+        started_at, started_perf = _telemetry_clock()
         request_data = (
             request_or_prompt
             if isinstance(request_or_prompt, ExecutionRequest)
@@ -331,15 +423,35 @@ class CodexExecExecutor:
             if self.command is not None
             else self._codex_exec_command(cwd=cwd, output_path=output_path)
         )
-        proc = subprocess.run(
-            command,
-            cwd=cwd,
-            input=prompt,
-            text=True,
-            capture_output=True,
-            timeout=self.executor_config.timeout_seconds,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                command,
+                cwd=cwd,
+                input=prompt,
+                text=True,
+                capture_output=True,
+                timeout=self.executor_config.timeout_seconds,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            result = ExecutionResult(
+                executor=ExecutorKind.CODEX_EXEC,
+                status=ExecutionStatus.FAILED,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                command=command,
+                error_message=str(exc),
+                metadata={
+                    "provider": "codex_exec",
+                    "system_prompt": system_prompt,
+                },
+            )
+            return _with_execution_telemetry(
+                result,
+                started_at=started_at,
+                started_perf=started_perf,
+                provider_config=self.provider_config,
+            )
         if stdout_path is not None:
             stdout_path.write_text(proc.stdout, encoding="utf-8")
         if stderr_path is not None:
@@ -349,7 +461,7 @@ class CodexExecExecutor:
             if output_path is not None and output_path.exists()
             else proc.stdout
         )
-        return ExecutionResult(
+        result = ExecutionResult(
             executor=ExecutorKind.CODEX_EXEC,
             status=(
                 ExecutionStatus.COMPLETED
@@ -367,6 +479,12 @@ class CodexExecExecutor:
                 "returncode": proc.returncode,
                 "system_prompt": system_prompt,
             },
+        )
+        return _with_execution_telemetry(
+            result,
+            started_at=started_at,
+            started_perf=started_perf,
+            provider_config=self.provider_config,
         )
 
     def _codex_exec_command(self, *, cwd: Path, output_path: Path | None) -> list[str]:
@@ -393,6 +511,91 @@ class CodexExecExecutor:
         command.extend(self.executor_config.extra_args)
         command.append("-")
         return command
+
+
+class ProviderPoolExecutor:
+    def __init__(
+        self,
+        *,
+        executor_config: ExecutorConfig,
+        provider_config: ProviderConfig,
+        provider_pools: dict[str, ProviderPoolConfig],
+    ) -> None:
+        self.executor_config = executor_config
+        self.provider_config = provider_config
+        self.provider_pools = provider_pools
+
+    def execute(
+        self,
+        request_or_prompt: ExecutionRequest | str,
+        system_prompt: str | None = None,
+    ) -> ExecutionResult:
+        pool_name = self.provider_config.pool
+        if pool_name is None:
+            raise ValueError("provider.pool is required for provider pool routing")
+        pool = self.provider_pools.get(pool_name)
+        if pool is None:
+            raise ValueError(f"Unknown provider pool: {pool_name}")
+        members, health_status = _eligible_pool_members(pool)
+        if not members:
+            raise ValueError(f"Provider pool {pool_name} has no enabled members")
+
+        attempted_members: list[str] = []
+        last_result: ExecutionResult | None = None
+        for index, member in enumerate(members):
+            attempted_members.append(member.name)
+            resolved_provider = member.as_provider_config(self.provider_config)
+            try:
+                executor = _create_direct_executor(
+                    executor_config=self.executor_config,
+                    provider_config=resolved_provider,
+                )
+                result = executor.execute(
+                    request_or_prompt,
+                    system_prompt=system_prompt,
+                )
+            except Exception as exc:  # noqa: BLE001
+                started_at, started_perf = _telemetry_clock()
+                result = _with_execution_telemetry(
+                    ExecutionResult(
+                        executor=self.executor_config.kind,
+                        status=ExecutionStatus.FAILED,
+                        error_message=str(exc),
+                        metadata={"provider": self.executor_config.kind.value},
+                    ),
+                    started_at=started_at,
+                    started_perf=started_perf,
+                    provider_config=resolved_provider,
+                )
+            result = _augment_pool_result(
+                result,
+                provider_pool=pool_name,
+                provider_member=member.name,
+                attempted_members=list(attempted_members),
+                retry_count=index,
+                health_status=health_status,
+            )
+            if result.status is ExecutionStatus.COMPLETED:
+                _mark_pool_success(pool_name, member.name)
+                return result
+            _mark_pool_failure(pool, member.name)
+            last_result = result
+
+        if last_result is None:
+            raise RuntimeError(f"Provider pool {pool_name} did not produce any result")
+        last_member = (
+            last_result.telemetry.provider_member
+            if last_result.telemetry is not None
+            else None
+        )
+        return _augment_pool_result(
+            last_result,
+            provider_pool=pool_name,
+            provider_member=last_member,
+            attempted_members=attempted_members,
+            retry_count=max(len(attempted_members) - 1, 0),
+            health_status="all_members_failed",
+        )
 
 
 def _build_openai_input(*, prompt: str, system_prompt: str | None) -> list[dict[str, str]]:
@@ -429,3 +632,161 @@ def _extract_openai_text(payload: dict[str, object]) -> str:
         if isinstance(text, str):
             parts.append(text)
     return "\n".join(parts)
+
+
+def _extract_openai_usage(payload: dict[str, object]) -> ExecutionUsage | None:
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+    total_tokens = usage.get("total_tokens")
+    return ExecutionUsage(
+        input_tokens=int(input_tokens) if isinstance(input_tokens, int) else None,
+        output_tokens=int(output_tokens) if isinstance(output_tokens, int) else None,
+        total_tokens=int(total_tokens) if isinstance(total_tokens, int) else None,
+    )
+
+
+def _estimate_cost(
+    *,
+    provider_config: ProviderConfig,
+    usage: ExecutionUsage | None,
+) -> float | None:
+    if usage is None:
+        return None
+    if (
+        provider_config.input_cost_per_1k_tokens is None
+        and provider_config.output_cost_per_1k_tokens is None
+    ):
+        return None
+    input_cost = (
+        (usage.input_tokens or 0) / 1000 * (provider_config.input_cost_per_1k_tokens or 0.0)
+    )
+    output_cost = (
+        (usage.output_tokens or 0)
+        / 1000
+        * (provider_config.output_cost_per_1k_tokens or 0.0)
+    )
+    return round(input_cost + output_cost, 6)
+
+
+def _telemetry_clock() -> tuple[datetime, float]:
+    return datetime.now(UTC), time.perf_counter()
+
+
+def _with_execution_telemetry(
+    result: ExecutionResult,
+    *,
+    started_at: datetime,
+    started_perf: float,
+    provider_config: ProviderConfig,
+    usage: ExecutionUsage | None = None,
+    cost_estimate: float | None = None,
+    status_code: int | None = None,
+) -> ExecutionResult:
+    finished_at = datetime.now(UTC)
+    telemetry = ExecutionTelemetry(
+        started_at=started_at,
+        finished_at=finished_at,
+        latency_ms=max(0, int((time.perf_counter() - started_perf) * 1000)),
+        provider_pool=provider_config.pool,
+        provider_member=provider_config.member_name,
+        usage=usage,
+        cost_estimate=cost_estimate,
+        status_code=status_code,
+    )
+    metadata = dict(result.metadata)
+    if telemetry.provider_pool is not None:
+        metadata["provider_pool"] = telemetry.provider_pool
+    if telemetry.provider_member is not None:
+        metadata["provider_member"] = telemetry.provider_member
+    if telemetry.status_code is not None:
+        metadata["status_code"] = telemetry.status_code
+    if telemetry.usage is not None:
+        metadata["usage"] = telemetry.usage.model_dump(mode="json")
+    if telemetry.cost_estimate is not None:
+        metadata["cost_estimate"] = telemetry.cost_estimate
+    return result.model_copy(update={"telemetry": telemetry, "metadata": metadata})
+
+
+def _augment_pool_result(
+    result: ExecutionResult,
+    *,
+    provider_pool: str,
+    provider_member: str | None,
+    attempted_members: list[str],
+    retry_count: int,
+    health_status: str | None,
+) -> ExecutionResult:
+    telemetry = (
+        result.telemetry
+        if result.telemetry is not None
+        else ExecutionTelemetry()
+    ).model_copy(
+        update={
+            "provider_pool": provider_pool,
+            "provider_member": provider_member,
+            "attempted_members": attempted_members,
+            "retry_count": retry_count,
+            "health_status": health_status,
+        }
+    )
+    metadata = dict(result.metadata)
+    metadata["provider_pool"] = provider_pool
+    if provider_member is not None:
+        metadata["provider_member"] = provider_member
+    metadata["attempted_members"] = attempted_members
+    metadata["retry_count"] = retry_count
+    if health_status is not None:
+        metadata["health_status"] = health_status
+    return result.model_copy(update={"telemetry": telemetry, "metadata": metadata})
+
+
+def _eligible_pool_members(
+    pool: ProviderPoolConfig,
+) -> tuple[list[ProviderPoolMemberConfig], str]:
+    enabled_members = [member for member in pool.members if member.enabled]
+    sorted_members = sorted(
+        enabled_members,
+        key=lambda member: -member.priority,
+    )
+    now = datetime.now(UTC)
+    healthy_members: list[ProviderPoolMemberConfig] = []
+    quarantined_members: list[ProviderPoolMemberConfig] = []
+    with _PROVIDER_POOL_HEALTH_LOCK:
+        for member in sorted_members:
+            state = _PROVIDER_POOL_HEALTH.get((pool.name, member.name))
+            if (
+                state is not None
+                and state.quarantined_until is not None
+                and state.quarantined_until > now
+            ):
+                quarantined_members.append(member)
+            else:
+                healthy_members.append(member)
+    if healthy_members:
+        return healthy_members, ("degraded" if quarantined_members else "healthy")
+    return sorted_members, "all_quarantined"
+
+
+def _mark_pool_success(pool_name: str, member_name: str) -> None:
+    with _PROVIDER_POOL_HEALTH_LOCK:
+        _PROVIDER_POOL_HEALTH[(pool_name, member_name)] = _ProviderPoolHealthState()
+
+
+def _mark_pool_failure(pool: ProviderPoolConfig, member_name: str) -> None:
+    key = (pool.name, member_name)
+    with _PROVIDER_POOL_HEALTH_LOCK:
+        state = _PROVIDER_POOL_HEALTH.get(key, _ProviderPoolHealthState())
+        state.consecutive_failures += 1
+        if state.consecutive_failures >= pool.max_consecutive_failures:
+            state.quarantined_until = datetime.now(UTC) + timedelta(
+                seconds=pool.quarantine_seconds
+            )
+        _PROVIDER_POOL_HEALTH[key] = state
+
+
+def reset_provider_pool_health() -> None:
+    with _PROVIDER_POOL_HEALTH_LOCK:
+        _PROVIDER_POOL_HEALTH.clear()

@@ -11,8 +11,17 @@ from archonlab.executors import (
     ExecutorProvider,
     OpenAICompatibleHttpExecutor,
     create_executor,
+    reset_provider_pool_health,
 )
-from archonlab.models import ExecutionCapability, ExecutorConfig, ExecutorKind, ProviderConfig
+from archonlab.models import (
+    ExecutionCapability,
+    ExecutionStatus,
+    ExecutorConfig,
+    ExecutorKind,
+    ProviderConfig,
+    ProviderPoolConfig,
+    ProviderPoolMemberConfig,
+)
 
 
 def test_executor_provider_resolves_dry_run_http_and_codex_executors(
@@ -160,3 +169,156 @@ def test_create_executor_uses_capability_normalization_for_dispatch() -> None:
         "executor=codex_exec__provider=openai_compatible__"
         "model=gpt-5.4-mini__cost=any__endpoint=any"
     )
+
+
+def test_openai_compatible_http_executor_records_telemetry_usage_and_cost(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            captured["body"] = json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = {
+                "output_text": "telemetry-ok",
+                "usage": {
+                    "input_tokens": 200,
+                    "output_tokens": 50,
+                    "total_tokens": 250,
+                },
+            }
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        executor = OpenAICompatibleHttpExecutor(
+            base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            api_key="test-key",
+            model="gpt-4.1-mini",
+            provider_config=ProviderConfig(
+                model="gpt-4.1-mini",
+                base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                input_cost_per_1k_tokens=0.5,
+                output_cost_per_1k_tokens=1.5,
+            ),
+        )
+
+        result = executor.execute("prove foo", system_prompt="plan")
+
+        assert result.status is ExecutionStatus.COMPLETED
+        assert result.telemetry is not None
+        assert result.telemetry.latency_ms is not None
+        assert result.telemetry.latency_ms >= 0
+        assert result.telemetry.usage is not None
+        assert result.telemetry.usage.input_tokens == 200
+        assert result.telemetry.usage.output_tokens == 50
+        assert result.telemetry.cost_estimate == 0.175
+        assert result.telemetry.status_code == 200
+        assert result.text == "telemetry-ok"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_provider_pool_executor_fails_over_and_quarantines_unhealthy_member() -> None:
+    reset_provider_pool_health()
+    captured = {"primary": 0, "backup": 0}
+
+    class PrimaryHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["primary"] += 1
+            payload = {"error": "primary unavailable"}
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    class BackupHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["backup"] += 1
+            payload = {"output_text": "backup-ok"}
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    primary_server = ThreadingHTTPServer(("127.0.0.1", 0), PrimaryHandler)
+    backup_server = ThreadingHTTPServer(("127.0.0.1", 0), BackupHandler)
+    primary_thread = threading.Thread(target=primary_server.serve_forever, daemon=True)
+    backup_thread = threading.Thread(target=backup_server.serve_forever, daemon=True)
+    primary_thread.start()
+    backup_thread.start()
+    try:
+        pool_name = "research"
+        provider_pools = {
+            pool_name: ProviderPoolConfig(
+                name=pool_name,
+                max_consecutive_failures=1,
+                quarantine_seconds=600,
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="primary",
+                        base_url=f"http://127.0.0.1:{primary_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                    ProviderPoolMemberConfig(
+                        name="backup",
+                        base_url=f"http://127.0.0.1:{backup_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                ],
+            )
+        }
+
+        executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+        )
+        first = executor.execute("prove foo", system_prompt="plan")
+        second = executor.execute("prove foo again", system_prompt="plan")
+
+        assert first.status is ExecutionStatus.COMPLETED
+        assert first.text == "backup-ok"
+        assert first.telemetry is not None
+        assert first.telemetry.provider_pool == pool_name
+        assert first.telemetry.provider_member == "backup"
+        assert first.telemetry.retry_count == 1
+        assert first.telemetry.attempted_members == ["primary", "backup"]
+
+        assert second.status is ExecutionStatus.COMPLETED
+        assert second.telemetry is not None
+        assert second.telemetry.provider_member == "backup"
+        assert second.telemetry.retry_count == 0
+        assert second.telemetry.attempted_members == ["backup"]
+
+        assert captured["primary"] == 1
+        assert captured["backup"] == 2
+    finally:
+        primary_server.shutdown()
+        backup_server.shutdown()
+        primary_server.server_close()
+        backup_server.server_close()
+        primary_thread.join(timeout=2)
+        backup_thread.join(timeout=2)
+        reset_provider_pool_health()

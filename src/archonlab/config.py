@@ -12,6 +12,8 @@ from .models import (
     ProjectConfig,
     ProviderConfig,
     ProviderKind,
+    ProviderPoolConfig,
+    ProviderPoolMemberConfig,
     RunConfig,
     WorkflowMode,
     WorkspaceConfig,
@@ -52,6 +54,19 @@ def _get_int(raw: dict[str, object], key: str, default: int) -> int:
     return default
 
 
+def _get_optional_float(raw: dict[str, object], key: str) -> float | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    return None
+
+
 def _get_str_list(raw: dict[str, object], key: str) -> list[str]:
     value = raw.get(key, [])
     if not isinstance(value, list):
@@ -83,6 +98,8 @@ def _load_executor_config(raw: dict[str, object]) -> ExecutorConfig:
 def _load_provider_config(raw: dict[str, object]) -> ProviderConfig:
     return ProviderConfig(
         kind=ProviderKind(_get_str(raw, "kind", ProviderKind.OPENAI_COMPATIBLE.value)),
+        pool=_get_optional_str(raw, "pool"),
+        member_name=_get_optional_str(raw, "member_name"),
         model=_get_optional_str(raw, "model"),
         cost_tier=_get_optional_str(raw, "cost_tier"),
         endpoint_class=_get_optional_str(raw, "endpoint_class"),
@@ -94,7 +111,59 @@ def _load_provider_config(raw: dict[str, object]) -> ProviderConfig:
             _get_str(raw, "chat_completions_path", "/v1/responses"),
         ),
         headers=_get_str_dict(raw, "headers"),
+        input_cost_per_1k_tokens=_get_optional_float(raw, "input_cost_per_1k_tokens"),
+        output_cost_per_1k_tokens=_get_optional_float(raw, "output_cost_per_1k_tokens"),
     )
+
+
+def _load_provider_pools(raw: object) -> dict[str, ProviderPoolConfig]:
+    if not isinstance(raw, dict):
+        return {}
+    pools: dict[str, ProviderPoolConfig] = {}
+    for pool_name, pool_raw in raw.items():
+        if not isinstance(pool_raw, dict):
+            continue
+        members_raw = pool_raw.get("members", [])
+        members: list[ProviderPoolMemberConfig] = []
+        if isinstance(members_raw, list):
+            for member_raw in members_raw:
+                if not isinstance(member_raw, dict):
+                    continue
+                members.append(
+                    ProviderPoolMemberConfig(
+                        name=str(member_raw["name"]),
+                        enabled=_get_bool(member_raw, "enabled", True),
+                        priority=_get_int(member_raw, "priority", 0),
+                        kind=(
+                            ProviderKind(_get_str(member_raw, "kind", ""))
+                            if "kind" in member_raw
+                            else None
+                        ),
+                        model=_get_optional_str(member_raw, "model"),
+                        cost_tier=_get_optional_str(member_raw, "cost_tier"),
+                        endpoint_class=_get_optional_str(member_raw, "endpoint_class"),
+                        base_url=_get_optional_str(member_raw, "base_url"),
+                        api_key_env=_get_optional_str(member_raw, "api_key_env"),
+                        endpoint_path=_get_optional_str(member_raw, "endpoint_path"),
+                        headers=_get_str_dict(member_raw, "headers"),
+                        input_cost_per_1k_tokens=_get_optional_float(
+                            member_raw,
+                            "input_cost_per_1k_tokens",
+                        ),
+                        output_cost_per_1k_tokens=_get_optional_float(
+                            member_raw,
+                            "output_cost_per_1k_tokens",
+                        ),
+                    )
+                )
+        pools[str(pool_name)] = ProviderPoolConfig(
+            name=str(pool_name),
+            strategy=_get_str(pool_raw, "strategy", "ordered_failover"),
+            max_consecutive_failures=_get_int(pool_raw, "max_consecutive_failures", 2),
+            quarantine_seconds=_get_int(pool_raw, "quarantine_seconds", 300),
+            members=members,
+        )
+    return pools
 
 
 def _load_run_config(base_dir: Path, raw: dict[str, object]) -> RunConfig:
@@ -148,6 +217,7 @@ def load_config(config_path: Path) -> AppConfig:
     task_matcher_raw = raw.get("task_matcher", {})
     task_executor_raw = raw.get("task_executor", {})
     task_provider_raw = raw.get("task_provider", {})
+    provider_pool_raw = raw.get("provider_pool", {})
 
     project_path = _resolve_path(base_dir, project_raw["project_path"])
     archon_path = _resolve_path(base_dir, project_raw["archon_path"])
@@ -164,6 +234,7 @@ def load_config(config_path: Path) -> AppConfig:
         run=_load_run_config(base_dir, run_raw),
         executor=executor,
         provider=provider,
+        provider_pools=_load_provider_pools(provider_pool_raw),
         execution_policy=_load_execution_policy(
             executor=executor,
             provider=provider,
@@ -188,6 +259,7 @@ def load_workspace_config(config_path: Path) -> WorkspaceConfig:
     task_matcher_raw = raw.get("task_matcher", {})
     task_executor_raw = raw.get("task_executor", {})
     task_provider_raw = raw.get("task_provider", {})
+    provider_pool_raw = raw.get("provider_pool", {})
     projects_raw = raw.get("projects", [])
     if not isinstance(projects_raw, list) or not projects_raw:
         raise ValueError("Workspace config must define at least one [[projects]] entry.")
@@ -235,6 +307,7 @@ def load_workspace_config(config_path: Path) -> WorkspaceConfig:
         run=_load_run_config(base_dir, run_raw),
         executor=executor,
         provider=provider,
+        provider_pools=_load_provider_pools(provider_pool_raw),
         execution_policy=_load_execution_policy(
             executor=executor,
             provider=provider,
@@ -302,12 +375,18 @@ def render_config(
     )
     if provider.model is not None:
         content += f'model = "{provider.model}"\n'
+    if provider.pool is not None:
+        content += f'pool = "{provider.pool}"\n'
     if provider.cost_tier is not None:
         content += f'cost_tier = "{provider.cost_tier}"\n'
     if provider.endpoint_class is not None:
         content += f'endpoint_class = "{provider.endpoint_class}"\n'
     if provider.base_url is not None:
         content += f'base_url = "{provider.base_url}"\n'
+    if provider.input_cost_per_1k_tokens is not None:
+        content += f"input_cost_per_1k_tokens = {provider.input_cost_per_1k_tokens}\n"
+    if provider.output_cost_per_1k_tokens is not None:
+        content += f"output_cost_per_1k_tokens = {provider.output_cost_per_1k_tokens}\n"
     if provider.headers:
         serialized_headers = ", ".join(
             f'"{key}" = "{value}"' for key, value in provider.headers.items()
@@ -366,12 +445,18 @@ def render_workspace_config(
     )
     if provider.model is not None:
         content += f'model = "{provider.model}"\n'
+    if provider.pool is not None:
+        content += f'pool = "{provider.pool}"\n'
     if provider.cost_tier is not None:
         content += f'cost_tier = "{provider.cost_tier}"\n'
     if provider.endpoint_class is not None:
         content += f'endpoint_class = "{provider.endpoint_class}"\n'
     if provider.base_url is not None:
         content += f'base_url = "{provider.base_url}"\n'
+    if provider.input_cost_per_1k_tokens is not None:
+        content += f"input_cost_per_1k_tokens = {provider.input_cost_per_1k_tokens}\n"
+    if provider.output_cost_per_1k_tokens is not None:
+        content += f"output_cost_per_1k_tokens = {provider.output_cost_per_1k_tokens}\n"
     if provider.headers:
         serialized_headers = ", ".join(
             f'"{key}" = "{value}"' for key, value in provider.headers.items()
@@ -505,5 +590,6 @@ def build_workspace_project_app_config(
         ),
         executor=workspace_config.executor,
         provider=workspace_config.provider,
+        provider_pools=workspace_config.provider_pools,
         execution_policy=workspace_config.execution_policy,
     )
