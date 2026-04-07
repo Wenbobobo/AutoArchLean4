@@ -12,6 +12,7 @@ from .batch import BatchRunner
 from .config import build_workspace_project_app_config, load_config, load_workspace_config
 from .control import ControlService
 from .events import EventStore
+from .executors import snapshot_provider_pool_health
 from .models import (
     ActionPhase,
     AppConfig,
@@ -466,6 +467,13 @@ def _build_workspace_overview(
         "provider_runtime": [
             item.model_dump(mode="json")
             for item in store.summarize_provider_runtime(limit=200)
+        ],
+        "provider_health": [
+            item.model_dump(mode="json")
+            for item in snapshot_provider_pool_health(
+                config.provider_pools,
+                db_path=config.run.artifact_root / "archonlab.db",
+            )
         ],
         "sessions": [
             {
@@ -1037,8 +1045,20 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
             <div class="fact-grid" id="workspace-overview-summary"></div>
           </section>
           <section class="preview-card">
+            <h3>Runtime Budget</h3>
+            <div class="fact-grid" id="workspace-runtime-summary"></div>
+          </section>
+          <section class="preview-card">
             <h3>Sessions</h3>
             <div class="rule-list" id="workspace-session-table"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Provider Runtime</h3>
+            <div class="rule-list" id="workspace-provider-runtime"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Provider Health</h3>
+            <div class="rule-list" id="workspace-provider-health"></div>
           </section>
           <section class="preview-card">
             <h3>Worker Pool</h3>
@@ -1119,7 +1139,10 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       const workersList = document.getElementById("workers-list");
       const workspaceOverviewMeta = document.getElementById("workspace-overview-meta");
       const workspaceOverviewSummary = document.getElementById("workspace-overview-summary");
+      const workspaceRuntimeSummary = document.getElementById("workspace-runtime-summary");
       const workspaceSessionTable = document.getElementById("workspace-session-table");
+      const workspaceProviderRuntime = document.getElementById("workspace-provider-runtime");
+      const workspaceProviderHealth = document.getElementById("workspace-provider-health");
       const workspaceWorkerPool = document.getElementById("workspace-worker-pool");
       let latestJobs = [];
       let selectedQueueJobId = null;
@@ -1546,6 +1569,13 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         `).join("");
       }}
 
+      function formatCost(value) {{
+        if (value == null || Number.isNaN(Number(value))) {{
+          return "-";
+        }}
+        return Number(value).toFixed(3);
+      }}
+
       function renderWorkers(workers) {{
         if (!workers.length) {{
           workersList.innerHTML = '<div class="meta">No worker telemetry yet.</div>';
@@ -1582,6 +1612,16 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         const sessions = payload.sessions || [];
         const workers = payload.workers || [];
         const projects = payload.projects || [];
+        const providerRuntime = payload.provider_runtime || [];
+        const providerHealth = payload.provider_health || [];
+        const runtimeTotals = providerRuntime.reduce((accumulator, pool) => {{
+          accumulator.success += Number(pool.success_count || 0);
+          accumulator.failure += Number(pool.failure_count || 0);
+          accumulator.retries += Number(pool.total_retry_count || 0);
+          accumulator.cost += Number(pool.total_cost_estimate || 0);
+          return accumulator;
+        }}, {{ success: 0, failure: 0, retries: 0, cost: 0 }});
+        const degradedPools = providerHealth.filter((pool) => pool.status !== "healthy").length;
         workspaceOverviewMeta.textContent =
           `${{payload.workspace}} · ${{payload.project_count}} projects · ` +
           `${{payload.session_count}} sessions`;
@@ -1599,6 +1639,14 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
             `${{budget.max_iterations || 0}} iter`,
           ],
         ]);
+        workspaceRuntimeSummary.innerHTML = renderFacts([
+          ["remaining_iter", `${{budget.remaining_iterations || 0}}`],
+          ["runtime_cost", formatCost(runtimeTotals.cost)],
+          ["executor_calls", `${{runtimeTotals.success + runtimeTotals.failure}}`],
+          ["executor_failures", `${{runtimeTotals.failure}}`],
+          ["retries", `${{runtimeTotals.retries}}`],
+          ["degraded_pools", `${{degradedPools}} / ${{providerHealth.length}}`],
+        ]);
         workspaceSessionTable.innerHTML = sessions.length
           ? sessions.slice(0, 8).map((session) => `
               <div class="rule">
@@ -1608,9 +1656,57 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
                   iter=${{session.completed_iterations}}/${{session.max_iterations}}
                   · remaining=${{session.remaining_iterations}}
                 </div>
+                <div class="meta">
+                  stop=${{session.last_stop_reason || "-"}}
+                  · resume=${{session.last_resume_reason || "-"}}
+                </div>
               </div>
             `).join("")
           : '<div class="meta">No workspace sessions yet.</div>';
+        workspaceProviderRuntime.innerHTML = providerRuntime.length
+          ? providerRuntime.slice(0, 6).map((pool) => {{
+              const members = (pool.members || []).slice(0, 3).map((member) => {{
+                const cost = formatCost(member.total_cost_estimate);
+                return (
+                  `${{member.member_name}}:${{member.success_count}}/${{member.failure_count}} ` +
+                  `r=${{member.retry_count}} c=${{cost}}`
+                );
+              }}).join(" · ");
+              return `
+                <div class="rule">
+                  <strong>${{pool.pool_name}} · health=${{pool.last_health_status || "-"}}</strong>
+                  <div class="meta">
+                    success=${{pool.success_count}} · failed=${{pool.failure_count}}
+                    · retries=${{pool.total_retry_count}}
+                  </div>
+                  <div class="meta">
+                    cost=${{formatCost(pool.total_cost_estimate)}}
+                    · last=${{pool.last_seen_at || "-"}}
+                  </div>
+                  <div class="meta">members=${{members || "-"}}</div>
+                </div>
+              `;
+            }}).join("")
+          : '<div class="meta">No persisted provider runtime telemetry yet.</div>';
+        workspaceProviderHealth.innerHTML = providerHealth.length
+          ? providerHealth.slice(0, 6).map((pool) => {{
+              const members = (pool.members || []).map((member) => {{
+                const failures = Number(member.consecutive_failures || 0);
+                return `${{member.member_name}}:${{member.status}}(f=${{failures}})`;
+              }}).join(" · ");
+              return `
+                <div class="rule">
+                  <strong>${{pool.pool_name}} · ${{pool.status}}</strong>
+                  <div class="meta">
+                    available=${{pool.available_members}}/${{pool.total_members}}
+                    · quarantined=${{pool.quarantined_members}}
+                  </div>
+                  <div class="meta">strategy=${{pool.strategy || "-"}}</div>
+                  <div class="meta">members=${{members || "-"}}</div>
+                </div>
+              `;
+            }}).join("")
+          : '<div class="meta">No provider pools configured.</div>';
         workspaceWorkerPool.innerHTML = [
           projects.length
             ? projects.slice(0, 8).map((project) => `
@@ -1647,7 +1743,13 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         workspaceOverviewMeta.textContent = "Workspace overview unavailable.";
         workspaceOverviewSummary.innerHTML =
           '<div class="meta">Workspace overview unavailable.</div>';
+        workspaceRuntimeSummary.innerHTML =
+          '<div class="meta">Workspace overview unavailable.</div>';
         workspaceSessionTable.innerHTML = `<div class="meta">${{message}}</div>`;
+        workspaceProviderRuntime.innerHTML =
+          '<div class="meta">Workspace overview unavailable.</div>';
+        workspaceProviderHealth.innerHTML =
+          '<div class="meta">Workspace overview unavailable.</div>';
         workspaceWorkerPool.innerHTML = '<div class="meta">Workspace overview unavailable.</div>';
       }}
 

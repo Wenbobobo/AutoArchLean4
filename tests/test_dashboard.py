@@ -16,6 +16,10 @@ from archonlab.models import (  # noqa: E402
     ExecutorKind,
     ProjectSession,
     ProviderKind,
+    ProviderPoolHealthReport,
+    ProviderPoolHealthStatus,
+    ProviderPoolMemberHealth,
+    ProviderPoolMemberHealthStatus,
     QueueJobPreview,
     RunStatus,
     RunSummary,
@@ -120,6 +124,9 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert 'id="project-preview-rules"' in index_response.text
     assert 'id="fleet-plan-summary"' in index_response.text
     assert 'id="fleet-plan-list"' in index_response.text
+    assert 'id="workspace-runtime-summary"' in index_response.text
+    assert 'id="workspace-provider-runtime"' in index_response.text
+    assert 'id="workspace-provider-health"' in index_response.text
 
     runs_response = client.get("/api/runs")
     assert runs_response.status_code == 200
@@ -381,6 +388,17 @@ def test_dashboard_workspace_overview_and_project_switching(
         f'artifact_root = "{artifact_root}"\n'
         "dry_run = true\n"
         "max_iterations = 6\n\n"
+        "[provider]\n"
+        'pool = "lab"\n\n'
+        "[provider_pool.lab]\n"
+        "max_consecutive_failures = 1\n"
+        "quarantine_seconds = 60\n\n"
+        "[[provider_pool.lab.members]]\n"
+        'name = "member-a"\n'
+        'model = "gpt-5.4-mini"\n\n'
+        "[[provider_pool.lab.members]]\n"
+        'name = "member-b"\n'
+        'model = "gpt-5.4"\n\n'
         "[[projects]]\n"
         'id = "alpha"\n'
         f'project_path = "{alpha_project}"\n'
@@ -477,6 +495,35 @@ def test_dashboard_workspace_overview_and_project_switching(
         )
     )
 
+    monkeypatch.setattr(
+        "archonlab.dashboard.snapshot_provider_pool_health",
+        lambda provider_pools, *, db_path=None: [
+            ProviderPoolHealthReport(
+                pool_name="lab",
+                status=ProviderPoolHealthStatus.DEGRADED,
+                strategy="ordered_failover",
+                total_members=2,
+                available_members=1,
+                quarantined_members=1,
+                members=[
+                    ProviderPoolMemberHealth(
+                        pool_name="lab",
+                        member_name="member-a",
+                        status=ProviderPoolMemberHealthStatus.HEALTHY,
+                        model="gpt-5.4-mini",
+                    ),
+                    ProviderPoolMemberHealth(
+                        pool_name="lab",
+                        member_name="member-b",
+                        status=ProviderPoolMemberHealthStatus.QUARANTINED,
+                        model="gpt-5.4",
+                        consecutive_failures=2,
+                    ),
+                ],
+            )
+        ],
+    )
+
     app = create_dashboard_app(workspace_config_path)
     client = TestClient(app)
 
@@ -484,6 +531,9 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert index_response.status_code == 200
     assert 'id="workspace-overview-summary"' in index_response.text
     assert 'id="workspace-session-table"' in index_response.text
+    assert 'id="workspace-runtime-summary"' in index_response.text
+    assert 'id="workspace-provider-runtime"' in index_response.text
+    assert 'id="workspace-provider-health"' in index_response.text
 
     overview_response = client.get("/api/workspace/overview")
     assert overview_response.status_code == 200
@@ -510,6 +560,9 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert overview["provider_runtime"][0]["pool_name"] == "lab"
     assert overview["provider_runtime"][0]["success_count"] == 1
     assert overview["provider_runtime"][0]["members"][0]["member_name"] == "member-a"
+    assert overview["provider_health"][0]["pool_name"] == "lab"
+    assert overview["provider_health"][0]["status"] == "degraded"
+    assert overview["provider_health"][0]["members"][1]["status"] == "quarantined"
     alpha_session = next(item for item in overview["sessions"] if item["project_id"] == "alpha")
     assert alpha_session["remaining_iterations"] == 4
 
