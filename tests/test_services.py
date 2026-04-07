@@ -256,3 +256,89 @@ def test_run_service_session_quantum_advances_one_iteration_at_a_time(
     assert stored.last_stop_reason == "max_iterations_reached"
     assert len(iterations) == 2
     assert all(iteration.run_id is not None for iteration in iterations)
+
+
+def test_run_service_session_quantum_control_pause_is_resumable_and_budget_neutral(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 3\n",
+        encoding="utf-8",
+    )
+
+    service = RunService(load_config(config_path))
+    ControlService(artifact_root).pause(service.config.project, reason="operator_pause")
+    session = ProjectSession(
+        session_id="session-demo-control-pause",
+        workspace_id="standalone",
+        project_id="demo",
+        dry_run=True,
+        max_iterations=3,
+    )
+    service.event_store.register_session(session)
+
+    result = service.run_session_quantum(session.session_id)
+    stored = service.event_store.get_session(session.session_id)
+    iterations = service.event_store.list_session_iterations(session.session_id)
+
+    assert result.status is SessionStatus.PAUSED
+    assert result.completed_iterations == 0
+    assert result.run_id is not None
+    assert result.action_reason == "control_paused"
+    assert result.stop_reason == "stop:control_paused"
+    assert stored is not None
+    assert stored.status is SessionStatus.PAUSED
+    assert stored.completed_iterations == 0
+    assert stored.last_stop_reason == "stop:control_paused"
+    assert stored.last_run_id == result.run_id
+    assert iterations == []
+
+
+def test_run_service_loop_control_pause_does_not_consume_session_budget(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n",
+        encoding="utf-8",
+    )
+
+    service = RunService(load_config(config_path))
+    ControlService(artifact_root).pause(service.config.project, reason="operator_pause")
+
+    result = service.run_loop(dry_run=True, max_iterations=2, workspace_id="standalone")
+    session = service.event_store.get_session(result.session_id)
+    iterations = service.event_store.list_session_iterations(result.session_id)
+
+    assert result.status is SessionStatus.PAUSED
+    assert result.completed_iterations == 0
+    assert result.stop_reason == "stop:control_paused"
+    assert len(result.run_ids) == 1
+    assert session is not None
+    assert session.status is SessionStatus.PAUSED
+    assert session.completed_iterations == 0
+    assert session.last_stop_reason == "stop:control_paused"
+    assert iterations == []

@@ -9,6 +9,7 @@ from archonlab.control import ControlService
 from archonlab.events import EventStore
 from archonlab.models import (
     ExecutorKind,
+    ProjectConfig,
     ProjectSession,
     ProviderKind,
     QueueJobKind,
@@ -333,3 +334,53 @@ def test_queue_store_resume_workspace_sessions_resumes_paused_and_failed_session
     jobs = queue_store.list_jobs(limit=10)
     assert len(jobs) == 2
     assert {job.session_id for job in jobs} == {"session-alpha-1", "session-beta-1"}
+
+
+def test_batch_runner_control_paused_session_does_not_consume_budget(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    workspace_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        archon_path=fake_archon_root,
+        projects=[("demo-project", fake_archon_project)],
+    )
+    ControlService(artifact_root).pause(
+        ProjectConfig(
+            name="demo-project",
+            project_path=fake_archon_project,
+            archon_path=fake_archon_root,
+        ),
+        reason="operator_pause",
+    )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    initial_job = queue_store.enqueue_workspace_sessions(workspace_path)[0]
+    runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(artifact_root),
+        artifact_root=artifact_root,
+        slot_limit=1,
+    )
+
+    report = runner.run_worker(
+        slot_index=1,
+        max_jobs=1,
+        poll_seconds=0.01,
+        idle_timeout_seconds=0.1,
+        executor_kinds=[ExecutorKind.DRY_RUN],
+        provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+    )
+
+    assert report.processed_job_ids == []
+    assert report.paused_job_ids == [initial_job.id]
+    session = EventStore(artifact_root / "archonlab.db").get_session(initial_job.session_id or "")
+    assert session is not None
+    assert session.completed_iterations == 0
+    assert session.status is SessionStatus.PAUSED
+    assert session.last_stop_reason == "stop:control_paused"
+    jobs = queue_store.list_jobs(limit=10)
+    updated_job = next(job for job in jobs if job.id == initial_job.id)
+    assert updated_job.status is QueueJobStatus.PAUSED

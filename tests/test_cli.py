@@ -1110,6 +1110,60 @@ def test_queue_resume_workspace_command_resumes_workspace_sessions(
     assert {job.session_id for job in jobs} == {"session-alpha-1", "session-beta-1"}
 
 
+def test_queue_resume_session_command_resumes_control_paused_session_without_budget_extension(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    session = ProjectSession(
+        session_id="session-demo-project-control-paused",
+        workspace_id="demo-workspace",
+        project_id="demo-project",
+        status=SessionStatus.PAUSED,
+        max_iterations=2,
+        completed_iterations=0,
+        last_stop_reason="stop:control_paused",
+    )
+    store.register_session(session)
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "resume-session",
+            "--config",
+            str(config_path),
+            "--session-id",
+            session.session_id,
+        ],
+    )
+
+    assert result.exit_code == 0
+    updated = store.get_session(session.session_id)
+    assert updated is not None
+    assert updated.status is SessionStatus.PENDING
+    jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
+    assert len(jobs) == 1
+    assert jobs[0].session_id == session.session_id
+
+
 def test_queue_run_and_status_commands_accept_workspace_config(
     tmp_path: Path,
     fake_archon_project: Path,

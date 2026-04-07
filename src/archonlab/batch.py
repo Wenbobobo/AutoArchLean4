@@ -20,6 +20,7 @@ from .config import build_workspace_project_app_config, load_workspace_config
 from .control import ControlService
 from .events import EventStore
 from .models import (
+    ActionPhase,
     BatchRunReport,
     BenchmarkManifest,
     BenchmarkProjectConfig,
@@ -650,7 +651,9 @@ class BatchRunner:
         )
         if result.status is SessionStatus.FAILED:
             queue_status = QueueJobStatus.FAILED
-        elif result.status is SessionStatus.PAUSED and result.run_id is None:
+        elif result.status is SessionStatus.PAUSED and (
+            result.run_id is None or result.action_phase is ActionPhase.STOP
+        ):
             queue_status = QueueJobStatus.PAUSED
         else:
             queue_status = QueueJobStatus.COMPLETED

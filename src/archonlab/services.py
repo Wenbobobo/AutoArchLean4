@@ -394,34 +394,34 @@ class RunService:
         try:
             while iteration_index < limit:
                 result = self.start(dry_run=actual_dry_run)
-                iteration_index += 1
                 run_ids.append(result.run_id)
-                self.event_store.append_session_iteration(
-                    SessionIteration(
-                        session_id=session.session_id,
-                        iteration_index=iteration_index,
-                        project_id=self.config.project.name,
-                        run_id=result.run_id,
-                        status=result.status,
-                        action_phase=(
-                            result.action.phase
-                            if isinstance(result.action.phase, ActionPhase)
-                            else ActionPhase(str(result.action.phase))
-                        ),
-                        action_reason=result.action.reason,
-                        finished_at=datetime.now(UTC),
-                    )
+                action_phase = (
+                    result.action.phase
+                    if isinstance(result.action.phase, ActionPhase)
+                    else ActionPhase(str(result.action.phase))
                 )
-                terminal_status = (
-                    SessionStatus.COMPLETED
-                    if str(result.action.phase) == ActionPhase.STOP.value
-                    else (
-                        SessionStatus.PAUSED
-                        if iteration_index >= limit
-                        else SessionStatus.RUNNING
+                if self._consumes_iteration_budget(action_phase):
+                    iteration_index += 1
+                    self.event_store.append_session_iteration(
+                        SessionIteration(
+                            session_id=session.session_id,
+                            iteration_index=iteration_index,
+                            project_id=self.config.project.name,
+                            run_id=result.run_id,
+                            status=result.status,
+                            action_phase=action_phase,
+                            action_reason=result.action.reason,
+                            finished_at=datetime.now(UTC),
+                        )
                     )
+                terminal_status = self._session_status_after_run(
+                    action_phase=action_phase,
+                    action_reason=result.action.reason,
+                    completed_iterations=iteration_index,
+                    max_iterations=limit,
+                    continue_status=SessionStatus.RUNNING,
                 )
-                if terminal_status is SessionStatus.COMPLETED:
+                if action_phase is ActionPhase.STOP:
                     stop_reason = f"stop:{result.action.reason}"
                 elif terminal_status is SessionStatus.PAUSED:
                     stop_reason = "max_iterations_reached"
@@ -520,32 +520,38 @@ class RunService:
                 note=note,
             )
             result = self.start(dry_run=session.dry_run)
-            iteration_index = session.completed_iterations + 1
             action_phase = (
                 result.action.phase
                 if isinstance(result.action.phase, ActionPhase)
                 else ActionPhase(str(result.action.phase))
             )
-            self.event_store.append_session_iteration(
-                SessionIteration(
-                    session_id=session.session_id,
-                    iteration_index=iteration_index,
-                    project_id=self.config.project.name,
-                    run_id=result.run_id,
-                    status=result.status,
-                    action_phase=action_phase,
-                    action_reason=result.action.reason,
-                    finished_at=datetime.now(UTC),
+            iteration_index = session.completed_iterations
+            if self._consumes_iteration_budget(action_phase):
+                iteration_index += 1
+                self.event_store.append_session_iteration(
+                    SessionIteration(
+                        session_id=session.session_id,
+                        iteration_index=iteration_index,
+                        project_id=self.config.project.name,
+                        run_id=result.run_id,
+                        status=result.status,
+                        action_phase=action_phase,
+                        action_reason=result.action.reason,
+                        finished_at=datetime.now(UTC),
+                    )
                 )
+            status = self._session_status_after_run(
+                action_phase=action_phase,
+                action_reason=result.action.reason,
+                completed_iterations=iteration_index,
+                max_iterations=session.max_iterations,
+                continue_status=SessionStatus.PENDING,
             )
-            if str(result.action.phase) == ActionPhase.STOP.value:
-                status = SessionStatus.COMPLETED
+            if action_phase is ActionPhase.STOP:
                 stop_reason = f"stop:{result.action.reason}"
-            elif iteration_index >= session.max_iterations:
-                status = SessionStatus.PAUSED
+            elif status is SessionStatus.PAUSED:
                 stop_reason = "max_iterations_reached"
             else:
-                status = SessionStatus.PENDING
                 stop_reason = "quantum_complete"
             updated = self.event_store.update_session(
                 session.session_id,
@@ -670,7 +676,7 @@ class RunService:
             resolved_capability = ExecutionCapability.from_configs(
                 executor=resolved_executor,
                 provider=resolved_provider,
-            )
+        )
         return RunPreview(
             workflow=workflow,
             workflow_spec_path=workflow_spec_path,
@@ -685,6 +691,27 @@ class RunService:
             resolved_executor=resolved_executor,
             resolved_provider=resolved_provider,
         )
+
+    @staticmethod
+    def _consumes_iteration_budget(action_phase: ActionPhase) -> bool:
+        return action_phase is not ActionPhase.STOP
+
+    @staticmethod
+    def _session_status_after_run(
+        *,
+        action_phase: ActionPhase,
+        action_reason: str,
+        completed_iterations: int,
+        max_iterations: int,
+        continue_status: SessionStatus,
+    ) -> SessionStatus:
+        if action_phase is ActionPhase.STOP:
+            if action_reason == "control_paused":
+                return SessionStatus.PAUSED
+            return SessionStatus.COMPLETED
+        if completed_iterations >= max_iterations:
+            return SessionStatus.PAUSED
+        return continue_status
 
     def _resolve_effective_workflow(
         self,
