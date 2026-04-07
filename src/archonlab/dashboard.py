@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .batch import BatchRunner
+from .benchmark import load_benchmark_manifest
 from .config import build_workspace_project_app_config, load_config, load_workspace_config
 from .control import ControlService
 from .events import EventStore
@@ -110,6 +111,19 @@ class WorkflowOverrideRequest(BaseModel):
 class BenchmarkLedgerRequest(BaseModel):
     summary_path: Path | None = None
     ledger_path: Path | None = None
+
+
+class BenchmarkRunSourceRequest(BaseModel):
+    manifest_path: Path | None = None
+    artifact_root: Path | None = None
+
+
+class BenchmarkRunsRequest(BenchmarkRunSourceRequest):
+    limit: int = Field(default=20, ge=1, le=200)
+
+
+class BenchmarkRunDetailRequest(BenchmarkRunSourceRequest):
+    run_id: str = Field(min_length=1)
 
 
 class BenchmarkCompareRequest(BaseModel):
@@ -536,6 +550,40 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
         )
         return [worker.model_dump(mode="json") for worker in workers]
 
+    @app.post("/api/benchmark/runs")
+    def benchmark_runs(body: BenchmarkRunsRequest) -> list[dict[str, Any]]:
+        try:
+            store = _resolve_dashboard_benchmark_store(
+                base_dir=resolved_config_path.parent,
+                manifest_path=body.manifest_path,
+                artifact_root=body.artifact_root,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return [
+            result.model_dump(mode="json")
+            for result in store.list_benchmark_runs(limit=body.limit)
+        ]
+
+    @app.post("/api/benchmark/run-detail")
+    def benchmark_run_detail(body: BenchmarkRunDetailRequest) -> dict[str, Any]:
+        try:
+            store = _resolve_dashboard_benchmark_store(
+                base_dir=resolved_config_path.parent,
+                manifest_path=body.manifest_path,
+                artifact_root=body.artifact_root,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        result = store.get_benchmark_run(body.run_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"Benchmark run not found: {body.run_id}")
+        return result.model_dump(mode="json")
+
     @app.post("/api/benchmark/experiment-ledger")
     def benchmark_experiment_ledger(body: BenchmarkLedgerRequest) -> dict[str, Any]:
         try:
@@ -641,6 +689,30 @@ def _load_dashboard_experiment_ledger(
     if not resolved_path.exists():
         raise FileNotFoundError(resolved_path)
     return load_experiment_ledger(resolved_path)
+
+
+def _resolve_dashboard_benchmark_store(
+    *,
+    base_dir: Path,
+    manifest_path: Path | None,
+    artifact_root: Path | None,
+) -> EventStore:
+    if manifest_path is not None and artifact_root is not None:
+        raise ValueError("Specify either manifest_path or artifact_root, not both.")
+    if manifest_path is None and artifact_root is None:
+        raise ValueError("Specify manifest_path or artifact_root.")
+    if manifest_path is not None:
+        resolved_manifest_path = _resolve_dashboard_path(base_dir, manifest_path)
+        if not resolved_manifest_path.exists():
+            raise FileNotFoundError(f"Benchmark manifest not found: {resolved_manifest_path}")
+        resolved_artifact_root = load_benchmark_manifest(
+            resolved_manifest_path
+        ).benchmark.artifact_root
+    else:
+        if artifact_root is None:
+            raise ValueError("Specify manifest_path or artifact_root.")
+        resolved_artifact_root = _resolve_dashboard_path(base_dir, artifact_root)
+    return EventStore(resolved_artifact_root / "archonlab.db")
 
 
 def _require_workspace_mode(workspace_config: WorkspaceConfig | None) -> WorkspaceConfig:
@@ -1514,11 +1586,39 @@ def render_dashboard_html(
           <div>
             <h2>Benchmark Lab</h2>
             <div class="meta">
-              Load experiment ledgers, compare theorem-level changes, and replay specific outcomes.
+              Browse recorded benchmark runs, then load ledgers, compare theorem-level changes,
+              and replay specific outcomes.
             </div>
           </div>
         </div>
         <div class="preview-grid">
+          <section class="preview-card">
+            <h3>Run Index</h3>
+            <label>
+              Manifest Path
+              <input
+                id="benchmark-manifest-input"
+                type="text"
+                placeholder="dashboard-benchmark.toml"
+              />
+            </label>
+            <label>
+              Artifact Root
+              <input
+                id="benchmark-artifact-root-input"
+                type="text"
+                placeholder="./benchmark-artifacts"
+              />
+            </label>
+            <div class="compact-controls">
+              <button class="secondary" id="benchmark-runs-button">Load Runs</button>
+            </div>
+            <div class="rule-list" id="benchmark-runs-list"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Run Detail</h3>
+            <div class="rule-list" id="benchmark-run-detail"></div>
+          </section>
           <section class="preview-card">
             <h3>Ledger</h3>
             <label>
@@ -1642,6 +1742,11 @@ def render_dashboard_html(
       const workspaceTagInput = document.getElementById("workspace-tag-input");
       const workspaceEnqueueButton = document.getElementById("workspace-enqueue-button");
       const workspaceResumeButton = document.getElementById("workspace-resume-button");
+      const benchmarkManifestInput = document.getElementById("benchmark-manifest-input");
+      const benchmarkArtifactRootInput = document.getElementById("benchmark-artifact-root-input");
+      const benchmarkRunsButton = document.getElementById("benchmark-runs-button");
+      const benchmarkRunsList = document.getElementById("benchmark-runs-list");
+      const benchmarkRunDetail = document.getElementById("benchmark-run-detail");
       const benchmarkSummaryInput = document.getElementById("benchmark-summary-input");
       const benchmarkLedgerInput = document.getElementById("benchmark-ledger-input");
       const benchmarkLedgerButton = document.getElementById("benchmark-ledger-button");
@@ -2130,6 +2235,85 @@ def render_dashboard_html(
       function renderProjectRunLoopsError(message) {{
         projectLatestRunLoop.innerHTML = '<div class="meta">Project run loops unavailable.</div>';
         projectRunLoopHistory.innerHTML = `<div class="meta">${{message}}</div>`;
+      }}
+
+      function benchmarkSourcePayload() {{
+        return {{
+          manifest_path: trimOrNull(benchmarkManifestInput.value),
+          artifact_root: trimOrNull(benchmarkArtifactRootInput.value),
+        }};
+      }}
+
+      async function loadBenchmarkRunDetail(runId) {{
+        const payload = await fetchJson(`/api/benchmark/run-detail`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{
+            ...benchmarkSourcePayload(),
+            run_id: runId,
+          }}),
+        }});
+        renderBenchmarkRunDetail(payload);
+        benchmarkSummaryInput.value = payload.summary_path || "";
+        benchmarkLedgerInput.value = payload.ledger_path || "";
+        benchmarkReplayLedgerInput.value = payload.ledger_path || "";
+        if (payload.projects && payload.projects.length) {{
+          benchmarkProjectInput.value = payload.projects[0].id || benchmarkProjectInput.value;
+        }}
+        return payload;
+      }}
+
+      function renderBenchmarkRuns(runs) {{
+        if (!runs.length) {{
+          benchmarkRunsList.innerHTML = '<div class="meta">No benchmark runs recorded.</div>';
+          benchmarkRunDetail.innerHTML = '<div class="meta">No benchmark run selected.</div>';
+          return;
+        }}
+        benchmarkRunsList.innerHTML = "";
+        for (const run of runs) {{
+          const item = document.createElement("button");
+          item.className = "run";
+          item.innerHTML = `
+            <strong>${{run.run_id}}</strong>
+            <div class="meta">
+              ${{run.benchmark?.name || "-"}} · ${{run.status || "-"}}
+            </div>
+            <div class="meta">${{run.started_at || "-"}}</div>
+          `;
+          item.addEventListener("click", async () => {{
+            try {{
+              await loadBenchmarkRunDetail(run.run_id);
+            }} catch (error) {{
+              renderBenchmarkError(benchmarkRunDetail, error.message);
+            }}
+          }});
+          benchmarkRunsList.appendChild(item);
+        }}
+      }}
+
+      function renderBenchmarkRunDetail(payload) {{
+        const projects = payload.projects || [];
+        benchmarkRunDetail.innerHTML = [
+          renderFacts([
+            ["benchmark", payload.benchmark?.name || "-"],
+            ["run", payload.run_id || "-"],
+            ["status", payload.status || "-"],
+            ["projects", `${{projects.length}}`],
+            ["summary", payload.summary_path || "-"],
+            ["ledger", payload.ledger_path || "-"],
+          ]),
+          projects.length
+            ? projects.slice(0, 6).map((project) => `
+                <div class="rule">
+                  <strong>${{project.id}}</strong>
+                  <div class="meta">
+                    ${{project.run_status || "-"}} · workflow=${{project.workflow || "-"}}
+                  </div>
+                  <div class="meta">${{project.artifact_dir || "-"}}</div>
+                </div>
+              `).join("")
+            : '<div class="meta">No benchmark projects recorded.</div>',
+        ].join("");
       }}
 
       function renderBenchmarkLedger(payload) {{
@@ -2683,6 +2867,28 @@ def render_dashboard_html(
           }}),
         }});
         await refresh();
+      }});
+
+      benchmarkRunsButton.addEventListener("click", async () => {{
+        try {{
+          const payload = await fetchJson(`/api/benchmark/runs`, {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{
+              ...benchmarkSourcePayload(),
+              limit: 20,
+            }}),
+          }});
+          renderBenchmarkRuns(payload);
+          if (payload.length) {{
+            await loadBenchmarkRunDetail(payload[0].run_id);
+          }} else {{
+            renderBenchmarkRunDetail({{}});
+          }}
+        }} catch (error) {{
+          renderBenchmarkError(benchmarkRunsList, error.message);
+          renderBenchmarkError(benchmarkRunDetail, error.message);
+        }}
       }});
 
       benchmarkLedgerButton.addEventListener("click", async () => {{

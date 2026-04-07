@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient  # noqa: E402
 
+from archonlab.benchmark import BenchmarkRunService  # noqa: E402
 from archonlab.dashboard import create_dashboard_app  # noqa: E402
 from archonlab.events import EventStore  # noqa: E402
 from archonlab.models import (  # noqa: E402
@@ -113,6 +114,28 @@ def _write_experiment_ledger(
         encoding="utf-8",
     )
     return path
+
+
+def _write_dashboard_benchmark_manifest(
+    tmp_path: Path,
+    *,
+    project_path: Path,
+    archon_path: Path,
+) -> Path:
+    (project_path / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+    manifest_path = tmp_path / "dashboard-benchmark.toml"
+    manifest_path.write_text(
+        "[benchmark]\n"
+        'name = "dashboard-smoke"\n'
+        'artifact_root = "./benchmark-artifacts"\n\n'
+        "[[projects]]\n"
+        'id = "demo"\n'
+        f'path = "{project_path}"\n'
+        f'archon_path = "{archon_path}"\n'
+        'workflow = "adaptive_loop"\n',
+        encoding="utf-8",
+    )
+    return manifest_path
 
 
 def test_dashboard_api_lists_runs_and_supports_control_actions(
@@ -1004,3 +1027,87 @@ def test_dashboard_benchmark_lab_supports_ledger_compare_and_replay(
         },
     )
     assert missing_theorem_response.status_code == 404
+
+
+def test_dashboard_benchmark_lab_lists_persisted_benchmark_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_path = _make_project(tmp_path)
+    archon_path = _make_archon(tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    benchmark_manifest = _write_dashboard_benchmark_manifest(
+        tmp_path,
+        project_path=project_path,
+        archon_path=archon_path,
+    )
+    benchmark_result = BenchmarkRunService(benchmark_manifest).run()
+
+    original_connect = sqlite3.connect
+
+    def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        options = dict(kwargs)
+        options.setdefault("check_same_thread", False)
+        return original_connect(*args, **options)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+
+    config_path = tmp_path / "archonlab.toml"
+    config_path.write_text(
+        "[project]\n"
+        'name = "DemoProject"\n'
+        f'project_path = "{project_path}"\n'
+        f'archon_path = "{archon_path}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+
+    app = create_dashboard_app(config_path)
+    client = TestClient(app)
+
+    index_response = client.get("/")
+    assert index_response.status_code == 200
+    assert 'id="benchmark-manifest-input"' in index_response.text
+    assert 'id="benchmark-runs-list"' in index_response.text
+    assert 'id="benchmark-run-detail"' in index_response.text
+
+    runs_response = client.post(
+        "/api/benchmark/runs",
+        json={"manifest_path": benchmark_manifest.name},
+    )
+    assert runs_response.status_code == 200
+    runs_payload = runs_response.json()
+    assert len(runs_payload) == 1
+    assert runs_payload[0]["run_id"] == benchmark_result.run_id
+
+    detail_response = client.post(
+        "/api/benchmark/run-detail",
+        json={
+            "manifest_path": benchmark_manifest.name,
+            "run_id": benchmark_result.run_id,
+        },
+    )
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["run_id"] == benchmark_result.run_id
+    assert detail_payload["ledger_path"] == str(benchmark_result.ledger_path)
+
+    invalid_source_response = client.post(
+        "/api/benchmark/runs",
+        json={
+            "manifest_path": benchmark_manifest.name,
+            "artifact_root": str(benchmark_result.benchmark.artifact_root),
+        },
+    )
+    assert invalid_source_response.status_code == 400
+
+    missing_run_response = client.post(
+        "/api/benchmark/run-detail",
+        json={
+            "manifest_path": benchmark_manifest.name,
+            "run_id": "missing-run",
+        },
+    )
+    assert missing_run_response.status_code == 404
