@@ -90,6 +90,16 @@ def _exception_message(error: Exception) -> str:
     return str(error.args[0]) if error.args else str(error)
 
 
+def _resolve_queue_runtime(config_path: Path) -> tuple[Path, int]:
+    resolved_config_path = config_path.resolve()
+    try:
+        workspace_config = load_workspace_config(resolved_config_path)
+        return workspace_config.run.artifact_root, workspace_config.run.max_parallel
+    except (KeyError, ValueError):
+        app_config = load_config(resolved_config_path)
+        return app_config.run.artifact_root, app_config.run.max_parallel
+
+
 @app.command()
 def doctor(
     config: Annotated[
@@ -1131,12 +1141,12 @@ def queue_run(
         typer.Option("--slots", min=1, help="Override queue worker slots."),
     ] = None,
 ) -> None:
-    app_config = load_config(config)
+    artifact_root, max_parallel = _resolve_queue_runtime(config)
     runner = BatchRunner(
-        queue_store=QueueStore(app_config.run.artifact_root / "archonlab.db"),
-        control_service=ControlService(app_config.run.artifact_root),
-        artifact_root=app_config.run.artifact_root,
-        slot_limit=slots or app_config.run.max_parallel,
+        queue_store=QueueStore(artifact_root / "archonlab.db"),
+        control_service=ControlService(artifact_root),
+        artifact_root=artifact_root,
+        slot_limit=slots or max_parallel,
     )
     report = runner.run_pending(max_jobs=max_jobs)
     typer.echo(f"Processed: {len(report.processed_job_ids)}")
@@ -1241,15 +1251,15 @@ def queue_fleet(
         ),
     ] = None,
 ) -> None:
-    app_config = load_config(config)
+    artifact_root, max_parallel = _resolve_queue_runtime(config)
     runner = BatchRunner(
-        queue_store=QueueStore(app_config.run.artifact_root / "archonlab.db"),
-        control_service=ControlService(app_config.run.artifact_root),
-        artifact_root=app_config.run.artifact_root,
-        slot_limit=workers or app_config.run.max_parallel,
+        queue_store=QueueStore(artifact_root / "archonlab.db"),
+        control_service=ControlService(artifact_root),
+        artifact_root=artifact_root,
+        slot_limit=workers or max_parallel,
     )
     report = runner.run_fleet(
-        worker_count=workers if plan_driven else (workers or app_config.run.max_parallel),
+        worker_count=workers if plan_driven else (workers or max_parallel),
         plan_driven=plan_driven,
         target_jobs_per_worker=target_jobs_per_worker,
         max_jobs_per_worker=max_jobs_per_worker,
@@ -1295,8 +1305,8 @@ def queue_plan_fleet(
         typer.Option("--json", help="Print machine-readable fleet plan JSON."),
     ] = False,
 ) -> None:
-    app_config = load_config(config)
-    plan = QueueStore(app_config.run.artifact_root / "archonlab.db").plan_fleet(
+    artifact_root, _ = _resolve_queue_runtime(config)
+    plan = QueueStore(artifact_root / "archonlab.db").plan_fleet(
         target_jobs_per_worker=target_jobs_per_worker,
         stale_after_seconds=stale_after_seconds,
     )
@@ -1397,13 +1407,13 @@ def queue_autoscale(
         ),
     ] = 120.0,
 ) -> None:
-    app_config = load_config(config)
-    queue_store = QueueStore(app_config.run.artifact_root / "archonlab.db")
+    artifact_root, max_parallel = _resolve_queue_runtime(config)
+    queue_store = QueueStore(artifact_root / "archonlab.db")
     batch_runner = BatchRunner(
         queue_store=queue_store,
-        control_service=ControlService(app_config.run.artifact_root),
-        artifact_root=app_config.run.artifact_root,
-        slot_limit=workers or app_config.run.max_parallel,
+        control_service=ControlService(artifact_root),
+        artifact_root=artifact_root,
+        slot_limit=workers or max_parallel,
     )
     result = FleetController(
         queue_store=queue_store,
@@ -1440,8 +1450,8 @@ def queue_status(
         typer.Option("--status", case_sensitive=False, help="Optional status filter."),
     ] = None,
 ) -> None:
-    app_config = load_config(config)
-    jobs = QueueStore(app_config.run.artifact_root / "archonlab.db").list_jobs(
+    artifact_root, _ = _resolve_queue_runtime(config)
+    jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(
         limit=limit,
         status=status,
     )
@@ -1518,8 +1528,8 @@ def queue_workers(
         ),
     ] = 120.0,
 ) -> None:
-    app_config = load_config(config)
-    workers = QueueStore(app_config.run.artifact_root / "archonlab.db").list_workers(
+    artifact_root, _ = _resolve_queue_runtime(config)
+    workers = QueueStore(artifact_root / "archonlab.db").list_workers(
         stale_after_seconds=stale_after_seconds
     )
     if not workers:
@@ -1623,11 +1633,11 @@ def queue_worker(
         ),
     ] = None,
 ) -> None:
-    app_config = load_config(config)
+    artifact_root, _ = _resolve_queue_runtime(config)
     runner = BatchRunner(
-        queue_store=QueueStore(app_config.run.artifact_root / "archonlab.db"),
-        control_service=ControlService(app_config.run.artifact_root),
-        artifact_root=app_config.run.artifact_root,
+        queue_store=QueueStore(artifact_root / "archonlab.db"),
+        control_service=ControlService(artifact_root),
+        artifact_root=artifact_root,
         slot_limit=1,
     )
     report = runner.run_worker(
@@ -1677,8 +1687,8 @@ def queue_sweep_workers(
         ),
     ] = True,
 ) -> None:
-    app_config = load_config(config)
-    workers = QueueStore(app_config.run.artifact_root / "archonlab.db").reap_stale_workers(
+    artifact_root, _ = _resolve_queue_runtime(config)
+    workers = QueueStore(artifact_root / "archonlab.db").reap_stale_workers(
         stale_after_seconds=stale_after_seconds,
         requeue_running_jobs=requeue_running_jobs,
     )
@@ -1702,8 +1712,8 @@ def queue_cancel(
 ) -> None:
     if not job_id:
         raise typer.BadParameter("--job-id is required")
-    app_config = load_config(config)
-    job = QueueStore(app_config.run.artifact_root / "archonlab.db").cancel(job_id, reason=reason)
+    artifact_root, _ = _resolve_queue_runtime(config)
+    job = QueueStore(artifact_root / "archonlab.db").cancel(job_id, reason=reason)
     typer.echo(f"Canceled: {job.id}")
 
 
@@ -1719,8 +1729,8 @@ def queue_requeue(
 ) -> None:
     if not job_id:
         raise typer.BadParameter("--job-id is required")
-    app_config = load_config(config)
-    job = QueueStore(app_config.run.artifact_root / "archonlab.db").requeue(job_id)
+    artifact_root, _ = _resolve_queue_runtime(config)
+    job = QueueStore(artifact_root / "archonlab.db").requeue(job_id)
     typer.echo(f"Requeued: {job.id} | priority={job.priority}")
 
 

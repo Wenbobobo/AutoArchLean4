@@ -43,6 +43,35 @@ def _init_git_repo(repo_path: Path) -> None:
     )
 
 
+def _write_workspace_cli_config(
+    path: Path,
+    *,
+    artifact_root: Path,
+    project_path: Path,
+    archon_path: Path,
+    project_ids: tuple[str, ...] = ("alpha",),
+) -> Path:
+    content = (
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n"
+        "max_parallel = 2\n\n"
+    )
+    for project_id in project_ids:
+        content += (
+            "[[projects]]\n"
+            f'id = "{project_id}"\n'
+            f'project_path = "{project_path}"\n'
+            f'archon_path = "{archon_path}"\n\n'
+        )
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def test_project_init_command_writes_config(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
@@ -1079,6 +1108,251 @@ def test_queue_resume_workspace_command_resumes_workspace_sessions(
     jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
     assert len(jobs) == 2
     assert {job.session_id for job in jobs} == {"session-alpha-1", "session-beta-1"}
+
+
+def test_queue_run_and_status_commands_accept_workspace_config(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+
+    enqueue_result = runner.invoke(
+        app,
+        ["queue", "enqueue-workspace", "--config", str(config_path)],
+    )
+    status_result = runner.invoke(
+        app,
+        ["queue", "status", "--config", str(config_path)],
+    )
+    run_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "run",
+            "--config",
+            str(config_path),
+            "--max-jobs",
+            "1",
+            "--slots",
+            "1",
+        ],
+    )
+
+    assert enqueue_result.exit_code == 0
+    assert status_result.exit_code == 0
+    assert run_result.exit_code == 0
+    assert "alpha" in status_result.output
+    assert "queued" in status_result.output
+    assert "Processed: 1" in run_result.output
+
+
+def test_queue_worker_and_workers_commands_accept_workspace_config(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+
+    enqueue_result = runner.invoke(
+        app,
+        ["queue", "enqueue-workspace", "--config", str(config_path)],
+    )
+    worker_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "worker",
+            "--config",
+            str(config_path),
+            "--auto-slot",
+            "--executor-kinds",
+            "dry_run",
+            "--max-jobs",
+            "1",
+            "--idle-timeout-seconds",
+            "0.1",
+        ],
+    )
+    workers_result = runner.invoke(
+        app,
+        ["queue", "workers", "--config", str(config_path)],
+    )
+
+    assert enqueue_result.exit_code == 0
+    assert worker_result.exit_code == 0
+    assert workers_result.exit_code == 0
+    assert "Worker slot: 1" in worker_result.output
+    assert "slot=1" in workers_result.output
+
+
+def test_queue_sweep_workers_command_accepts_workspace_config(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    queue_store.register_worker(slot_index=1, worker_id="worker-stale")
+    queue_store._conn.execute(
+        "UPDATE queue_workers SET heartbeat_at = ? WHERE worker_id = ?",
+        (
+            (datetime.now(UTC) - timedelta(seconds=300)).isoformat(),
+            "worker-stale",
+        ),
+    )
+    queue_store._conn.commit()
+
+    sweep_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "sweep-workers",
+            "--config",
+            str(config_path),
+            "--stale-after-seconds",
+            "60",
+        ],
+    )
+    workers_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "workers",
+            "--config",
+            str(config_path),
+            "--stale-after-seconds",
+            "60",
+        ],
+    )
+
+    assert sweep_result.exit_code == 0
+    assert workers_result.exit_code == 0
+    assert "Reaped: 1" in sweep_result.output
+    assert "worker-stale | slot=1 | failed" in workers_result.output
+
+
+def test_queue_plan_fleet_and_fleet_commands_accept_workspace_config(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+
+    enqueue_result = runner.invoke(
+        app,
+        ["queue", "enqueue-workspace", "--config", str(config_path)],
+    )
+    plan_result = runner.invoke(
+        app,
+        ["queue", "plan-fleet", "--config", str(config_path)],
+    )
+    fleet_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "fleet",
+            "--config",
+            str(config_path),
+            "--workers",
+            "1",
+            "--max-jobs-per-worker",
+            "1",
+            "--executor-kinds",
+            "dry_run",
+            "--idle-timeout-seconds",
+            "0.1",
+            "--poll-seconds",
+            "0.1",
+        ],
+    )
+
+    assert enqueue_result.exit_code == 0
+    assert plan_result.exit_code == 0
+    assert fleet_result.exit_code == 0
+    assert "Profiles: 1" in plan_result.output
+    assert "Processed: 1" in fleet_result.output
+    assert "Workers: 1" in fleet_result.output
+
+
+def test_queue_autoscale_command_accepts_workspace_config(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run(self, **kwargs) -> object:
+        captured.update(kwargs)
+        return self.result_model(
+            cycles_completed=2,
+            stop_reason="queue_drained",
+            total_processed_jobs=3,
+            total_paused_jobs=0,
+            total_failed_jobs=0,
+            total_workers_launched=2,
+            cycles=[],
+            final_plan=self.queue_store.plan_fleet(),
+        )
+
+    monkeypatch.setattr("archonlab.app.FleetController.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "autoscale",
+            "--config",
+            str(config_path),
+            "--max-cycles",
+            "5",
+            "--idle-cycles",
+            "2",
+            "--target-jobs-per-worker",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Stop reason: queue_drained" in result.output
+    assert "Processed: 3" in result.output
+    assert captured["max_cycles"] == 5
+    assert captured["idle_cycles"] == 2
+    assert captured["target_jobs_per_worker"] == 3
 
 
 def test_queue_fleet_command_processes_jobs_with_auto_slot_workers(
