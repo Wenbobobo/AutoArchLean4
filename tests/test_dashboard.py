@@ -116,6 +116,8 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert index_response.status_code == 200
     assert 'id="project-preview-overview"' in index_response.text
     assert 'id="project-preview-rules"' in index_response.text
+    assert 'id="fleet-plan-summary"' in index_response.text
+    assert 'id="fleet-plan-list"' in index_response.text
 
     runs_response = client.get("/api/runs")
     assert runs_response.status_code == 200
@@ -255,6 +257,15 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
         ),
     )
     queue_store.register_worker(slot_index=1, worker_id="worker-test")
+    queue_store.register_worker(
+        slot_index=2,
+        worker_id="worker-premium",
+        executor_kinds=[ExecutorKind.DRY_RUN],
+        provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        models=["gpt-5.4"],
+        cost_tiers=["premium"],
+        endpoint_classes=["lab"],
+    )
     stale_heartbeat = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
     queue_store._conn.execute(
         "UPDATE queue_workers SET heartbeat_at = ? WHERE worker_id = ?",
@@ -276,6 +287,18 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert jobs[0]["preview"]["final_priority"] == 10
     assert jobs[0]["preview"]["model"] == "gpt-5.4"
     assert jobs[0]["preview"]["supervisor_summary"].startswith("Current state looks healthy")
+
+    fleet_plan_response = client.get("/api/queue/fleet-plan")
+    assert fleet_plan_response.status_code == 200
+    fleet_plan = fleet_plan_response.json()
+    assert fleet_plan["active_jobs"] == 1
+    assert fleet_plan["active_workers"] == 1
+    assert fleet_plan["dedicated_workers"] == 1
+    assert fleet_plan["recommended_additional_workers"] == 0
+    assert fleet_plan["profiles"][0]["required_models"] == ["gpt-5.4"]
+    assert fleet_plan["profiles"][0]["dominant_phase"] == "prover"
+    assert fleet_plan["profiles"][0]["dedicated_workers"] == 1
+    assert fleet_plan["profiles"][0]["recommended_total_workers"] == 1
 
     job_detail_response = client.get(f"/api/queue/jobs/{queued_job.id}")
     assert job_detail_response.status_code == 200

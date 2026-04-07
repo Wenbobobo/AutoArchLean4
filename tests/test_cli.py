@@ -8,6 +8,14 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from archonlab.app import app
+from archonlab.models import (
+    ActionPhase,
+    ExecutorKind,
+    ProviderKind,
+    QueueJobPreview,
+    SupervisorAction,
+    SupervisorReason,
+)
 from archonlab.queue import QueueStore
 
 runner = CliRunner()
@@ -558,3 +566,102 @@ def test_queue_fleet_command_processes_jobs_with_auto_slot_workers(
     assert fleet_result.exit_code == 0
     assert "Processed: 1" in fleet_result.output
     assert "Workers: 1" in fleet_result.output
+
+
+def test_queue_plan_fleet_command_summarizes_recommended_worker_profiles(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    queue_store.enqueue(
+        "benchmark",
+        {"manifest_path": "cheap.toml"},
+        project_id="demo-cheap",
+        priority=5,
+        required_executor_kinds=[ExecutorKind.DRY_RUN],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4-mini"],
+        required_cost_tiers=["cheap"],
+        required_endpoint_classes=["lab"],
+        preview=QueueJobPreview(
+            phase=ActionPhase.PLAN,
+            reason="bootstrap_first_iteration",
+            stage="plan",
+            supervisor_action=SupervisorAction.CONTINUE,
+            supervisor_reason=SupervisorReason.HEALTHY,
+            theorem_name="cheap_goal",
+            final_priority=5,
+            executor_kind=ExecutorKind.DRY_RUN,
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model="gpt-5.4-mini",
+            cost_tier="cheap",
+            endpoint_class="lab",
+        ),
+    )
+    queue_store.enqueue(
+        "benchmark",
+        {"manifest_path": "premium.toml"},
+        project_id="demo-premium",
+        priority=9,
+        required_executor_kinds=[ExecutorKind.DRY_RUN],
+        required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        required_models=["gpt-5.4"],
+        required_cost_tiers=["premium"],
+        required_endpoint_classes=["lab"],
+        preview=QueueJobPreview(
+            phase=ActionPhase.PROVER,
+            reason="task_graph_focus",
+            stage="prover",
+            supervisor_action=SupervisorAction.CONTINUE,
+            supervisor_reason=SupervisorReason.HEALTHY,
+            theorem_name="premium_goal",
+            final_priority=9,
+            executor_kind=ExecutorKind.DRY_RUN,
+            provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+            model="gpt-5.4",
+            cost_tier="premium",
+            endpoint_class="lab",
+        ),
+    )
+    queue_store.register_worker(
+        slot_index=1,
+        worker_id="worker-cheap",
+        executor_kinds=[ExecutorKind.DRY_RUN],
+        provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        models=["gpt-5.4-mini"],
+        cost_tiers=["cheap"],
+        endpoint_classes=["lab"],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "plan-fleet",
+            "--config",
+            str(config_path),
+            "--target-jobs-per-worker",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Profiles: 2" in result.output
+    assert "Active workers: 1" in result.output
+    assert "Dedicated workers: 1" in result.output
+    assert "Additional workers: 1" in result.output
+    assert "model=gpt-5.4-mini" in result.output
+    assert "model=gpt-5.4" in result.output

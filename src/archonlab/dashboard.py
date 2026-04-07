@@ -216,6 +216,20 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             for worker in queue.list_workers(stale_after_seconds=stale_after_seconds)
         ]
 
+    @app.get("/api/queue/fleet-plan")
+    def get_queue_fleet_plan(
+        target_jobs_per_worker: int = 2,
+        stale_after_seconds: float = 120.0,
+    ) -> dict[str, Any]:
+        try:
+            plan = queue.plan_fleet(
+                target_jobs_per_worker=target_jobs_per_worker,
+                stale_after_seconds=stale_after_seconds,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return plan.model_dump(mode="json")
+
     @app.post("/api/queue/enqueue")
     def enqueue_queue_job(body: QueueEnqueueRequest) -> list[dict[str, Any]]:
         jobs = queue.enqueue_benchmark_manifest(
@@ -806,6 +820,16 @@ def render_dashboard_html(project_id: str) -> str:
           <div style="height: 12px"></div>
           <div class="summary-grid" id="queue-summary"></div>
           <div style="height: 16px"></div>
+          <div class="section-head">
+            <h2>Fleet Plan</h2>
+            <div class="meta" id="fleet-plan-meta">
+              Recommended dedicated worker pools for the active queue.
+            </div>
+          </div>
+          <div class="summary-grid" id="fleet-plan-summary"></div>
+          <div style="height: 12px"></div>
+          <div class="rule-list" id="fleet-plan-list"></div>
+          <div style="height: 16px"></div>
           <h2>Workers</h2>
           <div class="list" id="workers-list"></div>
         </aside>
@@ -899,6 +923,9 @@ def render_dashboard_html(project_id: str) -> str:
       const projectPreviewJson = document.getElementById("project-preview-json");
       const jobRequeueButton = document.getElementById("job-requeue-button");
       const jobCancelButton = document.getElementById("job-cancel-button");
+      const fleetPlanMeta = document.getElementById("fleet-plan-meta");
+      const fleetPlanSummary = document.getElementById("fleet-plan-summary");
+      const fleetPlanList = document.getElementById("fleet-plan-list");
       const workersList = document.getElementById("workers-list");
       let latestJobs = [];
       let selectedQueueJobId = null;
@@ -1094,6 +1121,71 @@ def render_dashboard_html(project_id: str) -> str:
         );
       }}
 
+      function renderFleetPlan(plan) {{
+        const profiles = plan.profiles || [];
+        fleetPlanMeta.textContent =
+          `Target ${{plan.target_jobs_per_worker}} jobs/worker · ${{plan.total_profiles}} profiles`;
+        fleetPlanSummary.innerHTML = `
+          <div class="pill">Active jobs: <strong>${{plan.active_jobs || 0}}</strong></div>
+          <div class="pill">Active workers: <strong>${{plan.active_workers || 0}}</strong></div>
+          <div class="pill">Dedicated: <strong>${{plan.dedicated_workers || 0}}</strong></div>
+          <div class="pill">Generic: <strong>${{plan.generic_workers || 0}}</strong></div>
+          <div class="pill">
+            Recommended: <strong>${{plan.recommended_total_workers || 0}}</strong>
+          </div>
+          <div class="pill">
+            Add: <strong>${{plan.recommended_additional_workers || 0}}</strong>
+          </div>
+        `;
+        if (!profiles.length) {{
+          fleetPlanList.innerHTML = '<div class="meta">No active queue demand.</div>';
+          return;
+        }}
+        fleetPlanList.innerHTML = profiles.map((profile) => {{
+          const dominantPhase = profile.dominant_phase || "-";
+          const executors = (profile.required_executor_kinds || []).join(",") || "any";
+          const providers = (profile.required_provider_kinds || []).join(",") || "any";
+          const models = (profile.required_models || []).join(",") || "any";
+          const costTiers = (profile.required_cost_tiers || []).join(",") || "any";
+          const endpoints = (profile.required_endpoint_classes || []).join(",") || "any";
+          const phases = Object.entries(profile.phase_counts || {{}})
+            .map(([phase, count]) => `${{phase}}:${{count}}`)
+            .join(" · ") || "-";
+          const stages = Object.entries(profile.stage_counts || {{}})
+            .map(([stage, count]) => `${{stage}}:${{count}}`)
+            .join(" · ") || "-";
+          const projects = (profile.project_ids || []).join(", ") || "-";
+          const focus = (profile.focus_examples || []).join(", ") || "-";
+          return `
+            <div class="rule">
+              <strong>${{dominantPhase}} · model=${{models}} · cost=${{costTiers}}</strong>
+              <div class="meta">
+                jobs=${{profile.active_jobs}} · queued=${{profile.queued_jobs}}
+                · running=${{profile.running_jobs}}
+              </div>
+              <div class="meta">
+                dedicated=${{profile.dedicated_workers}}
+                · recommend=${{profile.recommended_total_workers}} total
+                / +${{profile.recommended_additional_workers}}
+              </div>
+              <div class="meta">
+                executor=${{executors}} · provider=${{providers}} · endpoint=${{endpoints}}
+              </div>
+              <div class="meta">projects=${{projects}}</div>
+              <div class="meta">focus=${{focus}}</div>
+              <div class="meta">phases=${{phases}} · stages=${{stages}}</div>
+            </div>
+          `;
+        }}).join("");
+      }}
+
+      function renderFleetPlanError(message) {{
+        fleetPlanMeta.textContent = "Fleet plan unavailable.";
+        fleetPlanSummary.innerHTML =
+          '<div class="pill">error <strong>fleet_plan_failed</strong></div>';
+        fleetPlanList.innerHTML = `<div class="meta">${{message}}</div>`;
+      }}
+
       function renderProjectPreview(payload) {{
         const preview = payload.preview || {{}};
         const action = preview.action || {{}};
@@ -1109,6 +1201,8 @@ def render_dashboard_html(project_id: str) -> str:
         const taskNodes = taskGraph.nodes || [];
         const blockedNodes = taskNodes.filter((node) => node.status === "blocked").slice(0, 4);
         const pendingNodes = taskNodes.filter((node) => node.status === "pending").slice(0, 4);
+        const blockedTitles = blockedNodes.map((node) => node.title || node.id).join(", ");
+        const pendingTitles = pendingNodes.map((node) => node.title || node.id).join(", ");
         const chips = [
           ["workflow", payload.workflow || "-"],
           ["configured", payload.configured_workflow || "-"],
@@ -1221,7 +1315,7 @@ def render_dashboard_html(project_id: str) -> str:
             ? `
                 <div class="rule">
                   <strong>Blocked Nodes</strong>
-                  <div class="meta">${{blockedNodes.map((node) => node.title || node.id).join(", ")}}</div>
+                  <div class="meta">${{blockedTitles}}</div>
                 </div>
               `
             : '<div class="meta">No blocked nodes.</div>',
@@ -1229,7 +1323,7 @@ def render_dashboard_html(project_id: str) -> str:
             ? `
                 <div class="rule">
                   <strong>Pending Nodes</strong>
-                  <div class="meta">${{pendingNodes.map((node) => node.title || node.id).join(", ")}}</div>
+                  <div class="meta">${{pendingTitles}}</div>
                 </div>
               `
             : '<div class="meta">No pending nodes.</div>',
@@ -1292,17 +1386,25 @@ def render_dashboard_html(project_id: str) -> str:
       async function refresh() {{
         const previewPromise = fetchJson(`/api/projects/${{projectId}}/preview`)
           .catch((error) => ({{ error: error.message }}));
-        const [control, runs, jobs, workers, projectPreview] = await Promise.all([
+        const fleetPlanPromise = fetchJson(`/api/queue/fleet-plan`)
+          .catch((error) => ({{ error: error.message }}));
+        const [control, runs, jobs, workers, projectPreview, fleetPlan] = await Promise.all([
           fetchJson(`/api/projects/${{projectId}}/control`),
           fetchJson(`/api/runs?limit=20`),
           fetchJson(`/api/queue/jobs?limit=20`),
           fetchJson(`/api/queue/workers`),
           previewPromise,
+          fleetPlanPromise,
         ]);
         renderControl(control);
         renderRuns(runs);
         renderQueue(jobs);
         renderWorkers(workers);
+        if (fleetPlan.error) {{
+          renderFleetPlanError(fleetPlan.error);
+        }} else {{
+          renderFleetPlan(fleetPlan);
+        }}
         if (projectPreview.error) {{
           renderProjectPreviewError(projectPreview.error);
         }} else {{

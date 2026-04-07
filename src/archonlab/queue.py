@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
+from math import ceil
 from pathlib import Path
 from typing import TypedDict, cast
 
@@ -22,6 +23,8 @@ from .models import (
     ProviderConfig,
     ProviderKind,
     QueueBenchmarkPayload,
+    QueueFleetPlan,
+    QueueFleetProfile,
     QueueJob,
     QueueJobKind,
     QueueJobPreview,
@@ -42,6 +45,14 @@ class ProjectRequirements(TypedDict):
     required_cost_tiers: list[str]
     required_endpoint_classes: list[str]
     preview: QueueJobPreview
+
+
+class FleetProfileAggregate(TypedDict):
+    jobs: list[QueueJob]
+    phase_counts: dict[str, int]
+    stage_counts: dict[str, int]
+    project_ids: list[str]
+    focus_examples: list[str]
 
 
 class QueueStore:
@@ -646,6 +657,171 @@ class QueueStore:
     def list_worker_leases(self) -> list[QueueWorkerLease]:
         return self.list_workers()
 
+    def plan_fleet(
+        self,
+        *,
+        target_jobs_per_worker: int = 2,
+        stale_after_seconds: float | None = 120.0,
+    ) -> QueueFleetPlan:
+        if target_jobs_per_worker < 1:
+            raise ValueError("target_jobs_per_worker must be >= 1")
+
+        with self._lock:
+            job_rows = self._conn.execute(
+                """
+                SELECT * FROM queue_jobs
+                WHERE status IN (?, ?, ?)
+                ORDER BY priority DESC, created_at ASC
+                """,
+                (
+                    QueueJobStatus.QUEUED.value,
+                    QueueJobStatus.PENDING.value,
+                    QueueJobStatus.RUNNING.value,
+                ),
+            ).fetchall()
+            worker_rows = self._conn.execute(
+                """
+                SELECT * FROM queue_workers
+                WHERE status IN (?, ?)
+                ORDER BY slot_index ASC, started_at ASC
+                """,
+                (
+                    WorkerStatus.IDLE.value,
+                    WorkerStatus.RUNNING.value,
+                ),
+            ).fetchall()
+
+        jobs = [self._row_to_job(row) for row in job_rows]
+        workers = self._annotate_workers(
+            [self._row_to_worker(row) for row in worker_rows],
+            stale_after_seconds=stale_after_seconds,
+        )
+        active_workers = [worker for worker in workers if not worker.stale]
+
+        queued_jobs = sum(1 for job in jobs if job.status is QueueJobStatus.QUEUED)
+        pending_jobs = sum(1 for job in jobs if job.status is QueueJobStatus.PENDING)
+        running_jobs = sum(1 for job in jobs if job.status is QueueJobStatus.RUNNING)
+
+        aggregates: dict[tuple[tuple[str, ...], ...], FleetProfileAggregate] = {}
+        for job in jobs:
+            key = self._fleet_profile_key(job)
+            aggregate = aggregates.get(key)
+            if aggregate is None:
+                aggregate = {
+                    "jobs": [],
+                    "phase_counts": {},
+                    "stage_counts": {},
+                    "project_ids": [],
+                    "focus_examples": [],
+                }
+                aggregates[key] = aggregate
+            aggregate["jobs"].append(job)
+            phase = (
+                job.preview.phase.value
+                if job.preview is not None and job.preview.phase is not None
+                else "unknown"
+            )
+            stage = (
+                job.preview.stage
+                if job.preview is not None and job.preview.stage is not None
+                else "unknown"
+            )
+            self._increment_count(aggregate["phase_counts"], phase)
+            self._increment_count(aggregate["stage_counts"], stage)
+            if job.project_id not in aggregate["project_ids"]:
+                aggregate["project_ids"].append(job.project_id)
+            focus = self._queue_job_focus(job)
+            if (
+                focus is not None
+                and focus not in aggregate["focus_examples"]
+                and len(aggregate["focus_examples"]) < 3
+            ):
+                aggregate["focus_examples"].append(focus)
+
+        profiles: list[QueueFleetProfile] = []
+        dedicated_worker_ids: set[str] = set()
+        for aggregate in aggregates.values():
+            profile_jobs = aggregate["jobs"]
+            exemplar = profile_jobs[0]
+            profile_running = sum(
+                1 for job in profile_jobs if job.status is QueueJobStatus.RUNNING
+            )
+            profile_queued = sum(
+                1 for job in profile_jobs if job.status is QueueJobStatus.QUEUED
+            )
+            profile_pending = sum(
+                1 for job in profile_jobs if job.status is QueueJobStatus.PENDING
+            )
+            profile_active = len(profile_jobs)
+            dedicated_workers = [
+                worker
+                for worker in active_workers
+                if self._worker_matches_profile_exact(worker, exemplar)
+            ]
+            dedicated_worker_ids.update(worker.worker_id for worker in dedicated_workers)
+            recommended_total_workers = max(
+                profile_running,
+                ceil(profile_active / target_jobs_per_worker),
+            )
+            profiles.append(
+                QueueFleetProfile(
+                    profile_id=self._profile_id(exemplar),
+                    required_executor_kinds=exemplar.required_executor_kinds,
+                    required_provider_kinds=exemplar.required_provider_kinds,
+                    required_models=exemplar.required_models,
+                    required_cost_tiers=exemplar.required_cost_tiers,
+                    required_endpoint_classes=exemplar.required_endpoint_classes,
+                    queued_jobs=profile_queued,
+                    pending_jobs=profile_pending,
+                    running_jobs=profile_running,
+                    active_jobs=profile_active,
+                    dedicated_workers=len(dedicated_workers),
+                    recommended_total_workers=recommended_total_workers,
+                    recommended_additional_workers=max(
+                        recommended_total_workers - len(dedicated_workers),
+                        0,
+                    ),
+                    dominant_phase=self._dominant_phase(aggregate["phase_counts"]),
+                    phase_counts=aggregate["phase_counts"],
+                    stage_counts=aggregate["stage_counts"],
+                    max_priority=max(job.priority for job in profile_jobs),
+                    avg_priority=round(
+                        sum(job.priority for job in profile_jobs) / profile_active,
+                        2,
+                    ),
+                    project_ids=sorted(aggregate["project_ids"]),
+                    focus_examples=sorted(aggregate["focus_examples"]),
+                )
+            )
+
+        profiles.sort(
+            key=lambda profile: (
+                -profile.max_priority,
+                -profile.active_jobs,
+                -profile.running_jobs,
+                profile.profile_id,
+            )
+        )
+
+        return QueueFleetPlan(
+            target_jobs_per_worker=target_jobs_per_worker,
+            total_profiles=len(profiles),
+            queued_jobs=queued_jobs,
+            pending_jobs=pending_jobs,
+            running_jobs=running_jobs,
+            active_jobs=len(jobs),
+            active_workers=len(active_workers),
+            dedicated_workers=len(dedicated_worker_ids),
+            generic_workers=max(len(active_workers) - len(dedicated_worker_ids), 0),
+            recommended_total_workers=sum(
+                profile.recommended_total_workers for profile in profiles
+            ),
+            recommended_additional_workers=sum(
+                profile.recommended_additional_workers for profile in profiles
+            ),
+            profiles=profiles,
+        )
+
     def _reap_stale_workers_locked(
         self,
         *,
@@ -1023,6 +1199,74 @@ class QueueStore:
             job.required_endpoint_classes
             and worker.endpoint_classes
             and not set(job.required_endpoint_classes).issubset(set(worker.endpoint_classes))
+        )
+
+    @staticmethod
+    def _worker_matches_profile_exact(worker: QueueWorkerLease, job: QueueJob) -> bool:
+        return (
+            set(worker.executor_kinds) == set(job.required_executor_kinds)
+            and set(worker.provider_kinds) == set(job.required_provider_kinds)
+            and set(worker.models) == set(job.required_models)
+            and set(worker.cost_tiers) == set(job.required_cost_tiers)
+            and set(worker.endpoint_classes) == set(job.required_endpoint_classes)
+        )
+
+    @staticmethod
+    def _fleet_profile_key(job: QueueJob) -> tuple[tuple[str, ...], ...]:
+        return (
+            tuple(sorted(kind.value for kind in job.required_executor_kinds)),
+            tuple(sorted(kind.value for kind in job.required_provider_kinds)),
+            tuple(sorted(job.required_models)),
+            tuple(sorted(job.required_cost_tiers)),
+            tuple(sorted(job.required_endpoint_classes)),
+        )
+
+    @staticmethod
+    def _profile_id(job: QueueJob) -> str:
+        parts = [
+            QueueStore._profile_dimension(
+                "executor",
+                [kind.value for kind in job.required_executor_kinds],
+            ),
+            QueueStore._profile_dimension(
+                "provider",
+                [kind.value for kind in job.required_provider_kinds],
+            ),
+            QueueStore._profile_dimension("model", job.required_models),
+            QueueStore._profile_dimension("cost", job.required_cost_tiers),
+            QueueStore._profile_dimension("endpoint", job.required_endpoint_classes),
+        ]
+        return "__".join(parts)
+
+    @staticmethod
+    def _profile_dimension(label: str, values: list[str]) -> str:
+        return f"{label}={','.join(sorted(values)) or 'any'}"
+
+    @staticmethod
+    def _increment_count(counts: dict[str, int], key: str) -> None:
+        counts[key] = counts.get(key, 0) + 1
+
+    @staticmethod
+    def _dominant_phase(phase_counts: dict[str, int]) -> ActionPhase | None:
+        valid = [
+            (phase, count)
+            for phase, count in phase_counts.items()
+            if phase in {item.value for item in ActionPhase}
+        ]
+        if not valid:
+            return None
+        dominant_phase = sorted(valid, key=lambda item: (-item[1], item[0]))[0][0]
+        return ActionPhase(dominant_phase)
+
+    @staticmethod
+    def _queue_job_focus(job: QueueJob) -> str | None:
+        if job.preview is None:
+            return None
+        return (
+            job.preview.theorem_name
+            or job.preview.task_title
+            or job.preview.task_id
+            or None
         )
 
     @staticmethod

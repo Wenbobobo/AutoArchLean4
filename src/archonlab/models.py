@@ -575,6 +575,49 @@ class QueueWorkerLease(BaseModel):
         return self.heartbeat_at
 
 
+class QueueFleetProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile_id: str
+    required_executor_kinds: list[ExecutorKind] = Field(default_factory=list)
+    required_provider_kinds: list[ProviderKind] = Field(default_factory=list)
+    required_models: list[str] = Field(default_factory=list)
+    required_cost_tiers: list[str] = Field(default_factory=list)
+    required_endpoint_classes: list[str] = Field(default_factory=list)
+    queued_jobs: int = 0
+    pending_jobs: int = 0
+    running_jobs: int = 0
+    active_jobs: int = 0
+    dedicated_workers: int = 0
+    recommended_total_workers: int = 0
+    recommended_additional_workers: int = 0
+    dominant_phase: ActionPhase | None = None
+    phase_counts: dict[str, int] = Field(default_factory=dict)
+    stage_counts: dict[str, int] = Field(default_factory=dict)
+    max_priority: int = 0
+    avg_priority: float = 0.0
+    project_ids: list[str] = Field(default_factory=list)
+    focus_examples: list[str] = Field(default_factory=list)
+
+
+class QueueFleetPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    target_jobs_per_worker: int = 2
+    total_profiles: int = 0
+    queued_jobs: int = 0
+    pending_jobs: int = 0
+    running_jobs: int = 0
+    active_jobs: int = 0
+    active_workers: int = 0
+    dedicated_workers: int = 0
+    generic_workers: int = 0
+    recommended_total_workers: int = 0
+    recommended_additional_workers: int = 0
+    profiles: list[QueueFleetProfile] = Field(default_factory=list)
+
+
 class BatchRunReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

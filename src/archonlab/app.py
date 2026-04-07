@@ -682,6 +682,72 @@ def queue_fleet(
     typer.echo(f"Workers: {len(report.worker_ids)}")
 
 
+@queue_app.command("plan-fleet")
+def queue_plan_fleet(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    target_jobs_per_worker: Annotated[
+        int,
+        typer.Option(
+            "--target-jobs-per-worker",
+            min=1,
+            help="Heuristic queue load to assign per dedicated worker.",
+        ),
+    ] = 2,
+    stale_after_seconds: Annotated[
+        float | None,
+        typer.Option(
+            "--stale-after-seconds",
+            min=0.1,
+            help="Ignore active workers older than this heartbeat age.",
+        ),
+    ] = 120.0,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable fleet plan JSON."),
+    ] = False,
+) -> None:
+    app_config = load_config(config)
+    plan = QueueStore(app_config.run.artifact_root / "archonlab.db").plan_fleet(
+        target_jobs_per_worker=target_jobs_per_worker,
+        stale_after_seconds=stale_after_seconds,
+    )
+    if json_output:
+        typer.echo(json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"Target jobs/worker: {plan.target_jobs_per_worker}")
+    typer.echo(f"Profiles: {plan.total_profiles}")
+    typer.echo(
+        f"Active jobs: {plan.active_jobs} | queued={plan.queued_jobs} | "
+        f"pending={plan.pending_jobs} | running={plan.running_jobs}"
+    )
+    typer.echo(f"Active workers: {plan.active_workers}")
+    typer.echo(f"Dedicated workers: {plan.dedicated_workers}")
+    typer.echo(f"Generic workers: {plan.generic_workers}")
+    typer.echo(f"Recommended workers: {plan.recommended_total_workers}")
+    typer.echo(f"Additional workers: {plan.recommended_additional_workers}")
+    if not plan.profiles:
+        typer.echo("No active queue demand.")
+        return
+
+    for profile in plan.profiles:
+        dominant_phase = profile.dominant_phase.value if profile.dominant_phase else "-"
+        executor_kinds = ",".join(kind.value for kind in profile.required_executor_kinds) or "-"
+        provider_kinds = ",".join(kind.value for kind in profile.required_provider_kinds) or "-"
+        models = ",".join(profile.required_models) or "-"
+        cost_tiers = ",".join(profile.required_cost_tiers) or "-"
+        endpoints = ",".join(profile.required_endpoint_classes) or "-"
+        typer.echo(
+            f"{profile.profile_id} | phase={dominant_phase} | jobs={profile.active_jobs} | "
+            f"dedicated={profile.dedicated_workers} | total={profile.recommended_total_workers} | "
+            f"add={profile.recommended_additional_workers} | executor={executor_kinds} | "
+            f"provider={provider_kinds} | model={models} | cost={cost_tiers} | endpoint={endpoints}"
+        )
+
+
 @queue_app.command("status")
 def queue_status(
     config: Annotated[
