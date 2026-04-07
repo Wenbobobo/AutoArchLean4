@@ -10,16 +10,19 @@ from .benchmark import BenchmarkRunService
 from .checks import gather_doctor_report
 from .config import init_config, load_config
 from .events import EventStore
-from .models import WorkflowMode
+from .models import WorkflowMode, WorktreeLease
 from .services import RunService
+from .worktree import WorktreeManager
 
 app = typer.Typer(no_args_is_help=True, help="archonlab external orchestrator control plane")
 project_app = typer.Typer(no_args_is_help=True)
 run_app = typer.Typer(no_args_is_help=True)
 benchmark_app = typer.Typer(no_args_is_help=True)
+worktree_app = typer.Typer(no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(run_app, name="run")
 app.add_typer(benchmark_app, name="benchmark")
+app.add_typer(worktree_app, name="worktree")
 
 
 @app.command()
@@ -116,6 +119,10 @@ def run_start(
     typer.echo(f"Next action: {result.action.phase} ({result.action.reason})")
     typer.echo(f"Artifacts: {result.artifact_dir}")
     typer.echo(f"Prompt preview: {result.prompt_path}")
+    if result.task_graph_path is not None:
+        typer.echo(f"Task graph: {result.task_graph_path}")
+    if result.supervisor_path is not None:
+        typer.echo(f"Supervisor: {result.supervisor_path}")
 
 
 @run_app.command("status")
@@ -182,6 +189,53 @@ def benchmark_run(
             f"sorry={project.snapshot.sorry_count} | "
             f"reviews={len(project.snapshot.review_sessions)}"
         )
+
+
+@worktree_app.command("create")
+def worktree_create(
+    repo_path: Annotated[
+        Path,
+        typer.Option("--repo-path", exists=True, file_okay=False, help="Git repository path."),
+    ],
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Optional stable worktree lease name."),
+    ] = None,
+    root: Annotated[
+        Path | None,
+        typer.Option("--root", file_okay=False, help="Optional worktree root directory."),
+    ] = None,
+) -> None:
+    manager = WorktreeManager(root=root)
+    lease = manager.create(repo_path, name=name)
+    lease_dir = lease.worktree_path.parent / ".leases"
+    lease_dir.mkdir(parents=True, exist_ok=True)
+    lease_path = lease_dir / f"{lease.lease_id}.json"
+    lease_path.write_text(
+        json.dumps(lease.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    typer.echo(f"Lease: {lease.lease_id}")
+    typer.echo(f"Worktree: {lease.worktree_path}")
+    typer.echo(f"Metadata: {lease_path}")
+
+
+@worktree_app.command("remove")
+def worktree_remove(
+    lease: Annotated[
+        Path,
+        typer.Option("--lease", exists=True, dir_okay=False, help="Lease metadata JSON."),
+    ],
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Force removal if the worktree is dirty."),
+    ] = False,
+) -> None:
+    lease_data = WorktreeLease.model_validate_json(lease.read_text(encoding="utf-8"))
+    manager = WorktreeManager()
+    manager.release(lease_data, force=force)
+    lease.unlink(missing_ok=True)
+    typer.echo(f"Removed: {lease_data.worktree_path}")
 
 
 def main() -> None:

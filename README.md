@@ -40,7 +40,15 @@ uv run archonlab doctor
 uv run archonlab project init --project-path /path/to/lean-project --archon-path /path/to/Archon
 uv run archonlab run start --config archonlab.toml --dry-run
 uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-run
+uv run archonlab worktree create --repo-path /path/to/repo --name phase4-run
 ```
 
 当前 `run start` 和 `benchmark run` 都支持可回放的 dry-run 基线。
 真实执行仍然依赖可用的 `claude` CLI。
+
+## 当前结构化产物
+
+- `run-summary.json`: 项目配置、进度、下一步动作
+- `task-graph.json`: 从 objectives 和 Lean 声明提取的 task graph
+- `supervisor.json`: stuck/健康状态判断与建议动作
+- `summary.json`: benchmark 级别的统一回放摘要

@@ -54,6 +54,11 @@
 - worktree manager
 - subagent 分工规范
 
+当前基线已实现：
+- `run start` 自动生成 `task-graph.json` 和 `supervisor.json`
+- `worktree create/remove` 可管理隔离工作树
+- Phase 4 的最小契约测试已经覆盖 task graph、supervisor、worktree
+
 ## Phase 5: workflow 与最小 UI
 
 目标：
@@ -73,4 +78,3 @@
 - 先小 benchmark，后规模化
 - 先稳定回放，后复杂自动化
 - 先文档和环境，后性能和花哨功能
-

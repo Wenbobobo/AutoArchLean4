@@ -7,6 +7,9 @@ from datetime import UTC, datetime
 from .adapter import ArchonAdapter
 from .events import EventStore
 from .models import AppConfig, EventRecord, RunResult, RunStatus, RunSummary
+from .project_state import collect_project_snapshot
+from .supervisor import decide_supervisor_action
+from .task_graph import build_task_graph
 
 
 class RunService:
@@ -25,6 +28,8 @@ class RunService:
         run_dir.mkdir(parents=True, exist_ok=True)
         events_jsonl = run_dir / "events.jsonl"
         prompt_path = run_dir / "next-prompt.txt"
+        task_graph_path = run_dir / "task-graph.json"
+        supervisor_path = run_dir / "supervisor.json"
 
         summary = RunSummary(
             run_id=run_id,
@@ -47,6 +52,52 @@ class RunService:
                     "dry_run": actual_dry_run,
                     "workflow": self.config.run.workflow.value,
                     "objectives": progress.objectives,
+                },
+            ),
+            jsonl_path=events_jsonl,
+        )
+
+        snapshot = collect_project_snapshot(
+            project_path=self.config.project.project_path,
+            archon_path=self.config.project.archon_path,
+        )
+        task_graph = build_task_graph(
+            project_path=self.config.project.project_path,
+            archon_path=self.config.project.archon_path,
+        )
+        task_graph_path.write_text(
+            json.dumps(task_graph.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.event_store.append(
+            EventRecord(
+                run_id=run_id,
+                kind="task_graph.generated",
+                project_id=self.config.project.name,
+                payload={
+                    "task_count": len(task_graph.nodes),
+                    "edge_count": len(task_graph.edges),
+                    "task_graph_path": str(task_graph_path),
+                },
+            ),
+            jsonl_path=events_jsonl,
+        )
+
+        supervisor = decide_supervisor_action(snapshot=snapshot, task_graph=task_graph)
+        supervisor_path.write_text(
+            json.dumps(supervisor.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.event_store.append(
+            EventRecord(
+                run_id=run_id,
+                kind="supervisor.decision",
+                project_id=self.config.project.name,
+                payload={
+                    "action": supervisor.action.value,
+                    "reason": supervisor.reason.value,
+                    "summary": supervisor.summary,
+                    "supervisor_path": str(supervisor_path),
                 },
             ),
             jsonl_path=events_jsonl,
@@ -79,6 +130,9 @@ class RunService:
                     "project": self.config.project.model_dump(mode="json"),
                     "run": self.config.run.model_dump(mode="json"),
                     "progress": progress.model_dump(mode="json"),
+                    "snapshot": snapshot.model_dump(mode="json"),
+                    "task_graph": task_graph.model_dump(mode="json"),
+                    "supervisor": supervisor.model_dump(mode="json"),
                     "next_action": action.model_dump(mode="json"),
                 },
                 ensure_ascii=False,
@@ -126,6 +180,8 @@ class RunService:
             action=action,
             artifact_dir=run_dir,
             prompt_path=prompt_path,
+            task_graph_path=task_graph_path,
+            supervisor_path=supervisor_path,
         )
 
     @staticmethod

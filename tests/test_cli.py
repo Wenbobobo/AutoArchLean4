@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -7,6 +9,24 @@ from typer.testing import CliRunner
 from archonlab.app import app
 
 runner = CliRunner()
+
+
+def _init_git_repo(repo_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "ArchonLab"], cwd=repo_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "archonlab@example.com"],
+        cwd=repo_path,
+        check=True,
+    )
+    (repo_path / "README.md").write_text("# demo\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-m", "initial"],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+    )
 
 
 def test_project_init_command_writes_config(tmp_path: Path) -> None:
@@ -74,3 +94,40 @@ def test_benchmark_run_creates_summary(
     assert result.exit_code == 0
     summary_files = list((tmp_path / "artifacts" / "benchmarks" / "smoke").rglob("summary.json"))
     assert summary_files
+
+
+def test_worktree_create_and_remove_commands(tmp_path: Path) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    _init_git_repo(repo_path)
+    worktree_root = tmp_path / "worktrees"
+
+    create_result = runner.invoke(
+        app,
+        [
+            "worktree",
+            "create",
+            "--repo-path",
+            str(repo_path),
+            "--root",
+            str(worktree_root),
+            "--name",
+            "phase4-run",
+        ],
+    )
+
+    assert create_result.exit_code == 0
+    lease_path = worktree_root / ".leases" / "phase4-run.json"
+    assert lease_path.exists()
+    lease_data = json.loads(lease_path.read_text(encoding="utf-8"))
+    worktree_path = Path(lease_data["worktree_path"])
+    assert worktree_path.exists()
+
+    remove_result = runner.invoke(
+        app,
+        ["worktree", "remove", "--lease", str(lease_path)],
+    )
+
+    assert remove_result.exit_code == 0
+    assert not worktree_path.exists()
+    assert not lease_path.exists()

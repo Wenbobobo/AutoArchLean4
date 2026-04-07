@@ -13,6 +13,33 @@ class WorkflowMode(StrEnum):
     ADAPTIVE_LOOP = "adaptive_loop"
 
 
+class TaskSource(StrEnum):
+    OBJECTIVE = "objective"
+    LEAN_DECLARATION = "lean_declaration"
+
+
+class TaskStatus(StrEnum):
+    PENDING = "pending"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+    UNKNOWN = "unknown"
+
+
+class SupervisorAction(StrEnum):
+    CONTINUE = "continue"
+    REROUTE_PLAN = "reroute_plan"
+    INVESTIGATE_INFRA = "investigate_infra"
+    REQUEST_HINT = "request_hint"
+
+
+class SupervisorReason(StrEnum):
+    HEALTHY = "healthy"
+    PENDING_RESULTS_BACKLOG = "pending_results_backlog"
+    REPEATED_NO_PROGRESS = "repeated_no_progress"
+    HIGH_BLOCKED_RATIO = "high_blocked_ratio"
+    HIGH_SORRY_LOAD = "high_sorry_load"
+
+
 class RunStatus(StrEnum):
     STARTED = "started"
     COMPLETED = "completed"
@@ -102,6 +129,8 @@ class RunResult(BaseModel):
     action: AdapterAction
     artifact_dir: Path
     prompt_path: Path
+    task_graph_path: Path | None = None
+    supervisor_path: Path | None = None
 
 
 class BenchmarkConfig(BaseModel):
@@ -202,3 +231,55 @@ class BenchmarkResult(BaseModel):
     manifest_copy_path: Path
     summary_path: Path
     projects: list[BenchmarkProjectResult]
+
+
+class TaskNode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    title: str
+    status: TaskStatus
+    sources: list[TaskSource] = Field(default_factory=list)
+    file_path: Path | None = None
+    theorem_name: str | None = None
+    priority: int = 0
+    blockers: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TaskEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    target_id: str
+    kind: str
+
+
+class TaskGraph(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    nodes: list[TaskNode] = Field(default_factory=list)
+    edges: list[TaskEdge] = Field(default_factory=list)
+
+
+class SupervisorDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    action: SupervisorAction
+    reason: SupervisorReason
+    summary: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class WorktreeLease(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lease_id: str
+    repo_path: Path
+    worktree_path: Path
+    head_sha: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
