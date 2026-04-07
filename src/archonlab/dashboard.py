@@ -27,6 +27,7 @@ from .models import (
     ExecutorKind,
     ExperimentLedger,
     LeanAnalysisSnapshot,
+    ProjectSession,
     ProviderKind,
     QueueJob,
     RunPreview,
@@ -40,7 +41,7 @@ from .models import (
     WorkspaceConfig,
     WorkspaceProjectConfig,
 )
-from .queue import QueueStore
+from .queue import QueueStore, session_block_reason
 from .services import RunService
 from .workspace_daemon import load_workspace_daemon_state, workspace_daemon_state_path
 
@@ -780,17 +781,20 @@ def _build_workspace_overview(
         )
     ]
     workers = queue.list_workers(stale_after_seconds=120.0)
+    now = datetime.now(UTC)
+    session_payloads = [
+        _workspace_session_payload(
+            session,
+            tags=project_tags.get(session.project_id, []),
+            now=now,
+        )
+        for session in sessions
+    ]
+    blocked_session_counts = _count_session_block_reasons(session_payloads)
     sessions_by_project: dict[str, list[dict[str, Any]]] = {}
-    for session in sessions:
-        sessions_by_project.setdefault(session.project_id, []).append(
-            {
-                **session.model_dump(mode="json"),
-                "remaining_iterations": max(
-                    session.max_iterations - session.completed_iterations,
-                    0,
-                ),
-                "tags": project_tags.get(session.project_id, []),
-            }
+    for session_payload in session_payloads:
+        sessions_by_project.setdefault(session_payload["project_id"], []).append(
+            session_payload
         )
 
     project_summaries = []
@@ -822,6 +826,10 @@ def _build_workspace_overview(
                 "queued_jobs": sum(
                     1 for job in project_jobs if job.status.value in {"queued", "pending"}
                 ),
+                "blocked_sessions": sum(
+                    1 for session in project_sessions if session["blocked_reason"] is not None
+                ),
+                "blocked_session_counts": _count_session_block_reasons(project_sessions),
             }
         )
 
@@ -837,6 +845,8 @@ def _build_workspace_overview(
         "queued_jobs": sum(1 for job in jobs if job.status.value in {"queued", "pending"}),
         "running_jobs": sum(1 for job in jobs if job.status.value == "running"),
         "active_workers": sum(1 for worker in workers if worker.status.value != "stopped"),
+        "blocked_sessions": sum(blocked_session_counts.values()),
+        "blocked_session_counts": blocked_session_counts,
         "budget": {
             "max_iterations": sum(session.max_iterations for session in sessions),
             "completed_iterations": sum(session.completed_iterations for session in sessions),
@@ -868,19 +878,45 @@ def _build_workspace_overview(
                 db_path=config.run.artifact_root / "archonlab.db",
             )
         ],
-        "sessions": [
-            {
-                **session.model_dump(mode="json"),
-                "remaining_iterations": max(
-                    session.max_iterations - session.completed_iterations,
-                    0,
-                ),
-                "tags": project_tags.get(session.project_id, []),
-            }
-            for session in sessions
-        ],
+        "sessions": session_payloads,
         "workers": [worker.model_dump(mode="json") for worker in workers],
     }
+
+
+def _workspace_session_payload(
+    session: ProjectSession,
+    *,
+    tags: list[str],
+    now: datetime,
+) -> dict[str, Any]:
+    blocked_reason = session_block_reason(session, now=now)
+    cooldown_seconds_remaining = 0
+    if session.cooldown_until is not None and session.cooldown_until > now:
+        cooldown_seconds_remaining = int((session.cooldown_until - now).total_seconds())
+    return {
+        **session.model_dump(mode="json"),
+        "remaining_iterations": max(
+            session.max_iterations - session.completed_iterations,
+            0,
+        ),
+        "failure_budget_remaining": max(
+            session.max_consecutive_failures - session.consecutive_failures,
+            0,
+        ),
+        "tags": tags,
+        "blocked_reason": blocked_reason,
+        "cooldown_seconds_remaining": max(cooldown_seconds_remaining, 0),
+    }
+
+
+def _count_session_block_reasons(sessions: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for session in sessions:
+        blocked_reason = session.get("blocked_reason")
+        if not isinstance(blocked_reason, str) or not blocked_reason:
+            continue
+        counts[blocked_reason] = counts.get(blocked_reason, 0) + 1
+    return counts
 
 
 def _summarize_task_graph(task_graph: TaskGraph) -> dict[str, int]:
@@ -2419,6 +2455,32 @@ def render_dashboard_html(
         return Number(value).toFixed(3);
       }}
 
+      function formatBlockReason(reason) {{
+        if (!reason) {{
+          return "-";
+        }}
+        return String(reason).split("_").join(" ");
+      }}
+
+      function formatBlockReasonCounts(counts) {{
+        const entries = Object.entries(counts || {{}})
+          .filter(([, count]) => Number(count) > 0);
+        if (!entries.length) {{
+          return "-";
+        }}
+        return entries
+          .map(([reason, count]) => `${{formatBlockReason(reason)}}=${{count}}`)
+          .join(" · ");
+      }}
+
+      function formatCooldown(seconds) {{
+        const resolvedSeconds = Number(seconds || 0);
+        if (!resolvedSeconds) {{
+          return "-";
+        }}
+        return `${{resolvedSeconds}}s`;
+      }}
+
       function trimOrNull(value) {{
         const trimmed = (value || "").trim();
         return trimmed || null;
@@ -2491,6 +2553,7 @@ def render_dashboard_html(
           ["projects", `${{payload.project_count || 0}}`],
           ["sessions", `${{payload.session_count || 0}}`],
           ["running_sessions", `${{payload.running_sessions || 0}}`],
+          ["blocked_sessions", `${{payload.blocked_sessions || 0}}`],
           ["queued_jobs", `${{payload.queued_jobs || 0}}`],
           ["running_jobs", `${{payload.running_jobs || 0}}`],
           ["active_workers", `${{payload.active_workers || 0}}`],
@@ -2499,7 +2562,11 @@ def render_dashboard_html(
             `${{budget.completed_iterations || 0}} / ` +
             `${{budget.max_iterations || 0}} iter`,
           ],
-        ]);
+        ]) + `
+          <div class="meta">
+            blocked_detail=${{formatBlockReasonCounts(payload.blocked_session_counts)}}
+          </div>
+        `;
         workspaceRuntimeSummary.innerHTML = renderFacts([
           ["remaining_iter", `${{budget.remaining_iterations || 0}}`],
           ["runtime_cost", formatCost(runtimeTotals.cost)],
@@ -2566,21 +2633,35 @@ def render_dashboard_html(
             ])
           : '<div class="meta">No workspace daemon state yet.</div>';
         workspaceSessionTable.innerHTML = sessions.length
-          ? sessions.slice(0, 8).map((session) => `
-              <div class="rule">
-                <strong>${{session.project_id}} · ${{session.status}}</strong>
-                <div class="meta">${{session.session_id}}</div>
-                <div class="meta">
-                  iter=${{session.completed_iterations}}/${{session.max_iterations}}
-                  · remaining=${{session.remaining_iterations}}
+          ? sessions.slice(0, 8).map((session) => {{
+              const failures =
+                `${{session.consecutive_failures || 0}}/` +
+                `${{session.max_consecutive_failures || 0}}`;
+              return `
+                <div class="rule">
+                  <strong>${{session.project_id}} · ${{session.status}}</strong>
+                  <div class="meta">${{session.session_id}}</div>
+                  <div class="meta">
+                    iter=${{session.completed_iterations}}/${{session.max_iterations}}
+                    · remaining=${{session.remaining_iterations}}
+                  </div>
+                  <div class="meta">
+                    blocked=${{formatBlockReason(session.blocked_reason)}}
+                    · failure=${{failures}}
+                    · retry_budget=${{session.failure_budget_remaining ?? 0}}
+                  </div>
+                  <div class="meta">
+                    cooldown=${{formatCooldown(session.cooldown_seconds_remaining)}}
+                    · error=${{session.error_message || "-"}}
+                  </div>
+                  <div class="meta">tags=${{(session.tags || []).join(",") || "-"}}</div>
+                  <div class="meta">
+                    stop=${{session.last_stop_reason || "-"}}
+                    · resume=${{session.last_resume_reason || "-"}}
+                  </div>
                 </div>
-                <div class="meta">tags=${{(session.tags || []).join(",") || "-"}}</div>
-                <div class="meta">
-                  stop=${{session.last_stop_reason || "-"}}
-                  · resume=${{session.last_resume_reason || "-"}}
-                </div>
-              </div>
-            `).join("")
+              `;
+            }}).join("")
           : '<div class="meta">No workspace sessions yet.</div>';
         workspaceProviderRuntime.innerHTML = providerRuntime.length
           ? providerRuntime.slice(0, 6).map((pool) => {{
@@ -2637,6 +2718,10 @@ def render_dashboard_html(
                   <div class="meta">
                     sessions=${{project.session_count}} · running=${{project.running_sessions}}
                     · queued_jobs=${{project.queued_jobs}}
+                    · blocked=${{project.blocked_sessions || 0}}
+                  </div>
+                  <div class="meta">
+                    blocked_detail=${{formatBlockReasonCounts(project.blocked_session_counts)}}
                   </div>
                   <div class="meta">tags=${{(project.tags || []).join(",") || "-"}}</div>
                 </div>

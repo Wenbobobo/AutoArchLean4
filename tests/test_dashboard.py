@@ -694,6 +694,8 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert overview["project_count"] == 2
     assert overview["session_count"] == 2
     assert overview["running_sessions"] == 1
+    assert overview["blocked_sessions"] == 0
+    assert overview["blocked_session_counts"] == {}
     assert overview["queued_jobs"] == 1
     assert overview["running_jobs"] == 1
     assert overview["active_workers"] == 1
@@ -726,9 +728,13 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert beta_summary["dry_run"] is False
     assert beta_summary["max_iterations"] == 4
     assert beta_summary["session_count"] == 1
+    assert beta_summary["blocked_sessions"] == 0
+    assert beta_summary["blocked_session_counts"] == {}
     assert beta_summary["queued_jobs"] == 0
     assert beta_summary["tags"] == ["geometry"]
     alpha_summary = next(item for item in overview["projects"] if item["project_id"] == "alpha")
+    assert alpha_summary["blocked_sessions"] == 0
+    assert alpha_summary["blocked_session_counts"] == {}
     assert alpha_summary["tags"] == ["core", "batch"]
     assert overview["provider_runtime"][0]["pool_name"] == "lab"
     assert overview["provider_runtime"][0]["success_count"] == 1
@@ -738,6 +744,7 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert overview["provider_health"][0]["members"][1]["status"] == "quarantined"
     alpha_session = next(item for item in overview["sessions"] if item["project_id"] == "alpha")
     assert alpha_session["remaining_iterations"] == 4
+    assert alpha_session["failure_budget_remaining"] == 3
     assert alpha_session["tags"] == ["core", "batch"]
 
     tagged_enqueue_response = client.post(
@@ -812,6 +819,107 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert project_loops_payload["workspace"] == "demo-workspace"
     assert len(project_loops_payload["loops"]) == 1
     assert project_loops_payload["loops"][0]["loop_run_id"] == "run-loop-alpha-dashboard-1"
+
+
+def test_dashboard_workspace_overview_surfaces_blocked_session_reasons(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = _make_project(tmp_path, "BlockedProject")
+    archon_path = _make_archon(tmp_path)
+    artifact_root = tmp_path / "artifacts"
+
+    original_connect = sqlite3.connect
+
+    def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        options = dict(kwargs)
+        options.setdefault("check_same_thread", False)
+        return original_connect(*args, **options)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+
+    workspace_config_path = tmp_path / "workspace.toml"
+    workspace_config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 6\n\n"
+        "[[projects]]\n"
+        'id = "alpha"\n'
+        f'project_path = "{project_path}"\n'
+        f'archon_path = "{archon_path}"\n',
+        encoding="utf-8",
+    )
+
+    now = datetime.now(UTC)
+    store = EventStore(artifact_root / "archonlab.db")
+    store.register_session(
+        ProjectSession(
+            session_id="session-alpha-cooling",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.FAILED,
+            workflow=WorkflowMode.ADAPTIVE_LOOP,
+            dry_run=True,
+            max_iterations=6,
+            completed_iterations=2,
+            error_message="executor failed",
+            last_stop_reason="run_failed",
+            consecutive_failures=1,
+            max_consecutive_failures=3,
+            failure_cooldown_seconds=120,
+            last_failure_at=now - timedelta(seconds=10),
+            cooldown_until=now + timedelta(seconds=120),
+        )
+    )
+    store.register_session(
+        ProjectSession(
+            session_id="session-alpha-paused",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.PAUSED,
+            workflow=WorkflowMode.ADAPTIVE_LOOP,
+            dry_run=True,
+            max_iterations=6,
+            completed_iterations=1,
+            last_stop_reason="stop:control_paused",
+        )
+    )
+
+    app = create_dashboard_app(workspace_config_path)
+    client = TestClient(app)
+
+    overview_response = client.get("/api/workspace/overview")
+
+    assert overview_response.status_code == 200
+    overview = overview_response.json()
+    assert overview["blocked_sessions"] == 2
+    assert overview["blocked_session_counts"] == {
+        "failure_cooldown_active": 1,
+        "control_paused": 1,
+    }
+    project_summary = overview["projects"][0]
+    assert project_summary["blocked_sessions"] == 2
+    assert project_summary["blocked_session_counts"] == {
+        "failure_cooldown_active": 1,
+        "control_paused": 1,
+    }
+    cooling_session = next(
+        item for item in overview["sessions"] if item["session_id"] == "session-alpha-cooling"
+    )
+    paused_session = next(
+        item for item in overview["sessions"] if item["session_id"] == "session-alpha-paused"
+    )
+    assert cooling_session["blocked_reason"] == "failure_cooldown_active"
+    assert cooling_session["consecutive_failures"] == 1
+    assert cooling_session["max_consecutive_failures"] == 3
+    assert cooling_session["failure_budget_remaining"] == 2
+    assert cooling_session["cooldown_seconds_remaining"] > 0
+    assert paused_session["blocked_reason"] == "control_paused"
+    assert paused_session["cooldown_seconds_remaining"] == 0
 
 
 def test_dashboard_benchmark_lab_supports_ledger_compare_and_replay(

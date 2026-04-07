@@ -87,6 +87,30 @@ class WorkspaceSessionEnqueueResult:
     skipped: list[WorkspaceSessionResumeSkip] = field(default_factory=list)
 
 
+def session_block_reason(
+    session: ProjectSession,
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    resolved_now = now or datetime.now(UTC)
+    if session.status is SessionStatus.FAILED:
+        if session.consecutive_failures >= session.max_consecutive_failures:
+            return "failure_budget_exhausted"
+        if session.cooldown_until is not None and session.cooldown_until > resolved_now:
+            return "failure_cooldown_active"
+    if (
+        session.status is SessionStatus.PAUSED
+        and session.last_stop_reason == "stop:control_paused"
+    ):
+        return "control_paused"
+    if (
+        session.status is not SessionStatus.RUNNING
+        and session.completed_iterations >= session.max_iterations
+    ):
+        return "budget_exhausted"
+    return None
+
+
 def summarize_workspace_session_skips(
     skipped: list[WorkspaceSessionResumeSkip],
 ) -> dict[str, int]:
@@ -1834,12 +1858,9 @@ class QueueStore:
 
     @staticmethod
     def _session_failure_gate_reason(session: ProjectSession) -> str | None:
-        if session.status is not SessionStatus.FAILED:
-            return None
-        if session.consecutive_failures >= session.max_consecutive_failures:
-            return "failure_budget_exhausted"
-        if session.cooldown_until is not None and session.cooldown_until > datetime.now(UTC):
-            return "failure_cooldown_active"
+        reason = session_block_reason(session)
+        if reason in {"failure_budget_exhausted", "failure_cooldown_active"}:
+            return reason
         return None
 
     @staticmethod
@@ -1848,6 +1869,9 @@ class QueueStore:
         *,
         max_iterations: int | None,
     ) -> str | None:
+        reason = session_block_reason(session)
+        if reason == "control_paused":
+            return reason
         resolved_max_iterations = (
             max_iterations if max_iterations is not None else session.max_iterations
         )
