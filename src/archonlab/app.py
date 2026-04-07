@@ -2091,7 +2091,8 @@ def queue_plan_fleet(
         endpoints = ",".join(profile.required_endpoint_classes) or "-"
         typer.echo(
             f"{profile.profile_id} | phase={dominant_phase} | jobs={profile.active_jobs} | "
-            f"dedicated={profile.dedicated_workers} | total={profile.recommended_total_workers} | "
+            f"dedicated={profile.dedicated_workers} | matching={profile.matching_workers} | "
+            f"total={profile.recommended_total_workers} | "
             f"add={profile.recommended_additional_workers} | executor={executor_kinds} | "
             f"provider={provider_kinds} | model={models} | cost={cost_tiers} | endpoint={endpoints}"
         )

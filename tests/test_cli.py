@@ -2820,6 +2820,8 @@ def test_queue_plan_fleet_command_summarizes_recommended_worker_profiles(
     assert "Active workers: 1" in result.output
     assert "Dedicated workers: 1" in result.output
     assert "Additional workers: 1" in result.output
+    assert "matching=1" in result.output
+    assert "matching=0" in result.output
     assert "model=gpt-5.4-mini" in result.output
     assert "model=gpt-5.4" in result.output
 

@@ -1177,6 +1177,7 @@ class QueueStore:
                     running_jobs=profile_running,
                     active_jobs=profile_active,
                     dedicated_workers=len(dedicated_workers),
+                    matching_workers=len(matching_workers),
                     recommended_total_workers=recommended_total_workers,
                     recommended_additional_workers=max(
                         recommended_total_workers - len(matching_workers),

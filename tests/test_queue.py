@@ -199,6 +199,7 @@ def test_queue_store_builds_fleet_plan_from_active_jobs_and_dedicated_workers(
     assert cheap_profile.running_jobs == 1
     assert cheap_profile.active_jobs == 2
     assert cheap_profile.dedicated_workers == 1
+    assert cheap_profile.matching_workers == 2
     assert cheap_profile.recommended_total_workers == 1
     assert cheap_profile.recommended_additional_workers == 0
     assert cheap_profile.dominant_phase is ActionPhase.PLAN
@@ -212,6 +213,7 @@ def test_queue_store_builds_fleet_plan_from_active_jobs_and_dedicated_workers(
     assert premium_profile.running_jobs == 0
     assert premium_profile.active_jobs == 1
     assert premium_profile.dedicated_workers == 0
+    assert premium_profile.matching_workers == 1
     assert premium_profile.recommended_total_workers == 1
     assert premium_profile.recommended_additional_workers == 0
     assert premium_profile.dominant_phase is ActionPhase.PROVER

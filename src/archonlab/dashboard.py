@@ -1669,6 +1669,7 @@ def render_dashboard_html(
               </div>
               <div class="meta">
                 dedicated=${{profile.dedicated_workers}}
+                · matching=${{profile.matching_workers || 0}}
                 · recommend=${{profile.recommended_total_workers}} total
                 / +${{profile.recommended_additional_workers}}
               </div>

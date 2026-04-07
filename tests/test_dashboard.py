@@ -346,6 +346,7 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert fleet_plan["profiles"][0]["required_models"] == ["gpt-5.4"]
     assert fleet_plan["profiles"][0]["dominant_phase"] == "prover"
     assert fleet_plan["profiles"][0]["dedicated_workers"] == 1
+    assert fleet_plan["profiles"][0]["matching_workers"] == 1
     assert fleet_plan["profiles"][0]["recommended_total_workers"] == 1
 
     job_detail_response = client.get(f"/api/queue/jobs/{queued_job.id}")
