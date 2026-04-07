@@ -3,6 +3,8 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import threading
+import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -74,9 +76,15 @@ class BatchRunner:
 
         def worker_loop(slot_index: int) -> None:
             nonlocal claimed_jobs
+            worker_id = f"worker-slot-{slot_index}-{uuid.uuid4().hex[:8]}"
             worker = self.queue_store.register_worker(
                 slot_index=slot_index,
+                worker_id=worker_id,
                 thread_name=threading.current_thread().name,
+                worktree_root=self._worker_worktree_root(
+                    worker_id=worker_id,
+                    slot_index=slot_index,
+                ),
             )
             with report_lock:
                 report.worker_ids.append(worker.worker_id)
@@ -120,6 +128,72 @@ class BatchRunner:
             ]
             for future in futures:
                 future.result()
+        return report
+
+    def run_worker(
+        self,
+        *,
+        slot_index: int,
+        max_jobs: int | None = None,
+        poll_seconds: float = 2.0,
+        idle_timeout_seconds: float = 30.0,
+        worker_id: str | None = None,
+        note: str | None = "external_worker",
+    ) -> BatchRunReport:
+        report = BatchRunReport()
+        report_lock = threading.Lock()
+        resolved_worker_id = worker_id or f"worker-slot-{slot_index}-{uuid.uuid4().hex[:8]}"
+        worker = self.queue_store.register_worker(
+            slot_index=slot_index,
+            worker_id=resolved_worker_id,
+            thread_name=threading.current_thread().name,
+            note=note,
+            worktree_root=self._worker_worktree_root(
+                worker_id=resolved_worker_id,
+                slot_index=slot_index,
+            ),
+        )
+        report.worker_ids.append(worker.worker_id)
+        processed_count = 0
+        idle_started = time.monotonic()
+        try:
+            while max_jobs is None or processed_count < max_jobs:
+                self.queue_store.heartbeat_worker(
+                    worker.worker_id,
+                    status=WorkerStatus.IDLE,
+                    note=note,
+                )
+                job = self.queue_store.claim_next_job(worker_id=worker.worker_id)
+                if job is None:
+                    if time.monotonic() - idle_started >= idle_timeout_seconds:
+                        break
+                    time.sleep(poll_seconds)
+                    continue
+                idle_started = time.monotonic()
+                processed_count += 1
+                self.queue_store.assign_job_to_worker(worker.worker_id, job.id)
+                heartbeat_stop = threading.Event()
+                heartbeat_thread = threading.Thread(
+                    target=self._heartbeat_loop,
+                    args=(worker.worker_id, job.id, heartbeat_stop),
+                    daemon=True,
+                    name=f"{worker.worker_id}-heartbeat",
+                )
+                heartbeat_thread.start()
+                try:
+                    self._run_job(
+                        job,
+                        report,
+                        report_lock,
+                        worker_id=worker.worker_id,
+                    )
+                finally:
+                    heartbeat_stop.set()
+                    heartbeat_thread.join(timeout=self.heartbeat_interval_seconds * 2)
+        except Exception as exc:  # noqa: BLE001
+            self.queue_store.stop_worker(worker.worker_id, failed=True, note=str(exc))
+            raise
+        self.queue_store.stop_worker(worker.worker_id, note=note)
         return report
 
     def _run_job(
@@ -173,6 +247,7 @@ class BatchRunner:
                     artifact_dir=artifact_dir,
                     manifest=manifest,
                     payload=project_payload,
+                    worker_id=worker_id,
                 )
             else:
                 result_status, summary_path = self._run_manifest_job(
@@ -228,6 +303,10 @@ class BatchRunner:
     def list_worker_leases(self) -> list[QueueWorkerLease]:
         return self.queue_store.list_workers()
 
+    def _worker_worktree_root(self, *, worker_id: str | None, slot_index: int) -> Path:
+        label = worker_id or f"slot-{slot_index}"
+        return self.artifact_root / "queue-worktrees" / label
+
     def _heartbeat_loop(
         self,
         worker_id: str,
@@ -247,16 +326,15 @@ class BatchRunner:
         artifact_dir: Path,
         manifest: BenchmarkManifest,
         payload: QueueBenchmarkPayload,
+        worker_id: str,
     ) -> tuple[QueueJobStatus, Path]:
+        worker = self.queue_store.get_worker(worker_id)
+        worktree_root = worker.worktree_root if worker is not None else None
         result = run_benchmark_project(
             payload.project,
             artifact_root=self.artifact_root,
             dry_run=payload.dry_run,
-            worktree_root=(
-                self.artifact_root / "queue-worktrees"
-                if payload.use_worktrees
-                else None
-            ),
+            worktree_root=worktree_root if payload.use_worktrees else None,
             cleanup_worktrees=payload.cleanup_worktrees,
             executor=manifest.executor,
             provider=manifest.provider,

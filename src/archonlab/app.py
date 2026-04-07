@@ -532,6 +532,62 @@ def queue_workers(
         )
 
 
+@queue_app.command("worker")
+def queue_worker(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    slot_index: Annotated[
+        int,
+        typer.Option("--slot-index", min=1, help="Stable worker slot index."),
+    ] = 1,
+    max_jobs: Annotated[
+        int | None,
+        typer.Option("--max-jobs", min=1, help="Optional maximum jobs for this worker."),
+    ] = None,
+    poll_seconds: Annotated[
+        float,
+        typer.Option("--poll-seconds", min=0.1, help="Polling interval when the queue is empty."),
+    ] = 2.0,
+    idle_timeout_seconds: Annotated[
+        float,
+        typer.Option(
+            "--idle-timeout-seconds",
+            min=0.1,
+            help="Stop the worker after this many idle seconds.",
+        ),
+    ] = 30.0,
+    worker_id: Annotated[
+        str | None,
+        typer.Option("--worker-id", help="Optional explicit worker identifier."),
+    ] = None,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", help="Optional worker note."),
+    ] = "external_worker",
+) -> None:
+    app_config = load_config(config)
+    runner = BatchRunner(
+        queue_store=QueueStore(app_config.run.artifact_root / "archonlab.db"),
+        control_service=ControlService(app_config.run.artifact_root),
+        artifact_root=app_config.run.artifact_root,
+        slot_limit=1,
+    )
+    report = runner.run_worker(
+        slot_index=slot_index,
+        max_jobs=max_jobs,
+        poll_seconds=poll_seconds,
+        idle_timeout_seconds=idle_timeout_seconds,
+        worker_id=worker_id,
+        note=note,
+    )
+    typer.echo(f"Processed: {len(report.processed_job_ids)}")
+    typer.echo(f"Paused: {len(report.paused_job_ids)}")
+    typer.echo(f"Failed: {len(report.failed_job_ids)}")
+    typer.echo(f"Workers: {len(report.worker_ids)}")
+
+
 @queue_app.command("cancel")
 def queue_cancel(
     config: Annotated[

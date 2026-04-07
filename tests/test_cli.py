@@ -174,3 +174,72 @@ def test_control_commands_pause_resume_and_hint(
     assert hint_result.exit_code == 0
     assert resume_result.exit_code == 0
     assert (fake_archon_project / ".archon" / "USER_HINTS.md").exists()
+
+
+def test_queue_worker_command_processes_benchmark_jobs(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "benchmark.toml"
+    manifest_path.write_text(
+        "[benchmark]\n"
+        'name = "smoke"\n'
+        'artifact_root = "./artifacts/benchmarks/smoke"\n\n'
+        "[[projects]]\n"
+        'id = "demo"\n'
+        f'path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n'
+        'workflow = "adaptive_loop"\n',
+        encoding="utf-8",
+    )
+
+    enqueue_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "enqueue-benchmark",
+            "--config",
+            str(config_path),
+            "--manifest",
+            str(manifest_path),
+            "--dry-run",
+        ],
+    )
+    worker_result = runner.invoke(
+        app,
+        [
+            "queue",
+            "worker",
+            "--config",
+            str(config_path),
+            "--slot-index",
+            "1",
+            "--max-jobs",
+            "1",
+            "--idle-timeout-seconds",
+            "0.1",
+        ],
+    )
+
+    assert enqueue_result.exit_code == 0
+    assert worker_result.exit_code == 0
+    assert "Processed: 1" in worker_result.output
+
+    workers_result = runner.invoke(
+        app,
+        ["queue", "workers", "--config", str(config_path)],
+    )
+    assert workers_result.exit_code == 0
+    assert "slot=1" in workers_result.output

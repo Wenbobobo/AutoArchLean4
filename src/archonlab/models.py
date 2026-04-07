@@ -492,6 +492,7 @@ class QueueWorkerLease(BaseModel):
     last_job_id: str | None = None
     thread_name: str | None = None
     note: str | None = None
+    worktree_root: Path | None = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     heartbeat_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None

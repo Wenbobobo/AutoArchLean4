@@ -45,6 +45,7 @@ uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-ru
 uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --use-worktrees --worker-slots 4
 uv run archonlab queue enqueue-benchmark --config archonlab.toml --manifest benchmarks/smoke.example.toml
 uv run archonlab queue run --config archonlab.toml --slots 4
+uv run archonlab queue worker --config archonlab.toml --slot-index 1 --max-jobs 10
 uv run archonlab queue status --config archonlab.toml
 uv run archonlab queue workers --config archonlab.toml
 uv run archonlab control pause --config archonlab.toml --reason "manual_hold"
@@ -71,6 +72,7 @@ supervisor 也会读取同一项目的近期历史事件，识别重复无进展
 benchmark 则已经支持在隔离 `git worktree` 中运行。
 queue/batch 层已经支持 benchmark 作业排队、slot-aware 并发处理、pause-aware 跳过和 job 级 artifacts。
 queue worker 现在会留下可查询的 lease / heartbeat / 当前 job telemetry。
+你现在还可以单独启动 `queue worker` 进程，让多个外部 worker 共享同一个 sqlite 队列。
 
 ## 执行器配置
 
@@ -121,6 +123,21 @@ model = "gpt-5.4-mini"
 - `plan` 走便宜模型
 - `prover` 走更强模型或 OpenAI-compatible endpoint
 - `review` 走 `codex_exec`
+
+## Worker Pool
+
+有两种跑法：
+
+- `queue run --slots 4`
+  适合单机内快速起一个本地线程池。
+- `queue worker --slot-index N`
+  适合起多个独立 worker 进程，共享同一个队列数据库。
+
+`queue worker` 模式下，每个 worker 都会：
+- 注册自己的 lease
+- 周期性 heartbeat
+- 记录 `current_job_id` / `last_job_id`
+- 使用自己的 `queue-worktrees/<worker_id>` 根目录
 
 ## Workflow DSL
 

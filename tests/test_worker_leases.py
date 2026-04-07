@@ -8,6 +8,13 @@ from types import SimpleNamespace
 
 from archonlab.batch import BatchRunner
 from archonlab.control import ControlService
+from archonlab.models import (
+    BenchmarkProjectResult,
+    RunStatus,
+    SnapshotDelta,
+    WorkflowMode,
+)
+from archonlab.project_state import collect_project_snapshot, score_project_snapshot
 from archonlab.queue import QueueStore
 
 
@@ -196,3 +203,65 @@ def test_batch_runner_slot_limit_two_keeps_worker_and_job_telemetry(
             assert status is not None
             assert current_job_id is not None or last_job_id is not None
             assert heartbeat is not None or updated_at is not None
+
+
+def test_batch_worker_uses_worker_specific_worktree_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_path = _make_project(tmp_path, "DemoProject")
+    archon_path = _make_archon(tmp_path)
+    manifest_path = _write_manifest(tmp_path, project_path, archon_path, "bench-a")
+
+    queue_store = QueueStore(tmp_path / "queue.db")
+    jobs = queue_store.enqueue_benchmark_manifest(
+        manifest_path,
+        dry_run=True,
+        use_worktrees=True,
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_benchmark_project(*args, **kwargs) -> BenchmarkProjectResult:
+        benchmark_project = args[0]
+        captured["worktree_root"] = kwargs["worktree_root"]
+        snapshot = collect_project_snapshot(
+            project_path=benchmark_project.project_path,
+            archon_path=benchmark_project.archon_path,
+        )
+        return BenchmarkProjectResult(
+            id=benchmark_project.id,
+            workflow=WorkflowMode.ADAPTIVE_LOOP,
+            budget_minutes=benchmark_project.budget_minutes,
+            run_id="run-worker",
+            run_status=RunStatus.COMPLETED,
+            snapshot=snapshot,
+            score=score_project_snapshot(snapshot),
+            delta=SnapshotDelta(
+                sorry_delta=0,
+                axiom_delta=0,
+                review_session_delta=0,
+                task_results_delta=0,
+                checklist_done_delta=0,
+                score_delta=0,
+            ),
+        )
+
+    monkeypatch.setattr("archonlab.batch.run_benchmark_project", fake_run_benchmark_project)
+
+    runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(tmp_path / "control"),
+        artifact_root=tmp_path / "batch-artifacts",
+        slot_limit=1,
+    )
+    report = runner.run_worker(
+        slot_index=3,
+        max_jobs=1,
+        idle_timeout_seconds=0.1,
+    )
+
+    assert report.processed_job_ids == [jobs[0].id]
+    worker_id = report.worker_ids[0]
+    assert captured["worktree_root"] == (
+        tmp_path / "batch-artifacts" / "queue-worktrees" / worker_id
+    )

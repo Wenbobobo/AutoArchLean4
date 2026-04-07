@@ -61,6 +61,7 @@ class QueueStore:
                     last_job_id TEXT,
                     thread_name TEXT,
                     note TEXT,
+                    worktree_root TEXT,
                     started_at TEXT NOT NULL,
                     heartbeat_at TEXT NOT NULL,
                     finished_at TEXT,
@@ -72,6 +73,8 @@ class QueueStore:
             for column in ["pause_reason", "cancel_reason", "worker_id"]:
                 with suppress(sqlite3.OperationalError):
                     self._conn.execute(f"ALTER TABLE queue_jobs ADD COLUMN {column} TEXT")
+            with suppress(sqlite3.OperationalError):
+                self._conn.execute("ALTER TABLE queue_workers ADD COLUMN worktree_root TEXT")
             self._conn.commit()
 
     def enqueue(
@@ -302,24 +305,44 @@ class QueueStore:
         self,
         *,
         slot_index: int,
+        worker_id: str | None = None,
         thread_name: str | None = None,
         note: str | None = None,
+        worktree_root: Path | None = None,
     ) -> QueueWorkerLease:
         lease = QueueWorkerLease(
-            worker_id=self._new_worker_id(),
+            worker_id=worker_id or self._new_worker_id(),
             slot_index=slot_index,
             status=WorkerStatus.IDLE,
             thread_name=thread_name,
             note=note,
+            worktree_root=worktree_root,
         )
         with self._lock:
+            active_row = self._conn.execute(
+                """
+                SELECT worker_id FROM queue_workers
+                WHERE slot_index = ? AND status IN (?, ?)
+                LIMIT 1
+                """,
+                (
+                    slot_index,
+                    WorkerStatus.IDLE.value,
+                    WorkerStatus.RUNNING.value,
+                ),
+            ).fetchone()
+            if active_row is not None and str(active_row["worker_id"]) != lease.worker_id:
+                active_worker_id = str(active_row["worker_id"])
+                raise RuntimeError(
+                    f"Slot {slot_index} is already held by {active_worker_id}"
+                )
             self._conn.execute(
                 """
                 INSERT INTO queue_workers (
                     worker_id, slot_index, status, current_job_id, last_job_id,
-                    thread_name, note, started_at, heartbeat_at, finished_at,
+                    thread_name, note, worktree_root, started_at, heartbeat_at, finished_at,
                     processed_jobs, failed_jobs
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     lease.worker_id,
@@ -329,6 +352,7 @@ class QueueStore:
                     lease.last_job_id,
                     lease.thread_name,
                     lease.note,
+                    str(lease.worktree_root) if lease.worktree_root is not None else None,
                     lease.started_at.isoformat(),
                     lease.heartbeat_at.isoformat(),
                     lease.finished_at.isoformat() if lease.finished_at else None,
@@ -552,6 +576,7 @@ class QueueStore:
             last_job_id=row["last_job_id"],
             thread_name=row["thread_name"],
             note=row["note"],
+            worktree_root=Path(row["worktree_root"]) if row["worktree_root"] else None,
             started_at=datetime.fromisoformat(row["started_at"]),
             heartbeat_at=datetime.fromisoformat(row["heartbeat_at"]),
             finished_at=(

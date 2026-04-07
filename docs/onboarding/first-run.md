@@ -38,10 +38,13 @@ uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-ru
 # 8. 看当前 queue worker telemetry
 uv run archonlab queue workers --config archonlab.toml
 
-# 9. 启动控制面 dashboard
+# 9. 如果你想分离成独立 worker 进程
+uv run archonlab queue worker --config archonlab.toml --slot-index 1 --max-jobs 1
+
+# 10. 启动控制面 dashboard
 uv run archonlab dashboard serve --config archonlab.toml --port 8000
 
-# 10. 如果要直接走 Archon 固定 loop，再手动启动
+# 11. 如果要直接走 Archon 固定 loop，再手动启动
 ./archon-loop.sh /path/to/lean-project
 ```
 
@@ -55,6 +58,7 @@ uv run archonlab dashboard serve --config archonlab.toml --port 8000
 - dashboard 里能不能暂停、恢复、注入 hint
 - `execution.json` 里有没有真实 executor 输出
 - `queue workers` 能不能看到 slot / current job / processed 统计
+- 独立 `queue worker` 跑完后，worker 是否进入 `stopped`
 - 日志里是正常推进还是反复 stuck
 
 ## 你第一次不用做什么

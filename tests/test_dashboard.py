@@ -9,7 +9,13 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from archonlab.dashboard import create_dashboard_app  # noqa: E402
 from archonlab.events import EventStore  # noqa: E402
-from archonlab.models import EventRecord, RunStatus, RunSummary, WorkflowMode  # noqa: E402
+from archonlab.models import (  # noqa: E402
+    EventRecord,
+    RunStatus,
+    RunSummary,
+    WorkflowMode,
+)
+from archonlab.queue import QueueStore  # noqa: E402
 
 
 def _make_project(tmp_path: Path) -> Path:
@@ -120,3 +126,10 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     hint_payload = hint_response.json()
     assert hint_payload["hints"][-1]["author"] == "mentor"
     assert (project_path / ".archon" / "USER_HINTS.md").exists()
+
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    queue_store.register_worker(slot_index=1, worker_id="worker-test")
+    workers_response = client.get("/api/queue/workers")
+    assert workers_response.status_code == 200
+    workers = workers_response.json()
+    assert workers[0]["worker_id"] == "worker-test"
