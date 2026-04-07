@@ -795,16 +795,10 @@ class QueueStore:
             )
             worker_row = self._get_worker_locked(worker_id) if worker_id is not None else None
             worker = self._row_to_worker(worker_row) if worker_row is not None else None
-            row = next(
-                (
-                    candidate
-                    for candidate in rows
-                    if self._job_matches_worker(
-                        self._row_to_job(candidate),
-                        worker,
-                    )
-                ),
-                None,
+            row = self._select_claimable_row_locked(
+                rows,
+                worker=worker,
+                allowed_session_ids=allowed_session_ids,
             )
             if row is None:
                 self._conn.commit()
@@ -832,6 +826,46 @@ class QueueStore:
             if claimed is None:
                 raise KeyError(f"Unknown queue job: {row['job_id']}")
             return self._row_to_job(claimed)
+
+    def _select_claimable_row_locked(
+        self,
+        rows: list[sqlite3.Row],
+        *,
+        worker: QueueWorkerLease | None,
+        allowed_session_ids: list[str] | None,
+    ) -> sqlite3.Row | None:
+        claimable_rows = [
+            (index, candidate)
+            for index, candidate in enumerate(rows)
+            if self._job_matches_worker(
+                self._row_to_job(candidate),
+                worker,
+            )
+        ]
+        if not claimable_rows:
+            return None
+        _, first_row = claimable_rows[0]
+        if not self._queue_row_is_session_quantum(first_row):
+            return first_row
+        session_rows = [
+            (index, candidate)
+            for index, candidate in claimable_rows
+            if self._queue_row_is_session_quantum(candidate)
+            and candidate["session_id"] is not None
+        ]
+        if len({str(candidate["session_id"]) for _, candidate in session_rows}) <= 1:
+            return first_row
+        session_last_activity = self._session_last_activity_map_locked(
+            allowed_session_ids=allowed_session_ids
+        )
+        _, selected_row = min(
+            session_rows,
+            key=lambda item: (
+                session_last_activity.get(str(item[1]["session_id"])) or "",
+                item[0],
+            ),
+        )
+        return selected_row
 
     def claim_next_job(
         self,
@@ -1322,6 +1356,9 @@ class QueueStore:
                 1 for job in profile_jobs if job.status is QueueJobStatus.PENDING
             )
             profile_active = len(profile_jobs)
+            profile_active_units = len(
+                {self._fleet_recommendation_unit(job) for job in profile_jobs}
+            )
             dedicated_workers = [
                 worker
                 for worker in active_workers
@@ -1343,7 +1380,7 @@ class QueueStore:
             dedicated_worker_ids.update(worker.worker_id for worker in dedicated_workers)
             recommended_total_workers = max(
                 profile_running,
-                ceil(profile_active / target_jobs_per_worker),
+                ceil(profile_active_units / target_jobs_per_worker),
             )
             recommended_additional_workers = max(
                 recommended_total_workers - len(matching_workers),
@@ -1410,6 +1447,12 @@ class QueueStore:
             profiles=profiles,
         )
 
+    @staticmethod
+    def _fleet_recommendation_unit(job: QueueJob) -> tuple[str, str]:
+        if job.kind is QueueJobKind.SESSION_QUANTUM and job.session_id is not None:
+            return ("session", job.session_id)
+        return ("job", job.job_id)
+
     def _queue_rows_for_statuses(
         self,
         *,
@@ -1432,6 +1475,40 @@ class QueueStore:
         query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY priority DESC, created_at ASC"
         return cast(list[sqlite3.Row], self._conn.execute(query, params).fetchall())
+
+    @staticmethod
+    def _queue_row_is_session_quantum(row: sqlite3.Row) -> bool:
+        return str(row["kind"]) == QueueJobKind.SESSION_QUANTUM.value
+
+    def _session_last_activity_map_locked(
+        self,
+        *,
+        allowed_session_ids: list[str] | None = None,
+    ) -> dict[str, str]:
+        normalized_session_ids = self._normalize_allowed_session_ids(allowed_session_ids)
+        if normalized_session_ids == ():
+            return {}
+        clauses = ["session_id IS NOT NULL"]
+        params: list[str] = []
+        if normalized_session_ids is not None:
+            clauses.append(
+                "session_id IN (" + ", ".join("?" for _ in normalized_session_ids) + ")"
+            )
+            params.extend(normalized_session_ids)
+        clauses.append("(started_at IS NOT NULL OR finished_at IS NOT NULL)")
+        query = """
+            SELECT session_id,
+                   MAX(COALESCE(finished_at, started_at)) AS last_activity_at
+            FROM queue_jobs
+        """
+        query += " WHERE " + " AND ".join(clauses)
+        query += " GROUP BY session_id"
+        rows = self._conn.execute(query, params).fetchall()
+        return {
+            str(row["session_id"]): str(row["last_activity_at"])
+            for row in rows
+            if row["session_id"] is not None and row["last_activity_at"] is not None
+        }
 
     def _reap_stale_workers_locked(
         self,

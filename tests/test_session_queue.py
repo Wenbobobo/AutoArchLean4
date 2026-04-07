@@ -15,6 +15,7 @@ from archonlab.models import (
     QueueJobKind,
     QueueJobStatus,
     SessionStatus,
+    WorkflowMode,
 )
 from archonlab.queue import QueueStore
 
@@ -182,6 +183,85 @@ def test_batch_runner_session_quanta_are_fair_across_projects(
     )
     queue_store = QueueStore(artifact_root / "archonlab.db")
     queue_store.enqueue_workspace_sessions(workspace_path)
+    runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(artifact_root),
+        artifact_root=artifact_root,
+        slot_limit=1,
+    )
+
+    report = runner.run_worker(
+        slot_index=1,
+        max_jobs=2,
+        poll_seconds=0.01,
+        idle_timeout_seconds=0.1,
+        executor_kinds=[ExecutorKind.DRY_RUN],
+        provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+    )
+
+    assert len(report.processed_job_ids) == 2
+    sessions = EventStore(artifact_root / "archonlab.db").list_sessions(
+        workspace_id="demo-workspace"
+    )
+    assert len(sessions) == 2
+    assert {session.completed_iterations for session in sessions} == {1}
+    assert all(session.status is SessionStatus.PENDING for session in sessions)
+
+    queued_jobs = queue_store.list_jobs(status=QueueJobStatus.QUEUED, limit=10)
+    assert len(queued_jobs) == 2
+    assert {job.session_id for job in queued_jobs} == {session.session_id for session in sessions}
+
+
+def test_batch_runner_session_quanta_remain_fair_under_priority_skew(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    project_b = _clone_project(fake_archon_project, tmp_path / "DemoProjectB")
+    artifact_root = tmp_path / "artifacts"
+    workspace_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        archon_path=fake_archon_root,
+        projects=[
+            ("alpha", fake_archon_project),
+            ("beta", project_b),
+        ],
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    for project_id in ("alpha", "beta"):
+        store.register_session(
+            ProjectSession(
+                session_id=f"session-{project_id}",
+                workspace_id="demo-workspace",
+                project_id=project_id,
+                status=SessionStatus.PENDING,
+                workflow=WorkflowMode.ADAPTIVE_LOOP,
+                dry_run=True,
+                max_iterations=2,
+            )
+        )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    for project_id, session_id, priority in [
+        ("alpha", "session-alpha", 10),
+        ("beta", "session-beta", 8),
+        ("alpha", "session-alpha", 9),
+    ]:
+        queue_store.enqueue(
+            QueueJobKind.SESSION_QUANTUM,
+            {
+                "workspace_config_path": str(workspace_path),
+                "workspace_id": "demo-workspace",
+                "project_id": project_id,
+                "session_id": session_id,
+            },
+            project_id=project_id,
+            workspace_id="demo-workspace",
+            session_id=session_id,
+            priority=priority,
+            required_executor_kinds=[ExecutorKind.DRY_RUN],
+            required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+        )
     runner = BatchRunner(
         queue_store=queue_store,
         control_service=ControlService(artifact_root),

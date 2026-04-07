@@ -8,6 +8,7 @@ from archonlab.models import (
     ProviderKind,
     ProviderPoolConfig,
     ProviderPoolMemberConfig,
+    QueueJobKind,
     QueueJobPreview,
     SupervisorAction,
     SupervisorReason,
@@ -294,3 +295,89 @@ def test_queue_store_marks_provider_capacity_unavailable_when_no_healthy_members
     assert plan.recommended_additional_workers == 0
     assert plan.profiles[0].available_provider_members == 0
     assert plan.profiles[0].provider_capacity_status == "unavailable"
+
+
+def test_queue_store_claim_next_job_avoids_repeating_same_session_when_other_session_is_runnable(
+    tmp_path: Path,
+) -> None:
+    store = QueueStore(tmp_path / "queue.db")
+    first_alpha = store.enqueue(
+        QueueJobKind.SESSION_QUANTUM,
+        {"workspace_config_path": "workspace.toml", "session_id": "session-alpha"},
+        project_id="demo-alpha",
+        session_id="session-alpha",
+        priority=10,
+    )
+    store.enqueue(
+        QueueJobKind.SESSION_QUANTUM,
+        {"workspace_config_path": "workspace.toml", "session_id": "session-beta"},
+        project_id="demo-beta",
+        session_id="session-beta",
+        priority=8,
+    )
+    store.enqueue(
+        QueueJobKind.SESSION_QUANTUM,
+        {"workspace_config_path": "workspace.toml", "session_id": "session-alpha"},
+        project_id="demo-alpha",
+        session_id="session-alpha",
+        priority=9,
+    )
+
+    claimed_first = store.claim_next_job(worker_id="worker-1")
+    claimed_second = store.claim_next_job(worker_id="worker-2")
+
+    assert claimed_first is not None
+    assert claimed_second is not None
+    assert claimed_first.id == first_alpha.id
+    assert claimed_first.session_id == "session-alpha"
+    assert claimed_second.session_id == "session-beta"
+
+
+def test_queue_store_plan_fleet_recommendations_use_distinct_session_ids_for_session_quanta(
+    tmp_path: Path,
+) -> None:
+    store = QueueStore(tmp_path / "queue.db")
+    preview = QueueJobPreview(
+        phase=ActionPhase.PLAN,
+        reason="task_graph_focus",
+        stage="plan",
+        supervisor_action=SupervisorAction.CONTINUE,
+        supervisor_reason=SupervisorReason.HEALTHY,
+        theorem_name="alpha",
+        final_priority=10,
+        executor_kind=ExecutorKind.DRY_RUN,
+        provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+        model="gpt-5.4-mini",
+        cost_tier="cheap",
+        endpoint_class="lab",
+    )
+    for project_id, session_id, priority in [
+        ("demo-alpha", "session-alpha", 10),
+        ("demo-beta", "session-beta", 8),
+        ("demo-alpha", "session-alpha", 9),
+    ]:
+        store.enqueue(
+            QueueJobKind.SESSION_QUANTUM,
+            {"workspace_config_path": "workspace.toml", "session_id": session_id},
+            project_id=project_id,
+            session_id=session_id,
+            priority=priority,
+            required_executor_kinds=[ExecutorKind.DRY_RUN],
+            required_provider_kinds=[ProviderKind.OPENAI_COMPATIBLE],
+            required_models=["gpt-5.4-mini"],
+            required_cost_tiers=["cheap"],
+            required_endpoint_classes=["lab"],
+            preview=preview,
+        )
+
+    plan = store.plan_fleet(target_jobs_per_worker=1)
+
+    assert plan.active_jobs == 3
+    assert plan.queued_jobs == 3
+    assert plan.recommended_total_workers == 2
+    assert plan.recommended_additional_workers == 2
+    assert len(plan.profiles) == 1
+    assert plan.profiles[0].active_jobs == 3
+    assert plan.profiles[0].queued_jobs == 3
+    assert plan.profiles[0].recommended_total_workers == 2
+    assert plan.profiles[0].recommended_additional_workers == 2
