@@ -83,6 +83,8 @@ class _ProviderPoolHealthState:
 
 _PROVIDER_POOL_HEALTH_LOCK = threading.Lock()
 _PROVIDER_POOL_HEALTH: dict[tuple[str, str], _ProviderPoolHealthState] = {}
+_PROVIDER_POOL_CURSOR_LOCK = threading.Lock()
+_PROVIDER_POOL_CURSORS: dict[str, int] = {}
 _PROVIDER_POOL_HEALTH_DB_LOCK = threading.Lock()
 _PROVIDER_POOL_HEALTH_DB_READY: set[Path] = set()
 
@@ -807,8 +809,81 @@ def _eligible_pool_members(
         else:
             healthy_members.append(member)
     if healthy_members:
-        return healthy_members, ("degraded" if quarantined_members else "healthy")
-    return sorted_members, "all_quarantined"
+        return (
+            _order_pool_members(
+                pool,
+                healthy_members,
+                db_path=db_path,
+            ),
+            ("degraded" if quarantined_members else "healthy"),
+        )
+    return _order_pool_members(pool, sorted_members, db_path=db_path), "all_quarantined"
+
+
+def _order_pool_members(
+    pool: ProviderPoolConfig,
+    members: list[ProviderPoolMemberConfig],
+    *,
+    db_path: Path | None = None,
+) -> list[ProviderPoolMemberConfig]:
+    if len(members) <= 1:
+        return members
+    if pool.strategy != "round_robin":
+        return members
+    start_index = _advance_provider_pool_cursor(
+        pool_name=pool.name,
+        member_count=len(members),
+        db_path=db_path,
+    )
+    return members[start_index:] + members[:start_index]
+
+
+def _advance_provider_pool_cursor(
+    *,
+    pool_name: str,
+    member_count: int,
+    db_path: Path | None = None,
+) -> int:
+    if member_count <= 0:
+        return 0
+    if db_path is None:
+        with _PROVIDER_POOL_CURSOR_LOCK:
+            current = _PROVIDER_POOL_CURSORS.get(pool_name, 0) % member_count
+            _PROVIDER_POOL_CURSORS[pool_name] = (current + 1) % member_count
+            return current
+
+    resolved_path = db_path.resolve()
+    _ensure_provider_pool_health_table(resolved_path)
+    conn = sqlite3.connect(resolved_path, timeout=30)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT next_index
+            FROM provider_pool_strategy_state
+            WHERE pool_name = ?
+            """,
+            (pool_name,),
+        ).fetchone()
+        current = (int(row[0]) if row is not None else 0) % member_count
+        conn.execute(
+            """
+            INSERT INTO provider_pool_strategy_state (pool_name, next_index, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(pool_name) DO UPDATE SET
+                next_index = excluded.next_index,
+                updated_at = excluded.updated_at
+            """,
+            (
+                pool_name,
+                (current + 1) % member_count,
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+        conn.commit()
+        return current
+    finally:
+        conn.close()
 
 
 def _resolve_pinned_pool_member(
@@ -1017,12 +1092,23 @@ def reset_provider_pool_health(
     db_path: Path | None = None,
 ) -> int:
     if db_path is not None:
-        return _reset_provider_pool_health_db(
+        removed = _reset_provider_pool_health_db(
             db_path=db_path,
             pool_name=pool_name,
             member_name=member_name,
         )
+        if pool_name is not None:
+            _reset_provider_pool_cursor_db(db_path=db_path, pool_name=pool_name)
+        elif member_name is None:
+            _reset_provider_pool_cursor_db(db_path=db_path, pool_name=None)
+        return removed
     with _PROVIDER_POOL_HEALTH_LOCK:
+        if pool_name is None and member_name is None:
+            with _PROVIDER_POOL_CURSOR_LOCK:
+                _PROVIDER_POOL_CURSORS.clear()
+        elif pool_name is not None:
+            with _PROVIDER_POOL_CURSOR_LOCK:
+                _PROVIDER_POOL_CURSORS.pop(pool_name, None)
         if pool_name is None and member_name is None:
             removed = len(_PROVIDER_POOL_HEALTH)
             _PROVIDER_POOL_HEALTH.clear()
@@ -1179,7 +1265,40 @@ def _ensure_provider_pool_health_table(db_path: Path) -> None:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS provider_pool_strategy_state (
+                    pool_name TEXT NOT NULL PRIMARY KEY,
+                    next_index INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             conn.commit()
         finally:
             conn.close()
         _PROVIDER_POOL_HEALTH_DB_READY.add(db_path)
+
+
+def _reset_provider_pool_cursor_db(
+    *,
+    db_path: Path,
+    pool_name: str | None,
+) -> None:
+    resolved_path = db_path.resolve()
+    _ensure_provider_pool_health_table(resolved_path)
+    conn = sqlite3.connect(resolved_path, timeout=30)
+    try:
+        if pool_name is None:
+            conn.execute("DELETE FROM provider_pool_strategy_state")
+        else:
+            conn.execute(
+                """
+                DELETE FROM provider_pool_strategy_state
+                WHERE pool_name = ?
+                """,
+                (pool_name,),
+            )
+        conn.commit()
+    finally:
+        conn.close()

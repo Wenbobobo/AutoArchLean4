@@ -16,6 +16,7 @@ from archonlab.executors import (
 )
 from archonlab.models import (
     ExecutionCapability,
+    ExecutionResult,
     ExecutionStatus,
     ExecutorConfig,
     ExecutorKind,
@@ -538,6 +539,253 @@ def test_provider_pool_health_persists_across_executor_instances_with_shared_db(
         reset_provider_pool_health(db_path=db_path)
 
 
+def test_provider_pool_executor_round_robin_rotates_across_shared_db_instances(
+    tmp_path: Path,
+) -> None:
+    reset_provider_pool_health()
+    db_path = tmp_path / "archonlab.db"
+    captured = {"primary": 0, "backup": 0}
+
+    class PrimaryHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["primary"] += 1
+            encoded = json.dumps({"output_text": "primary-ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    class BackupHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["backup"] += 1
+            encoded = json.dumps({"output_text": "backup-ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    primary_server = ThreadingHTTPServer(("127.0.0.1", 0), PrimaryHandler)
+    backup_server = ThreadingHTTPServer(("127.0.0.1", 0), BackupHandler)
+    primary_thread = threading.Thread(target=primary_server.serve_forever, daemon=True)
+    backup_thread = threading.Thread(target=backup_server.serve_forever, daemon=True)
+    primary_thread.start()
+    backup_thread.start()
+    try:
+        pool_name = "research"
+        provider_pools = {
+            pool_name: ProviderPoolConfig(
+                name=pool_name,
+                strategy="round_robin",
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="primary",
+                        base_url=f"http://127.0.0.1:{primary_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                    ProviderPoolMemberConfig(
+                        name="backup",
+                        base_url=f"http://127.0.0.1:{backup_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                ],
+            )
+        }
+
+        first_executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+            provider_health_db_path=db_path,
+        )
+        second_executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+            provider_health_db_path=db_path,
+        )
+        third_executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+            provider_health_db_path=db_path,
+        )
+
+        first = first_executor.execute("prove foo", system_prompt="plan")
+        second = second_executor.execute("prove bar", system_prompt="plan")
+        third = third_executor.execute("prove baz", system_prompt="plan")
+
+        assert first.status is ExecutionStatus.COMPLETED
+        assert second.status is ExecutionStatus.COMPLETED
+        assert third.status is ExecutionStatus.COMPLETED
+        assert first.telemetry is not None
+        assert second.telemetry is not None
+        assert third.telemetry is not None
+        assert first.telemetry.provider_member == "primary"
+        assert second.telemetry.provider_member == "backup"
+        assert third.telemetry.provider_member == "primary"
+        assert first.telemetry.attempted_members == ["primary"]
+        assert second.telemetry.attempted_members == ["backup"]
+        assert third.telemetry.attempted_members == ["primary"]
+        assert captured["primary"] == 2
+        assert captured["backup"] == 1
+    finally:
+        primary_server.shutdown()
+        backup_server.shutdown()
+        primary_server.server_close()
+        backup_server.server_close()
+        primary_thread.join(timeout=2)
+        backup_thread.join(timeout=2)
+        reset_provider_pool_health()
+        reset_provider_pool_health(db_path=db_path)
+
+
+def test_provider_pool_executor_round_robin_continues_across_healthy_members_after_quarantine(
+    tmp_path: Path,
+) -> None:
+    reset_provider_pool_health()
+    db_path = tmp_path / "archonlab.db"
+    captured = {"primary": 0, "backup": 0, "tertiary": 0}
+
+    class PrimaryHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["primary"] += 1
+            encoded = json.dumps({"error": "primary unavailable"}).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    class BackupHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["backup"] += 1
+            encoded = json.dumps({"output_text": "backup-ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    class TertiaryHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["tertiary"] += 1
+            encoded = json.dumps({"output_text": "tertiary-ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    primary_server = ThreadingHTTPServer(("127.0.0.1", 0), PrimaryHandler)
+    backup_server = ThreadingHTTPServer(("127.0.0.1", 0), BackupHandler)
+    tertiary_server = ThreadingHTTPServer(("127.0.0.1", 0), TertiaryHandler)
+    primary_thread = threading.Thread(target=primary_server.serve_forever, daemon=True)
+    backup_thread = threading.Thread(target=backup_server.serve_forever, daemon=True)
+    tertiary_thread = threading.Thread(target=tertiary_server.serve_forever, daemon=True)
+    primary_thread.start()
+    backup_thread.start()
+    tertiary_thread.start()
+    try:
+        pool_name = "research"
+        provider_pools = {
+            pool_name: ProviderPoolConfig(
+                name=pool_name,
+                strategy="round_robin",
+                max_consecutive_failures=1,
+                quarantine_seconds=600,
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="primary",
+                        base_url=f"http://127.0.0.1:{primary_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                    ProviderPoolMemberConfig(
+                        name="backup",
+                        base_url=f"http://127.0.0.1:{backup_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                    ProviderPoolMemberConfig(
+                        name="tertiary",
+                        base_url=f"http://127.0.0.1:{tertiary_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                ],
+            )
+        }
+
+        first_executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+            provider_health_db_path=db_path,
+        )
+        second_executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+            provider_health_db_path=db_path,
+        )
+        third_executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+            provider_health_db_path=db_path,
+        )
+
+        first = first_executor.execute("prove foo", system_prompt="plan")
+        second = second_executor.execute("prove bar", system_prompt="plan")
+        third = third_executor.execute("prove baz", system_prompt="plan")
+
+        assert first.status is ExecutionStatus.COMPLETED
+        assert second.status is ExecutionStatus.COMPLETED
+        assert third.status is ExecutionStatus.COMPLETED
+        assert first.telemetry is not None
+        assert second.telemetry is not None
+        assert third.telemetry is not None
+        assert first.telemetry.provider_member == "backup"
+        assert second.telemetry.provider_member == "tertiary"
+        assert third.telemetry.provider_member == "backup"
+        assert first.telemetry.attempted_members == ["primary", "backup"]
+        assert second.telemetry.attempted_members == ["tertiary"]
+        assert third.telemetry.attempted_members == ["backup"]
+        assert captured["primary"] == 1
+        assert captured["backup"] == 2
+        assert captured["tertiary"] == 1
+
+        report = snapshot_provider_pool_health(provider_pools, db_path=db_path)[0]
+        primary = next(member for member in report.members if member.member_name == "primary")
+        assert primary.status is ProviderPoolMemberHealthStatus.QUARANTINED
+    finally:
+        primary_server.shutdown()
+        backup_server.shutdown()
+        tertiary_server.shutdown()
+        primary_server.server_close()
+        backup_server.server_close()
+        tertiary_server.server_close()
+        primary_thread.join(timeout=2)
+        backup_thread.join(timeout=2)
+        tertiary_thread.join(timeout=2)
+        reset_provider_pool_health()
+        reset_provider_pool_health(db_path=db_path)
+
+
 def test_provider_pool_executor_honors_pinned_member_without_fallback() -> None:
     captured = {"primary": 0, "backup": 0}
 
@@ -723,3 +971,150 @@ def test_provider_pool_executor_returns_failed_result_for_unavailable_pinned_mem
         primary_thread.join(timeout=2)
         backup_thread.join(timeout=2)
         reset_provider_pool_health()
+
+
+def test_provider_pool_executor_round_robin_rotates_members_across_executors(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "provider-health.db"
+    pool_name = "research"
+    attempts: list[str] = []
+
+    class FakeExecutor:
+        def __init__(self, member_name: str) -> None:
+            self.member_name = member_name
+
+        def execute(
+            self,
+            request_or_prompt: object,
+            system_prompt: str | None = None,
+        ) -> ExecutionResult:
+            del request_or_prompt, system_prompt
+            attempts.append(self.member_name)
+            return ExecutionResult(
+                executor=ExecutorKind.OPENAI_COMPATIBLE,
+                status=ExecutionStatus.COMPLETED,
+                response_text=self.member_name,
+                metadata={"provider": "openai_compatible_http"},
+            )
+
+    monkeypatch.setattr(
+        "archonlab.executors._create_direct_executor",
+        lambda *, executor_config, provider_config: (
+            FakeExecutor(provider_config.member_name or "missing")
+        ),
+    )
+
+    provider_pools = {
+        pool_name: ProviderPoolConfig(
+            name=pool_name,
+            strategy="round_robin",
+            members=[
+                ProviderPoolMemberConfig(name="member-a", priority=10, model="gpt-5.4-mini"),
+                ProviderPoolMemberConfig(name="member-b", priority=10, model="gpt-5.4-mini"),
+            ],
+        )
+    }
+
+    first_executor = create_executor(
+        executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+        provider_config=ProviderConfig(pool=pool_name),
+        provider_pools=provider_pools,
+        provider_health_db_path=db_path,
+    )
+    second_executor = create_executor(
+        executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+        provider_config=ProviderConfig(pool=pool_name),
+        provider_pools=provider_pools,
+        provider_health_db_path=db_path,
+    )
+
+    first = first_executor.execute("prove a", system_prompt="plan")
+    second = second_executor.execute("prove b", system_prompt="plan")
+    third = first_executor.execute("prove c", system_prompt="plan")
+
+    assert first.status is ExecutionStatus.COMPLETED
+    assert second.status is ExecutionStatus.COMPLETED
+    assert third.status is ExecutionStatus.COMPLETED
+    assert first.telemetry is not None
+    assert second.telemetry is not None
+    assert third.telemetry is not None
+    assert first.telemetry.provider_member == "member-a"
+    assert second.telemetry.provider_member == "member-b"
+    assert third.telemetry.provider_member == "member-a"
+    assert attempts == ["member-a", "member-b", "member-a"]
+
+
+def test_provider_pool_executor_round_robin_skips_quarantined_member_on_next_call(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "provider-health.db"
+    pool_name = "research"
+    attempts: list[str] = []
+
+    class FakeExecutor:
+        def __init__(self, member_name: str) -> None:
+            self.member_name = member_name
+
+        def execute(
+            self,
+            request_or_prompt: object,
+            system_prompt: str | None = None,
+        ) -> ExecutionResult:
+            del request_or_prompt, system_prompt
+            attempts.append(self.member_name)
+            if self.member_name == "member-a":
+                return ExecutionResult(
+                    executor=ExecutorKind.OPENAI_COMPATIBLE,
+                    status=ExecutionStatus.FAILED,
+                    error_message="member-a failed",
+                    metadata={"provider": "openai_compatible_http"},
+                )
+            return ExecutionResult(
+                executor=ExecutorKind.OPENAI_COMPATIBLE,
+                status=ExecutionStatus.COMPLETED,
+                response_text=self.member_name,
+                metadata={"provider": "openai_compatible_http"},
+            )
+
+    monkeypatch.setattr(
+        "archonlab.executors._create_direct_executor",
+        lambda *, executor_config, provider_config: (
+            FakeExecutor(provider_config.member_name or "missing")
+        ),
+    )
+
+    provider_pools = {
+        pool_name: ProviderPoolConfig(
+            name=pool_name,
+            strategy="round_robin",
+            max_consecutive_failures=1,
+            quarantine_seconds=600,
+            members=[
+                ProviderPoolMemberConfig(name="member-a", priority=10, model="gpt-5.4-mini"),
+                ProviderPoolMemberConfig(name="member-b", priority=10, model="gpt-5.4-mini"),
+            ],
+        )
+    }
+
+    executor = create_executor(
+        executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+        provider_config=ProviderConfig(pool=pool_name),
+        provider_pools=provider_pools,
+        provider_health_db_path=db_path,
+    )
+
+    first = executor.execute("prove a", system_prompt="plan")
+    second = executor.execute("prove b", system_prompt="plan")
+
+    assert first.status is ExecutionStatus.COMPLETED
+    assert second.status is ExecutionStatus.COMPLETED
+    assert first.telemetry is not None
+    assert second.telemetry is not None
+    assert first.telemetry.provider_member == "member-b"
+    assert first.telemetry.attempted_members == ["member-a", "member-b"]
+    assert second.telemetry.provider_member == "member-b"
+    assert second.telemetry.attempted_members == ["member-b"]
+    assert attempts == ["member-a", "member-b", "member-b"]
