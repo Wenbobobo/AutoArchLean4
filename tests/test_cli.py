@@ -341,6 +341,126 @@ def test_workspace_run_command_enqueues_sessions_and_runs_autoscaler(
     assert session.note == "workspace-run"
 
 
+def test_workspace_run_command_resumes_failed_session_before_autoscaling(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    store.register_session(
+        ProjectSession(
+            session_id="session-alpha-1",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.FAILED,
+            max_iterations=3,
+            completed_iterations=1,
+            error_message="executor failed",
+            last_stop_reason="run_failed",
+        )
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(self, **kwargs) -> object:
+        captured.update(kwargs)
+        return self.result_model(
+            cycles_completed=1,
+            stop_reason="queue_drained",
+            total_processed_jobs=1,
+            total_paused_jobs=0,
+            total_failed_jobs=0,
+            total_workers_launched=1,
+            cycles=[],
+            final_plan=self.queue_store.plan_fleet(),
+        )
+
+    monkeypatch.setattr("archonlab.app.FleetController.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "run",
+            "--config",
+            str(config_path),
+            "--project-id",
+            "alpha",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Enqueued sessions: 1" in result.output
+    session = store.get_session("session-alpha-1")
+    assert session is not None
+    assert session.status is SessionStatus.PENDING
+    assert session.last_resume_reason == "workspace_enqueue_resume"
+    jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
+    assert len(jobs) == 1
+    assert jobs[0].session_id == "session-alpha-1"
+    assert captured["max_cycles"] == 10
+
+
+def test_workspace_run_command_skips_control_paused_session_without_autoscaling(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    store.register_session(
+        ProjectSession(
+            session_id="session-alpha-control",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.PAUSED,
+            max_iterations=3,
+            completed_iterations=0,
+            last_stop_reason="stop:control_paused",
+        )
+    )
+
+    def fail_run(self, **kwargs) -> object:
+        raise AssertionError(
+            "FleetController.run should not be called when no sessions were enqueued"
+        )
+
+    monkeypatch.setattr("archonlab.app.FleetController.run", fail_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "run",
+            "--config",
+            str(config_path),
+            "--project-id",
+            "alpha",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Enqueued sessions: 0" in result.output
+    assert "Stop reason: no_sessions_enqueued" in result.output
+    session = store.get_session("session-alpha-control")
+    assert session is not None
+    assert session.status is SessionStatus.PAUSED
+
+
 def test_run_start_creates_artifacts(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:

@@ -336,6 +336,82 @@ def test_queue_store_resume_workspace_sessions_resumes_paused_and_failed_session
     assert {job.session_id for job in jobs} == {"session-alpha-1", "session-beta-1"}
 
 
+def test_queue_store_enqueue_workspace_sessions_resumes_failed_session_instead_of_restarting(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    workspace_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        archon_path=fake_archon_root,
+        projects=[("demo-project", fake_archon_project)],
+    )
+    event_store = EventStore(artifact_root / "archonlab.db")
+    event_store.register_session(
+        ProjectSession(
+            session_id="session-demo-project-1",
+            workspace_id="demo-workspace",
+            project_id="demo-project",
+            status=SessionStatus.FAILED,
+            max_iterations=3,
+            completed_iterations=1,
+            error_message="executor failed",
+            last_stop_reason="run_failed",
+        )
+    )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+
+    jobs = queue_store.enqueue_workspace_sessions(workspace_path)
+
+    assert len(jobs) == 1
+    assert jobs[0].session_id == "session-demo-project-1"
+    updated = event_store.get_session("session-demo-project-1")
+    assert updated is not None
+    assert updated.status is SessionStatus.PENDING
+    assert updated.error_message is None
+    assert updated.last_resume_reason == "workspace_enqueue_resume"
+    sessions = event_store.list_sessions(workspace_id="demo-workspace")
+    assert len(sessions) == 1
+
+
+def test_queue_store_enqueue_workspace_sessions_skips_control_paused_session(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    workspace_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        archon_path=fake_archon_root,
+        projects=[("demo-project", fake_archon_project)],
+    )
+    event_store = EventStore(artifact_root / "archonlab.db")
+    event_store.register_session(
+        ProjectSession(
+            session_id="session-demo-project-control",
+            workspace_id="demo-workspace",
+            project_id="demo-project",
+            status=SessionStatus.PAUSED,
+            max_iterations=2,
+            completed_iterations=0,
+            last_stop_reason="stop:control_paused",
+        )
+    )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+
+    jobs = queue_store.enqueue_workspace_sessions(workspace_path)
+
+    assert jobs == []
+    updated = event_store.get_session("session-demo-project-control")
+    assert updated is not None
+    assert updated.status is SessionStatus.PAUSED
+    assert updated.last_stop_reason == "stop:control_paused"
+    assert queue_store.list_jobs(limit=10) == []
+
+
 def test_batch_runner_control_paused_session_does_not_consume_budget(
     tmp_path: Path,
     fake_archon_project: Path,

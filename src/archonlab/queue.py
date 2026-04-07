@@ -229,33 +229,88 @@ class QueueStore:
                 continue
             if selected_project_ids is not None and project.id not in selected_project_ids:
                 continue
-            session = self._resolve_workspace_session(
+            latest_session = self._latest_workspace_session(
                 workspace_id=workspace_config.name,
-                project=project,
+                project_id=project.id,
                 event_store=event_store,
-                default_workflow=project.workflow or workspace_config.run.workflow,
-                default_dry_run=(
-                    project.dry_run
-                    if project.dry_run is not None
-                    else workspace_config.run.dry_run
-                ),
-                default_max_iterations=(
-                    project.max_iterations
-                    if project.max_iterations is not None
-                    else workspace_config.run.max_iterations
-                ),
-                max_iterations=max_iterations,
-                dry_run=dry_run,
-                note=note,
             )
-            jobs.append(
-                self.enqueue_session_quantum(
-                    resolved_workspace_config_path,
-                    session_id=session.session_id,
-                    priority=priority,
-                    batch_id=batch_id,
+            if latest_session is None or latest_session.status in {
+                SessionStatus.COMPLETED,
+                SessionStatus.CANCELED,
+            }:
+                session = self._resolve_workspace_session(
+                    workspace_id=workspace_config.name,
+                    project=project,
+                    event_store=event_store,
+                    default_workflow=project.workflow or workspace_config.run.workflow,
+                    default_dry_run=(
+                        project.dry_run
+                        if project.dry_run is not None
+                        else workspace_config.run.dry_run
+                    ),
+                    default_max_iterations=(
+                        project.max_iterations
+                        if project.max_iterations is not None
+                        else workspace_config.run.max_iterations
+                    ),
+                    max_iterations=max_iterations,
+                    dry_run=dry_run,
+                    note=note,
                 )
-            )
+                jobs.append(
+                    self.enqueue_session_quantum(
+                        resolved_workspace_config_path,
+                        session_id=session.session_id,
+                        priority=priority,
+                        batch_id=batch_id,
+                    )
+                )
+                continue
+
+            if latest_session.status in {
+                SessionStatus.PENDING,
+                SessionStatus.RUNNING,
+            }:
+                session = self._update_workspace_session_defaults(
+                    latest_session,
+                    event_store=event_store,
+                    max_iterations=max_iterations,
+                    note=note,
+                )
+                jobs.append(
+                    self.enqueue_session_quantum(
+                        resolved_workspace_config_path,
+                        session_id=session.session_id,
+                        priority=priority,
+                        batch_id=batch_id,
+                    )
+                )
+                continue
+
+            if (
+                latest_session.status is SessionStatus.PAUSED
+                and latest_session.last_stop_reason == "stop:control_paused"
+            ):
+                self._update_workspace_session_defaults(
+                    latest_session,
+                    event_store=event_store,
+                    max_iterations=max_iterations,
+                    note=note,
+                )
+                continue
+
+            try:
+                _, resumed_job = self.resume_session(
+                    resolved_workspace_config_path,
+                    session_id=latest_session.session_id,
+                    max_iterations=max_iterations,
+                    priority=priority,
+                    resume_reason="workspace_enqueue_resume",
+                    note=note,
+                )
+            except ValueError:
+                continue
+            jobs.append(resumed_job)
         return jobs
 
     def resume_session(
@@ -1938,6 +1993,27 @@ class QueueStore:
             limit=1,
         )
         return existing[0] if existing else None
+
+    @staticmethod
+    def _update_workspace_session_defaults(
+        session: ProjectSession,
+        *,
+        event_store: EventStore,
+        max_iterations: int | None,
+        note: str | None,
+    ) -> ProjectSession:
+        if max_iterations is not None and session.max_iterations != max_iterations:
+            return event_store.update_session(
+                session.session_id,
+                max_iterations=max_iterations,
+                note=note,
+            )
+        if note is not None and session.note != note:
+            return event_store.update_session(
+                session.session_id,
+                note=note,
+            )
+        return session
 
     @staticmethod
     def _new_session_id(project_id: str) -> str:
