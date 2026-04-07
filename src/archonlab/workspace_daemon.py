@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .config import load_workspace_config
 from .fleet import WorkerLauncher
@@ -18,6 +19,7 @@ class WorkspaceDaemonState(BaseModel):
     workspace_id: str = ""
     config_path: Path | None = None
     daemon_run_id: str = ""
+    pid: int | None = None
     status: str = "idle"
     started_at: datetime | None = None
     updated_at: datetime | None = None
@@ -33,8 +35,22 @@ class WorkspaceDaemonState(BaseModel):
     error_message: str | None = None
 
 
+class WorkspaceDaemonLock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = ""
+    config_path: Path | None = None
+    daemon_run_id: str = ""
+    pid: int
+    acquired_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 def workspace_daemon_state_path(artifact_root: Path) -> Path:
     return artifact_root.resolve() / "workspace-daemon" / "state.json"
+
+
+def workspace_daemon_lock_path(artifact_root: Path) -> Path:
+    return artifact_root.resolve() / "workspace-daemon" / "lock.json"
 
 
 def load_workspace_daemon_state(
@@ -60,6 +76,49 @@ def write_workspace_daemon_state(
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(state.model_dump_json(indent=2), encoding="utf-8")
     return state
+
+
+def acquire_workspace_daemon_lock(
+    artifact_root: Path,
+    lock: WorkspaceDaemonLock,
+) -> WorkspaceDaemonLock:
+    lock_path = workspace_daemon_lock_path(artifact_root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = lock.model_dump_json(indent=2)
+    while True:
+        try:
+            descriptor = os.open(
+                lock_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o644,
+            )
+        except FileExistsError:
+            existing = _load_existing_daemon_lock(lock_path)
+            if existing is not None and _process_is_alive(existing.pid):
+                raise RuntimeError(
+                    "Workspace daemon already running: "
+                    f"{existing.daemon_run_id} (pid={existing.pid})"
+                ) from None
+            lock_path.unlink(missing_ok=True)
+            continue
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        return lock
+
+
+def release_workspace_daemon_lock(
+    artifact_root: Path,
+    *,
+    daemon_run_id: str,
+    pid: int,
+) -> None:
+    lock_path = workspace_daemon_lock_path(artifact_root)
+    existing = _load_existing_daemon_lock(lock_path)
+    if existing is None:
+        lock_path.unlink(missing_ok=True)
+        return
+    if existing.daemon_run_id == daemon_run_id and existing.pid == pid:
+        lock_path.unlink(missing_ok=True)
 
 
 def request_workspace_daemon_stop(
@@ -140,9 +199,21 @@ class WorkspaceDaemonRunner:
         stale_after_seconds: float | None = 120.0,
     ) -> WorkspaceDaemonState:
         started_at = datetime.now(UTC)
+        daemon_run_id = self._new_daemon_run_id()
+        pid = os.getpid()
+        acquire_workspace_daemon_lock(
+            self.artifact_root,
+            WorkspaceDaemonLock(
+                workspace_id=self.workspace_config.name,
+                config_path=self.config_path,
+                daemon_run_id=daemon_run_id,
+                pid=pid,
+            ),
+        )
         state = self.status().model_copy(
             update={
-                "daemon_run_id": self._new_daemon_run_id(),
+                "daemon_run_id": daemon_run_id,
+                "pid": pid,
                 "status": "running",
                 "started_at": started_at,
                 "updated_at": started_at,
@@ -223,6 +294,12 @@ class WorkspaceDaemonRunner:
                 error_message=str(exc),
             )
             raise
+        finally:
+            release_workspace_daemon_lock(
+                self.artifact_root,
+                daemon_run_id=daemon_run_id,
+                pid=pid,
+            )
 
     def _finalize_state(
         self,
@@ -245,3 +322,24 @@ class WorkspaceDaemonRunner:
     @staticmethod
     def _new_daemon_run_id() -> str:
         return f"workspace-daemon-{uuid.uuid4().hex[:10]}"
+
+
+def _load_existing_daemon_lock(lock_path: Path) -> WorkspaceDaemonLock | None:
+    if not lock_path.exists():
+        return None
+    try:
+        return WorkspaceDaemonLock.model_validate_json(lock_path.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+
+
+def _process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True

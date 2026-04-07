@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 from archonlab.models import WorkspaceLoopResult
 from archonlab.workspace_daemon import (
     WorkspaceDaemonRunner,
+    WorkspaceDaemonState,
     load_workspace_daemon_state,
     request_workspace_daemon_stop,
+    workspace_daemon_lock_path,
+    write_workspace_daemon_state,
 )
 
 
@@ -86,6 +92,7 @@ def test_workspace_daemon_runner_executes_repeated_workspace_loop_ticks(
     assert state.exit_reason == "max_ticks_reached"
     assert persisted.tick_count == 2
     assert persisted.last_loop_run_id == "loop-daemon-2"
+    assert not workspace_daemon_lock_path(artifact_root).exists()
 
 
 def test_workspace_daemon_runner_honors_stop_request_between_ticks(
@@ -134,3 +141,85 @@ def test_workspace_daemon_runner_honors_stop_request_between_ticks(
     assert state.request_reason == "operator_stop_requested"
     assert state.exit_reason == "operator_stop_requested"
     assert state.last_loop_run_id == "loop-daemon-stop-1"
+    assert not workspace_daemon_lock_path(artifact_root).exists()
+
+
+def test_workspace_daemon_runner_rejects_existing_live_lock(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    write_workspace_daemon_state(
+        artifact_root,
+        WorkspaceDaemonState(
+            workspace_id="demo-workspace",
+            daemon_run_id="workspace-daemon-live",
+            status="running",
+            pid=os.getpid(),
+        ),
+    )
+    workspace_daemon_lock_path(artifact_root).parent.mkdir(parents=True, exist_ok=True)
+    workspace_daemon_lock_path(artifact_root).write_text(
+        (
+            '{"workspace_id":"demo-workspace",'
+            '"daemon_run_id":"workspace-daemon-live",'
+            f'"pid":{os.getpid()}}}'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="workspace-daemon-live"):
+        WorkspaceDaemonRunner(config_path).run(
+            max_ticks=1,
+            poll_seconds=0.0,
+            fleet_max_cycles=1,
+            queue_poll_seconds=0.01,
+            queue_idle_timeout_seconds=0.01,
+        )
+
+    persisted = load_workspace_daemon_state(artifact_root)
+    assert persisted.daemon_run_id == "workspace-daemon-live"
+    assert persisted.status == "running"
+
+
+def test_workspace_daemon_runner_releases_lock_after_failure(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+
+    def fail_run(self, **kwargs) -> WorkspaceLoopResult:
+        del self, kwargs
+        raise RuntimeError("daemon loop boom")
+
+    monkeypatch.setattr("archonlab.workspace_daemon.WorkspaceLoopController.run", fail_run)
+
+    with pytest.raises(RuntimeError, match="daemon loop boom"):
+        WorkspaceDaemonRunner(config_path).run(
+            max_ticks=1,
+            poll_seconds=0.0,
+            fleet_max_cycles=1,
+            queue_poll_seconds=0.01,
+            queue_idle_timeout_seconds=0.01,
+        )
+
+    persisted = load_workspace_daemon_state(artifact_root)
+    assert persisted.status == "failed"
+    assert persisted.exit_reason == "daemon_failed"
+    assert persisted.error_message == "daemon loop boom"
+    assert not workspace_daemon_lock_path(artifact_root).exists()
