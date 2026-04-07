@@ -129,6 +129,7 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert 'id="workspace-provider-health"' in index_response.text
     assert 'id="workspace-enqueue-button"' in index_response.text
     assert 'id="workspace-resume-button"' in index_response.text
+    assert 'id="workspace-tag-input"' in index_response.text
 
     runs_response = client.get("/api/runs")
     assert runs_response.status_code == 200
@@ -584,6 +585,15 @@ def test_dashboard_workspace_overview_and_project_switching(
     tagged_enqueue_payload = tagged_enqueue_response.json()
     assert len(tagged_enqueue_payload) == 1
     assert tagged_enqueue_payload[0]["project_id"] == "beta"
+
+    tagged_resume_response = client.post(
+        "/api/workspace/resume",
+        json={"tags": ["geometry"]},
+    )
+    assert tagged_resume_response.status_code == 200
+    tagged_resume_payload = tagged_resume_response.json()
+    assert len(tagged_resume_payload["resumed"]) == 1
+    assert tagged_resume_payload["resumed"][0]["session"]["project_id"] == "beta"
 
     enqueue_response = client.post(
         "/api/workspace/enqueue",

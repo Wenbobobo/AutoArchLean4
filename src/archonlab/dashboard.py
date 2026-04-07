@@ -1125,8 +1125,15 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
             <div class="meta" id="workspace-overview-meta">
               Aggregate sessions, queue pressure, and worker health across the workspace.
             </div>
+            <div class="meta">Tag filter: comma-separated AND match for enqueue/resume.</div>
           </div>
           <div class="compact-controls">
+            <input
+              id="workspace-tag-input"
+              type="text"
+              placeholder="geometry,batch"
+              aria-label="Workspace tag filter"
+            />
             <button class="secondary" id="workspace-enqueue-button">Enqueue Workspace</button>
             <button class="secondary" id="workspace-resume-button">Resume Sessions</button>
           </div>
@@ -1236,6 +1243,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       const workspaceProviderRuntime = document.getElementById("workspace-provider-runtime");
       const workspaceProviderHealth = document.getElementById("workspace-provider-health");
       const workspaceWorkerPool = document.getElementById("workspace-worker-pool");
+      const workspaceTagInput = document.getElementById("workspace-tag-input");
       const workspaceEnqueueButton = document.getElementById("workspace-enqueue-button");
       const workspaceResumeButton = document.getElementById("workspace-resume-button");
       let latestJobs = [];
@@ -1670,6 +1678,13 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         return Number(value).toFixed(3);
       }}
 
+      function parseWorkspaceTags() {{
+        return (workspaceTagInput.value || "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean);
+      }}
+
       function renderWorkers(workers) {{
         if (!workers.length) {{
           workersList.innerHTML = '<div class="meta">No worker telemetry yet.</div>';
@@ -1753,6 +1768,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
                   iter=${{session.completed_iterations}}/${{session.max_iterations}}
                   · remaining=${{session.remaining_iterations}}
                 </div>
+                <div class="meta">tags=${{(session.tags || []).join(",") || "-"}}</div>
                 <div class="meta">
                   stop=${{session.last_stop_reason || "-"}}
                   · resume=${{session.last_resume_reason || "-"}}
@@ -1816,6 +1832,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
                     sessions=${{project.session_count}} · running=${{project.running_sessions}}
                     · queued_jobs=${{project.queued_jobs}}
                   </div>
+                  <div class="meta">tags=${{(project.tags || []).join(",") || "-"}}</div>
                 </div>
               `).join("")
             : '<div class="meta">No workspace projects.</div>',
@@ -2002,7 +2019,10 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         await fetchJson(`/api/workspace/enqueue`, {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify({{ note: "dashboard_enqueue_workspace" }}),
+          body: JSON.stringify({{
+            note: "dashboard_enqueue_workspace",
+            tags: parseWorkspaceTags(),
+          }}),
         }});
         await refresh();
       }});
@@ -2011,7 +2031,10 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         await fetchJson(`/api/workspace/resume`, {{
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
-          body: JSON.stringify({{ resume_reason: "dashboard_resume_workspace" }}),
+          body: JSON.stringify({{
+            resume_reason: "dashboard_resume_workspace",
+            tags: parseWorkspaceTags(),
+          }}),
         }});
         await refresh();
       }});
