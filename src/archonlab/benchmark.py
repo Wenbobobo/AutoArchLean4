@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import tomllib
 import uuid
@@ -14,7 +15,9 @@ from .models import (
     BenchmarkProjectResult,
     BenchmarkResult,
     BenchmarkRunStatus,
+    ExecutorConfig,
     ProjectConfig,
+    ProviderConfig,
     RunConfig,
     RunStatus,
 )
@@ -35,6 +38,8 @@ def load_benchmark_manifest(manifest_path: Path) -> BenchmarkManifest:
     base_dir = manifest_path.parent.resolve()
     benchmark_raw = raw["benchmark"]
     projects_raw = raw["projects"]
+    executor_raw = raw.get("executor", {})
+    provider_raw = raw.get("provider", {})
 
     projects = [
         BenchmarkProjectConfig(
@@ -58,8 +63,31 @@ def load_benchmark_manifest(manifest_path: Path) -> BenchmarkManifest:
             artifact_root=_resolve_path(
                 base_dir, benchmark_raw.get("artifact_root", "artifacts/benchmarks")
             ),
+            worker_slots=benchmark_raw.get("worker_slots", 1),
         ),
         projects=projects,
+        executor=ExecutorConfig(
+            kind=executor_raw.get("kind", "dry_run"),
+            command=executor_raw.get("command", "codex"),
+            profile=executor_raw.get("profile"),
+            auto_approve=executor_raw.get("auto_approve", False),
+            skip_git_repo_check=executor_raw.get("skip_git_repo_check", True),
+            sandbox=executor_raw.get("sandbox"),
+            color=executor_raw.get("color", "never"),
+            extra_args=executor_raw.get("extra_args", []),
+            timeout_seconds=executor_raw.get("timeout_seconds", 600),
+        ),
+        provider=ProviderConfig(
+            kind=provider_raw.get("kind", "openai_compatible"),
+            model=provider_raw.get("model"),
+            base_url=provider_raw.get("base_url"),
+            api_key_env=provider_raw.get("api_key_env", "OPENAI_API_KEY"),
+            endpoint_path=provider_raw.get(
+                "endpoint_path",
+                provider_raw.get("chat_completions_path", "/v1/responses"),
+            ),
+            headers=provider_raw.get("headers", {}),
+        ),
     )
 
 class BenchmarkRunService:
@@ -73,6 +101,7 @@ class BenchmarkRunService:
         dry_run: bool = True,
         use_worktrees: bool = False,
         cleanup_worktrees: bool = True,
+        worker_slots: int | None = None,
     ) -> BenchmarkResult:
         started_at = datetime.now(UTC)
         run_id = self._new_run_id()
@@ -92,17 +121,36 @@ class BenchmarkRunService:
             encoding="utf-8",
         )
 
-        project_results: list[BenchmarkProjectResult] = []
-        for project in self.manifest.projects:
-            project_results.append(
+        slot_count = max(1, worker_slots or self.manifest.benchmark.worker_slots)
+        if slot_count == 1:
+            project_results = [
                 run_benchmark_project(
                     project,
                     artifact_root=project_run_root,
                     dry_run=dry_run,
                     worktree_root=worktree_root if use_worktrees else None,
                     cleanup_worktrees=cleanup_worktrees,
+                    executor=self.manifest.executor,
+                    provider=self.manifest.provider,
                 )
-            )
+                for project in self.manifest.projects
+            ]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=slot_count) as pool:
+                futures = [
+                    pool.submit(
+                        run_benchmark_project,
+                        project,
+                        artifact_root=project_run_root,
+                        dry_run=dry_run,
+                        worktree_root=worktree_root if use_worktrees else None,
+                        cleanup_worktrees=cleanup_worktrees,
+                        executor=self.manifest.executor,
+                        provider=self.manifest.provider,
+                    )
+                    for project in self.manifest.projects
+                ]
+                project_results = [future.result() for future in futures]
 
         finished_at = datetime.now(UTC)
         status = self._benchmark_status(project_results)
@@ -152,6 +200,8 @@ def run_benchmark_project(
     dry_run: bool,
     worktree_root: Path | None,
     cleanup_worktrees: bool,
+    executor: ExecutorConfig,
+    provider: ProviderConfig,
 ) -> BenchmarkProjectResult:
     baseline_snapshot = collect_project_snapshot(
         project_path=benchmark_project.project_path,
@@ -195,6 +245,8 @@ def run_benchmark_project(
                     dry_run=dry_run,
                     artifact_root=artifact_root,
                 ),
+                executor=executor,
+                provider=provider,
             )
         )
         run_result = service.start(dry_run=dry_run)

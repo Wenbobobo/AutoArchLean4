@@ -13,6 +13,16 @@ class WorkflowMode(StrEnum):
     ADAPTIVE_LOOP = "adaptive_loop"
 
 
+class ProviderKind(StrEnum):
+    OPENAI_COMPATIBLE = "openai_compatible"
+
+
+class ExecutorKind(StrEnum):
+    DRY_RUN = "dry_run"
+    OPENAI_COMPATIBLE = "openai_compatible"
+    CODEX_EXEC = "codex_exec"
+
+
 class ActionPhase(StrEnum):
     PLAN = "plan"
     PROVER = "prover"
@@ -59,6 +69,11 @@ class BenchmarkRunStatus(StrEnum):
     FAILED = "failed"
 
 
+class ExecutionStatus(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class QueueJobKind(StrEnum):
     BENCHMARK_PROJECT = "benchmark_project"
 
@@ -93,6 +108,31 @@ class ProjectConfig(BaseModel):
     backend: str = "archon"
 
 
+class ProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: ProviderKind = ProviderKind.OPENAI_COMPATIBLE
+    model: str | None = None
+    base_url: str | None = None
+    api_key_env: str = "OPENAI_API_KEY"
+    endpoint_path: str = "/v1/responses"
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
+class ExecutorConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: ExecutorKind = ExecutorKind.DRY_RUN
+    command: str = "codex"
+    profile: str | None = None
+    auto_approve: bool = False
+    skip_git_repo_check: bool = True
+    sandbox: str | None = None
+    color: str = "never"
+    extra_args: list[str] = Field(default_factory=list)
+    timeout_seconds: int = 600
+
+
 class RunConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -111,6 +151,45 @@ class AppConfig(BaseModel):
 
     project: ProjectConfig
     run: RunConfig
+    executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
+    provider: ProviderConfig = Field(default_factory=ProviderConfig)
+
+
+class ExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    project_id: str
+    phase: str
+    prompt: str
+    cwd: Path
+    artifact_dir: Path
+    task_id: str | None = None
+    task_title: str | None = None
+
+
+class ExecutionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    executor: ExecutorKind
+    status: ExecutionStatus
+    response_text: str | None = None
+    output_path: Path | None = None
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
+    request_path: Path | None = None
+    response_path: Path | None = None
+    command: list[str] = Field(default_factory=list)
+    error_message: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def text(self) -> str:
+        return self.response_text or ""
+
+    @property
+    def provider(self) -> str:
+        return str(self.metadata.get("provider", self.executor.value))
 
 
 class AdapterAction(BaseModel):
@@ -158,6 +237,7 @@ class RunResult(BaseModel):
     prompt_path: Path
     task_graph_path: Path | None = None
     supervisor_path: Path | None = None
+    execution: ExecutionResult | None = None
 
 
 class BenchmarkConfig(BaseModel):
@@ -166,6 +246,7 @@ class BenchmarkConfig(BaseModel):
     name: str
     description: str = ""
     artifact_root: Path
+    worker_slots: int = 1
 
 
 class BenchmarkProjectConfig(BaseModel):
@@ -185,6 +266,8 @@ class BenchmarkManifest(BaseModel):
 
     benchmark: BenchmarkConfig
     projects: list[BenchmarkProjectConfig]
+    executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
+    provider: ProviderConfig = Field(default_factory=ProviderConfig)
 
 
 class ProjectSnapshot(BaseModel):

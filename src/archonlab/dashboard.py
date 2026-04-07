@@ -109,6 +109,7 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             queue_store=queue,
             control_service=control,
             artifact_root=config.run.artifact_root,
+            slot_limit=config.run.max_parallel,
         )
         return runner.run_pending(max_jobs=max_jobs).model_dump(mode="json")
 

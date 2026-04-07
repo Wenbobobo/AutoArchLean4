@@ -28,7 +28,34 @@ curl -fsSL https://claude.ai/install.sh | bash
 `App unavailable in region`，那问题通常不在本机，而在地区或访问链路。
 
 这时不要继续折腾 `uv`、`elan`、`lean`。
-Lean 环境可以先单独配好，但 Archon 真正运行仍会被 `claude` 缺失卡住。
+Lean 环境可以先单独配好，再切到 `codex exec` 或 OpenAI-compatible endpoint。
+`claude` 现在不是唯一执行器。
+
+## `codex exec` 不可用
+
+先看：
+
+```bash
+codex --version
+codex exec --help
+```
+
+如果 `codex` 不在 PATH，优先修 PATH。
+如果 `codex exec` 能跑但无人值守时卡住，检查 `archonlab.toml` 里的：
+
+- `[executor].kind = "codex_exec"`
+- `[executor].auto_approve = true`
+- `[provider].model`
+
+## OpenAI-compatible endpoint 不工作
+
+先确认三件事：
+
+1. `base_url` 对应的服务真的在运行
+2. `endpoint_path` 对得上服务暴露的接口
+3. `api_key_env` 指向的环境变量已经导出
+
+最常见错误是把 `base_url` 写成已经带 `/v1/responses` 的完整路径，又额外给了同样的 `endpoint_path`。
 
 ## `lake build` 失败
 

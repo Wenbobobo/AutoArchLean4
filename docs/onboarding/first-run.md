@@ -28,13 +28,17 @@ uv run archonlab project init --project-path /path/to/lean-project --archon-path
 # 5. 启动最小 dry-run
 uv run archonlab run start --config archonlab.toml --dry-run
 
-# 6. 跑一个 benchmark smoke test
-uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-run
+# 6. 如果要无人值守真实执行，优先走 codex exec
+uv run archonlab project init --project-path /path/to/lean-project --archon-path /path/to/Archon --config-path archonlab.exec.toml --executor-kind codex_exec --model gpt-5.4-mini --codex-auto-approve
+uv run archonlab run start --config archonlab.exec.toml --execute
 
-# 7. 启动控制面 dashboard
+# 7. 跑一个 benchmark smoke test
+uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-run --worker-slots 2
+
+# 8. 启动控制面 dashboard
 uv run archonlab dashboard serve --config archonlab.toml --port 8000
 
-# 8. 如果要直接走 Archon 固定 loop，再手动启动
+# 9. 如果要直接走 Archon 固定 loop，再手动启动
 ./archon-loop.sh /path/to/lean-project
 ```
 
@@ -46,6 +50,7 @@ uv run archonlab dashboard serve --config archonlab.toml --port 8000
 - Lean 文件里的 `sorry` 有没有减少
 - `artifacts/` 里有没有产生可回放的 run / benchmark 结果
 - dashboard 里能不能暂停、恢复、注入 hint
+- `execution.json` 里有没有真实 executor 输出
 - 日志里是正常推进还是反复 stuck
 
 ## 你第一次不用做什么

@@ -2,6 +2,18 @@
 name = "smoke"
 description = "Minimal benchmark manifest placeholder for Phase 3."
 artifact_root = "artifacts/benchmarks/smoke"
+worker_slots = 2
+
+[executor]
+kind = "dry_run"
+command = "codex"
+auto_approve = false
+
+[provider]
+model = "gpt-5.4-mini"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_env = "OPENAI_API_KEY"
+endpoint_path = "/v1/responses"
 
 [[projects]]
 id = "example-project"
@@ -9,4 +21,3 @@ path = "../path/to/lean-project"
 archon_path = "../Archon"
 budget_minutes = 30
 workflow = "adaptive_loop"
-

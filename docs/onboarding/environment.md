@@ -9,7 +9,7 @@
 - 包管理：`uv`
 - Lean 工具链：`elan`
 - 项目构建：`lake`
-- 后端执行器：`Claude Code`
+- 后端执行器：`codex exec` 或 OpenAI-compatible HTTP endpoint
 
 ## 安装顺序
 
@@ -28,12 +28,16 @@ uv --version
 elan --version
 lean --version
 lake --version
+codex --version
 claude --version
 ```
 
 如果其中任何一步失败，先修环境，不要急着跑 agent。
 
 ## 当前已知外部 blocker
+
+如果你能用 `codex exec` 或 OpenAI-compatible endpoint，就不必被 `Claude Code` 阻塞。
+`claude` 现在只是可选执行器，不再是唯一入口。
 
 如果你在安装 `Claude Code` 时看到 `App unavailable in region` 之类的网页返回，
 这不是本地 Python/Lean 环境问题，而是地域或分发链路限制。

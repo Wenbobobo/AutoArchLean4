@@ -13,7 +13,14 @@ from .config import init_config, load_config
 from .control import ControlService
 from .dashboard import create_dashboard_app
 from .events import EventStore
-from .models import QueueJobStatus, WorkflowMode, WorktreeLease
+from .models import (
+    ExecutorConfig,
+    ExecutorKind,
+    ProviderConfig,
+    QueueJobStatus,
+    WorkflowMode,
+    WorktreeLease,
+)
 from .queue import QueueStore
 from .services import RunService
 from .worktree import WorktreeManager
@@ -96,6 +103,34 @@ def project_init(
     dry_run: Annotated[
         bool, typer.Option("--dry-run/--execute", help="Default run mode.")
     ] = True,
+    executor_kind: Annotated[
+        ExecutorKind,
+        typer.Option("--executor-kind", case_sensitive=False, help="Executor backend."),
+    ] = ExecutorKind.DRY_RUN,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Provider model or Codex model override."),
+    ] = None,
+    base_url: Annotated[
+        str | None,
+        typer.Option("--base-url", help="OpenAI-compatible base URL."),
+    ] = None,
+    api_key_env: Annotated[
+        str,
+        typer.Option("--api-key-env", help="Environment variable holding the API key."),
+    ] = "OPENAI_API_KEY",
+    codex_command: Annotated[
+        str,
+        typer.Option("--codex-command", help="Codex executable path."),
+    ] = "codex",
+    codex_profile: Annotated[
+        str | None,
+        typer.Option("--codex-profile", help="Optional Codex profile."),
+    ] = None,
+    codex_auto_approve: Annotated[
+        bool,
+        typer.Option("--codex-auto-approve", help="Allow unattended codex exec runs."),
+    ] = False,
     force: Annotated[
         bool, typer.Option("--force", help="Overwrite an existing config.")
     ] = False,
@@ -108,6 +143,17 @@ def project_init(
         workflow=workflow,
         workflow_spec=workflow_spec.resolve() if workflow_spec is not None else None,
         dry_run=dry_run,
+        executor=ExecutorConfig(
+            kind=executor_kind,
+            command=codex_command,
+            profile=codex_profile,
+            auto_approve=codex_auto_approve,
+        ),
+        provider=ProviderConfig(
+            model=model,
+            base_url=base_url,
+            api_key_env=api_key_env,
+        ),
         force=force,
     )
     typer.echo(f"Wrote config: {written}")
@@ -139,10 +185,15 @@ def run_start(
         typer.echo(f"Focus task: {target}")
     typer.echo(f"Artifacts: {result.artifact_dir}")
     typer.echo(f"Prompt preview: {result.prompt_path}")
+    typer.echo(f"Executor: {app_config.executor.kind.value}")
+    if app_config.provider.model is not None:
+        typer.echo(f"Model: {app_config.provider.model}")
     if result.task_graph_path is not None:
         typer.echo(f"Task graph: {result.task_graph_path}")
     if result.supervisor_path is not None:
         typer.echo(f"Supervisor: {result.supervisor_path}")
+    if result.execution is not None and result.execution.output_path is not None:
+        typer.echo(f"Execution output: {result.execution.output_path}")
 
 
 @run_app.command("status")
@@ -209,12 +260,17 @@ def benchmark_run(
             help="Keep created worktrees after the benchmark run finishes.",
         ),
     ] = False,
+    worker_slots: Annotated[
+        int | None,
+        typer.Option("--worker-slots", min=1, help="Override benchmark worker slots."),
+    ] = None,
 ) -> None:
     service = BenchmarkRunService(manifest)
     result = service.run(
         dry_run=dry_run,
         use_worktrees=use_worktrees,
         cleanup_worktrees=not keep_worktrees,
+        worker_slots=worker_slots,
     )
     typer.echo(f"Benchmark: {result.benchmark.name}")
     typer.echo(f"Run: {result.run_id}")
@@ -388,6 +444,7 @@ def queue_enqueue_benchmark(
         queue_store=QueueStore(app_config.run.artifact_root / "archonlab.db"),
         control_service=ControlService(app_config.run.artifact_root),
         artifact_root=app_config.run.artifact_root,
+        slot_limit=app_config.run.max_parallel,
     )
     jobs = runner.queue_store.enqueue_benchmark_manifest(
         manifest,
@@ -409,12 +466,17 @@ def queue_run(
         int | None,
         typer.Option("--max-jobs", min=1, help="Optional maximum number of jobs to process."),
     ] = None,
+    slots: Annotated[
+        int | None,
+        typer.Option("--slots", min=1, help="Override queue worker slots."),
+    ] = None,
 ) -> None:
     app_config = load_config(config)
     runner = BatchRunner(
         queue_store=QueueStore(app_config.run.artifact_root / "archonlab.db"),
         control_service=ControlService(app_config.run.artifact_root),
         artifact_root=app_config.run.artifact_root,
+        slot_limit=slots or app_config.run.max_parallel,
     )
     report = runner.run_pending(max_jobs=max_jobs)
     typer.echo(f"Processed: {len(report.processed_job_ids)}")

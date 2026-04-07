@@ -7,9 +7,12 @@ from datetime import UTC, datetime
 from .adapter import ArchonAdapter
 from .control import ControlService
 from .events import EventStore
+from .executors import create_executor
 from .models import (
     AppConfig,
     EventRecord,
+    ExecutionRequest,
+    ExecutionStatus,
     RunResult,
     RunStatus,
     RunSummary,
@@ -44,6 +47,7 @@ class RunService:
         task_graph_path = run_dir / "task-graph.json"
         supervisor_path = run_dir / "supervisor.json"
         control_path = run_dir / "control.json"
+        execution_path = run_dir / "execution.json"
 
         summary = RunSummary(
             run_id=run_id,
@@ -211,6 +215,8 @@ class RunService:
                     "run_id": run_id,
                     "project": self.config.project.model_dump(mode="json"),
                     "run": self.config.run.model_dump(mode="json"),
+                    "executor": self.config.executor.model_dump(mode="json"),
+                    "provider": self.config.provider.model_dump(mode="json"),
                     "progress": progress.model_dump(mode="json"),
                     "snapshot": snapshot.model_dump(mode="json"),
                     "control": control_state.model_dump(mode="json"),
@@ -229,39 +235,104 @@ class RunService:
             encoding="utf-8",
         )
 
-        if not actual_dry_run:
+        execution_result = None
+        if not actual_dry_run and str(action.phase) != "stop":
+            executor = create_executor(
+                executor_config=self.config.executor,
+                provider_config=self.config.provider,
+            )
+            execution_result = executor.execute(
+                ExecutionRequest(
+                    run_id=run_id,
+                    project_id=self.config.project.name,
+                    phase=str(action.phase),
+                    prompt=prompt_text,
+                    cwd=self.config.project.project_path,
+                    artifact_dir=run_dir,
+                    task_id=action.task_id,
+                    task_title=action.task_title,
+                )
+            )
+            execution_path.write_text(
+                json.dumps(
+                    execution_result.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
             self.event_store.append(
                 EventRecord(
                     run_id=run_id,
-                    kind="run.failed",
+                    kind=(
+                        "executor.completed"
+                        if execution_result.status is ExecutionStatus.COMPLETED
+                        else "executor.failed"
+                    ),
                     project_id=self.config.project.name,
+                    task_id=action.task_id,
                     payload={
-                        "reason": "non_dry_run_not_implemented",
-                        "message": (
-                            "Execution path is intentionally deferred until "
-                            "Phase 2 completion."
+                        "executor": execution_result.executor.value,
+                        "status": execution_result.status.value,
+                        "command": execution_result.command,
+                        "output_path": (
+                            str(execution_result.output_path)
+                            if execution_result.output_path is not None
+                            else None
                         ),
+                        "request_path": (
+                            str(execution_result.request_path)
+                            if execution_result.request_path is not None
+                            else None
+                        ),
+                        "response_path": (
+                            str(execution_result.response_path)
+                            if execution_result.response_path is not None
+                            else None
+                        ),
+                        "error_message": execution_result.error_message,
+                        "metadata": execution_result.metadata,
                     },
                 ),
                 jsonl_path=events_jsonl,
             )
-            self.event_store.complete_run(run_id, RunStatus.FAILED)
-            raise NotImplementedError(
-                "Non-dry-run execution is intentionally deferred; "
-                "use --dry-run for the current baseline."
-            )
+            if execution_result.status is ExecutionStatus.FAILED:
+                self.event_store.append(
+                    EventRecord(
+                        run_id=run_id,
+                        kind="run.failed",
+                        project_id=self.config.project.name,
+                        task_id=action.task_id,
+                        payload={
+                            "reason": "executor_failed",
+                            "executor": execution_result.executor.value,
+                            "error_message": execution_result.error_message,
+                        },
+                    ),
+                    jsonl_path=events_jsonl,
+                )
+                self.event_store.complete_run(run_id, RunStatus.FAILED)
+                raise RuntimeError(
+                    execution_result.error_message or "Executor failed without an error message."
+                )
 
         self.event_store.append(
             EventRecord(
                 run_id=run_id,
                 kind="run.completed",
                 project_id=self.config.project.name,
-                payload={"mode": "dry_run"},
+                payload={
+                    "mode": "dry_run" if actual_dry_run else "execute",
+                    "executor": (
+                        execution_result.executor.value
+                        if execution_result is not None
+                        else None
+                    ),
+                },
             ),
             jsonl_path=events_jsonl,
         )
         self.event_store.complete_run(run_id, RunStatus.COMPLETED)
-
         return RunResult(
             run_id=run_id,
             status=RunStatus.COMPLETED,
@@ -270,6 +341,7 @@ class RunService:
             prompt_path=prompt_path,
             task_graph_path=task_graph_path,
             supervisor_path=supervisor_path,
+            execution=execution_result,
         )
 
     @staticmethod

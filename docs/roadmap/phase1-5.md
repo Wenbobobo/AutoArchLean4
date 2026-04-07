@@ -60,6 +60,8 @@
 - supervisor 会参考近期运行历史识别重复无进展
 - `worktree create/remove` 可管理隔离工作树
 - benchmark 可选用隔离 worktree 运行
+- benchmark 和 queue 都支持 slot-aware 并发 worker
+- benchmark queue 的单个 job 现在对应单个 benchmark project，而不是整份 manifest
 - Phase 4 的最小契约测试已经覆盖 task graph、supervisor、worktree
 
 ## Phase 5: workflow 与最小 UI
@@ -80,7 +82,9 @@
 - `control pause/resume/hint` CLI
 - workflow DSL 及规则加载器
 - dashboard 中的 pause/resume/hint 操作
-- benchmark queue / batch runner 基线
+- provider/executor 抽象，可切换 `dry_run` / `codex_exec` / OpenAI-compatible HTTP
+- `run start --execute` 已接通 executor
+- benchmark queue / batch runner 已支持 slot-aware 并发
 
 ## 优先级原则
 

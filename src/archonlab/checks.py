@@ -63,6 +63,7 @@ def gather_doctor_report(project: ProjectConfig | None = None) -> DoctorReport:
         _tool_status("elan", required=True),
         _tool_status("lean", required=True),
         _tool_status("lake", required=True),
+        _tool_status("codex", required=False),
         _tool_status("claude", required=False),
     ]
 
