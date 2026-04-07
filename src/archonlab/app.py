@@ -1756,8 +1756,12 @@ def queue_provider_health(
         typer.Option("--json", help="Print machine-readable provider pool health JSON."),
     ] = False,
 ) -> None:
+    artifact_root, _ = _resolve_queue_runtime(config)
     default_pool, provider_pools = _resolve_provider_runtime(config)
-    reports = snapshot_provider_pool_health(provider_pools)
+    reports = snapshot_provider_pool_health(
+        provider_pools,
+        db_path=artifact_root / "archonlab.db",
+    )
     if json_output:
         typer.echo(json.dumps([report.model_dump(mode="json") for report in reports], indent=2))
         return
@@ -1793,6 +1797,7 @@ def queue_reset_provider_health(
         typer.Option("--member", help="Optional provider pool member name."),
     ] = None,
 ) -> None:
+    artifact_root, _ = _resolve_queue_runtime(config)
     _, provider_pools = _resolve_provider_runtime(config)
     if member is not None and pool is None:
         raise typer.BadParameter("--pool is required when --member is set")
@@ -1802,7 +1807,11 @@ def queue_reset_provider_health(
         known_members = {pool_member.name for pool_member in provider_pools[pool].members}
         if member not in known_members:
             raise typer.BadParameter(f"Unknown provider pool member: {member}")
-    removed = reset_provider_pool_health(pool_name=pool, member_name=member)
+    removed = reset_provider_pool_health(
+        pool_name=pool,
+        member_name=member,
+        db_path=artifact_root / "archonlab.db",
+    )
     typer.echo(f"Reset health entries: {removed}")
 
 

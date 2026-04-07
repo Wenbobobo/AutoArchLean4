@@ -229,6 +229,7 @@ class RunService:
                 executor_config=resolved_executor,
                 provider_config=resolved_provider,
                 provider_pools=self.config.provider_pools,
+                provider_health_db_path=self.config.run.artifact_root / "archonlab.db",
             )
             execution_result = executor.execute(
                 ExecutionRequest(

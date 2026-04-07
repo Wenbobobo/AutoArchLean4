@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import threading
 import time
@@ -82,6 +83,8 @@ class _ProviderPoolHealthState:
 
 _PROVIDER_POOL_HEALTH_LOCK = threading.Lock()
 _PROVIDER_POOL_HEALTH: dict[tuple[str, str], _ProviderPoolHealthState] = {}
+_PROVIDER_POOL_HEALTH_DB_LOCK = threading.Lock()
+_PROVIDER_POOL_HEALTH_DB_READY: set[Path] = set()
 
 
 def create_executor(
@@ -89,12 +92,14 @@ def create_executor(
     executor_config: ExecutorConfig,
     provider_config: ProviderConfig,
     provider_pools: dict[str, ProviderPoolConfig] | None = None,
+    provider_health_db_path: Path | None = None,
 ) -> Executor:
     if provider_config.pool is not None:
         return ProviderPoolExecutor(
             executor_config=executor_config,
             provider_config=provider_config,
             provider_pools=provider_pools or {},
+            provider_health_db_path=provider_health_db_path,
         )
     return _create_direct_executor(
         executor_config=executor_config,
@@ -524,10 +529,16 @@ class ProviderPoolExecutor:
         executor_config: ExecutorConfig,
         provider_config: ProviderConfig,
         provider_pools: dict[str, ProviderPoolConfig],
+        provider_health_db_path: Path | None = None,
     ) -> None:
         self.executor_config = executor_config
         self.provider_config = provider_config
         self.provider_pools = provider_pools
+        self.provider_health_db_path = (
+            provider_health_db_path.resolve()
+            if provider_health_db_path is not None
+            else None
+        )
 
     def execute(
         self,
@@ -540,7 +551,10 @@ class ProviderPoolExecutor:
         pool = self.provider_pools.get(pool_name)
         if pool is None:
             raise ValueError(f"Unknown provider pool: {pool_name}")
-        members, health_status = _eligible_pool_members(pool)
+        members, health_status = _eligible_pool_members(
+            pool,
+            db_path=self.provider_health_db_path,
+        )
         if not members:
             raise ValueError(f"Provider pool {pool_name} has no enabled members")
 
@@ -580,9 +594,17 @@ class ProviderPoolExecutor:
                 health_status=health_status,
             )
             if result.status is ExecutionStatus.COMPLETED:
-                _mark_pool_success(pool_name, member.name)
+                _mark_pool_success(
+                    pool_name,
+                    member.name,
+                    db_path=self.provider_health_db_path,
+                )
                 return result
-            _mark_pool_failure(pool, member.name)
+            _mark_pool_failure(
+                pool,
+                member.name,
+                db_path=self.provider_health_db_path,
+            )
             last_result = result
 
         if last_result is None:
@@ -749,6 +771,8 @@ def _augment_pool_result(
 
 def _eligible_pool_members(
     pool: ProviderPoolConfig,
+    *,
+    db_path: Path | None = None,
 ) -> tuple[list[ProviderPoolMemberConfig], str]:
     enabled_members = [member for member in pool.members if member.enabled]
     sorted_members = sorted(
@@ -758,29 +782,64 @@ def _eligible_pool_members(
     now = datetime.now(UTC)
     healthy_members: list[ProviderPoolMemberConfig] = []
     quarantined_members: list[ProviderPoolMemberConfig] = []
-    with _PROVIDER_POOL_HEALTH_LOCK:
-        for member in sorted_members:
-            state = _PROVIDER_POOL_HEALTH.get((pool.name, member.name))
-            if (
-                state is not None
-                and state.quarantined_until is not None
-                and state.quarantined_until > now
-            ):
-                quarantined_members.append(member)
-            else:
-                healthy_members.append(member)
+    health_state = _load_provider_pool_health_state(db_path=db_path)
+    for member in sorted_members:
+        state = health_state.get((pool.name, member.name))
+        if (
+            state is not None
+            and state.quarantined_until is not None
+            and state.quarantined_until > now
+        ):
+            quarantined_members.append(member)
+        else:
+            healthy_members.append(member)
     if healthy_members:
         return healthy_members, ("degraded" if quarantined_members else "healthy")
     return sorted_members, "all_quarantined"
 
 
-def _mark_pool_success(pool_name: str, member_name: str) -> None:
+def _mark_pool_success(
+    pool_name: str,
+    member_name: str,
+    *,
+    db_path: Path | None = None,
+) -> None:
+    if db_path is not None:
+        _write_provider_pool_health_state(
+            db_path=db_path,
+            pool_name=pool_name,
+            member_name=member_name,
+            state=_ProviderPoolHealthState(),
+        )
+        return
     with _PROVIDER_POOL_HEALTH_LOCK:
         _PROVIDER_POOL_HEALTH[(pool_name, member_name)] = _ProviderPoolHealthState()
 
 
-def _mark_pool_failure(pool: ProviderPoolConfig, member_name: str) -> None:
+def _mark_pool_failure(
+    pool: ProviderPoolConfig,
+    member_name: str,
+    *,
+    db_path: Path | None = None,
+) -> None:
     key = (pool.name, member_name)
+    if db_path is not None:
+        state = _load_provider_pool_health_state(db_path=db_path).get(
+            key,
+            _ProviderPoolHealthState(),
+        )
+        state.consecutive_failures += 1
+        if state.consecutive_failures >= pool.max_consecutive_failures:
+            state.quarantined_until = datetime.now(UTC) + timedelta(
+                seconds=pool.quarantine_seconds
+            )
+        _write_provider_pool_health_state(
+            db_path=db_path,
+            pool_name=pool.name,
+            member_name=member_name,
+            state=state,
+        )
+        return
     with _PROVIDER_POOL_HEALTH_LOCK:
         state = _PROVIDER_POOL_HEALTH.get(key, _ProviderPoolHealthState())
         state.consecutive_failures += 1
@@ -793,16 +852,11 @@ def _mark_pool_failure(pool: ProviderPoolConfig, member_name: str) -> None:
 
 def snapshot_provider_pool_health(
     provider_pools: dict[str, ProviderPoolConfig],
+    *,
+    db_path: Path | None = None,
 ) -> list[ProviderPoolHealthReport]:
     now = datetime.now(UTC)
-    with _PROVIDER_POOL_HEALTH_LOCK:
-        health_state = {
-            key: _ProviderPoolHealthState(
-                consecutive_failures=value.consecutive_failures,
-                quarantined_until=value.quarantined_until,
-            )
-            for key, value in _PROVIDER_POOL_HEALTH.items()
-        }
+    health_state = _load_provider_pool_health_state(db_path=db_path)
 
     reports: list[ProviderPoolHealthReport] = []
     for pool_name in sorted(provider_pools):
@@ -869,7 +923,14 @@ def reset_provider_pool_health(
     *,
     pool_name: str | None = None,
     member_name: str | None = None,
+    db_path: Path | None = None,
 ) -> int:
+    if db_path is not None:
+        return _reset_provider_pool_health_db(
+            db_path=db_path,
+            pool_name=pool_name,
+            member_name=member_name,
+        )
     with _PROVIDER_POOL_HEALTH_LOCK:
         if pool_name is None and member_name is None:
             removed = len(_PROVIDER_POOL_HEALTH)
@@ -884,3 +945,150 @@ def reset_provider_pool_health(
         for key in keys:
             _PROVIDER_POOL_HEALTH.pop(key, None)
         return len(keys)
+
+
+def _load_provider_pool_health_state(
+    *,
+    db_path: Path | None,
+) -> dict[tuple[str, str], _ProviderPoolHealthState]:
+    if db_path is None:
+        with _PROVIDER_POOL_HEALTH_LOCK:
+            return {
+                key: _ProviderPoolHealthState(
+                    consecutive_failures=value.consecutive_failures,
+                    quarantined_until=value.quarantined_until,
+                )
+                for key, value in _PROVIDER_POOL_HEALTH.items()
+            }
+
+    resolved_path = db_path.resolve()
+    _ensure_provider_pool_health_table(resolved_path)
+    conn = sqlite3.connect(resolved_path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT pool_name, member_name, consecutive_failures, quarantined_until
+            FROM provider_pool_health
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        (str(row["pool_name"]), str(row["member_name"])): _ProviderPoolHealthState(
+            consecutive_failures=int(row["consecutive_failures"] or 0),
+            quarantined_until=(
+                datetime.fromisoformat(str(row["quarantined_until"]))
+                if row["quarantined_until"]
+                else None
+            ),
+        )
+        for row in rows
+    }
+
+
+def _write_provider_pool_health_state(
+    *,
+    db_path: Path,
+    pool_name: str,
+    member_name: str,
+    state: _ProviderPoolHealthState,
+) -> None:
+    resolved_path = db_path.resolve()
+    _ensure_provider_pool_health_table(resolved_path)
+    conn = sqlite3.connect(resolved_path, timeout=30)
+    try:
+        if state.consecutive_failures <= 0 and state.quarantined_until is None:
+            conn.execute(
+                """
+                DELETE FROM provider_pool_health
+                WHERE pool_name = ? AND member_name = ?
+                """,
+                (pool_name, member_name),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO provider_pool_health (
+                    pool_name, member_name, consecutive_failures, quarantined_until, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(pool_name, member_name) DO UPDATE SET
+                    consecutive_failures = excluded.consecutive_failures,
+                    quarantined_until = excluded.quarantined_until,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    pool_name,
+                    member_name,
+                    state.consecutive_failures,
+                    (
+                        state.quarantined_until.isoformat()
+                        if state.quarantined_until is not None
+                        else None
+                    ),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _reset_provider_pool_health_db(
+    *,
+    db_path: Path,
+    pool_name: str | None = None,
+    member_name: str | None = None,
+) -> int:
+    resolved_path = db_path.resolve()
+    _ensure_provider_pool_health_table(resolved_path)
+    conn = sqlite3.connect(resolved_path, timeout=30)
+    try:
+        where_clauses: list[str] = []
+        params: list[str] = []
+        if pool_name is not None:
+            where_clauses.append("pool_name = ?")
+            params.append(pool_name)
+        if member_name is not None:
+            where_clauses.append("member_name = ?")
+            params.append(member_name)
+        where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        removed = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM provider_pool_health{where_sql}",
+                params,
+            ).fetchone()[0]
+        )
+        conn.execute(f"DELETE FROM provider_pool_health{where_sql}", params)
+        conn.commit()
+        return removed
+    finally:
+        conn.close()
+
+
+def _ensure_provider_pool_health_table(db_path: Path) -> None:
+    with _PROVIDER_POOL_HEALTH_DB_LOCK:
+        if db_path in _PROVIDER_POOL_HEALTH_DB_READY:
+            return
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path, timeout=30)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS provider_pool_health (
+                    pool_name TEXT NOT NULL,
+                    member_name TEXT NOT NULL,
+                    consecutive_failures INTEGER NOT NULL,
+                    quarantined_until TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(pool_name, member_name)
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        _PROVIDER_POOL_HEALTH_DB_READY.add(db_path)

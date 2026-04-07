@@ -417,3 +417,122 @@ def test_provider_pool_health_snapshot_reports_quarantine_and_manual_reset() -> 
         primary_thread.join(timeout=2)
         backup_thread.join(timeout=2)
         reset_provider_pool_health()
+
+
+def test_provider_pool_health_persists_across_executor_instances_with_shared_db(
+    tmp_path: Path,
+) -> None:
+    reset_provider_pool_health()
+    db_path = tmp_path / "archonlab.db"
+    captured = {"primary": 0, "backup": 0}
+
+    class PrimaryHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["primary"] += 1
+            encoded = json.dumps({"error": "primary unavailable"}).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    class BackupHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["backup"] += 1
+            encoded = json.dumps({"output_text": "backup-ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    primary_server = ThreadingHTTPServer(("127.0.0.1", 0), PrimaryHandler)
+    backup_server = ThreadingHTTPServer(("127.0.0.1", 0), BackupHandler)
+    primary_thread = threading.Thread(target=primary_server.serve_forever, daemon=True)
+    backup_thread = threading.Thread(target=backup_server.serve_forever, daemon=True)
+    primary_thread.start()
+    backup_thread.start()
+    try:
+        pool_name = "research"
+        provider_pools = {
+            pool_name: ProviderPoolConfig(
+                name=pool_name,
+                max_consecutive_failures=1,
+                quarantine_seconds=600,
+                members=[
+                    ProviderPoolMemberConfig(
+                        name="primary",
+                        base_url=f"http://127.0.0.1:{primary_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                    ProviderPoolMemberConfig(
+                        name="backup",
+                        base_url=f"http://127.0.0.1:{backup_server.server_port}/v1",
+                        model="gpt-4.1-mini",
+                    ),
+                ],
+            )
+        }
+
+        first_executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+            provider_health_db_path=db_path,
+        )
+        first = first_executor.execute("prove foo", system_prompt="plan")
+
+        second_executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+            provider_health_db_path=db_path,
+        )
+        second = second_executor.execute("prove foo again", system_prompt="plan")
+
+        assert first.status is ExecutionStatus.COMPLETED
+        assert second.status is ExecutionStatus.COMPLETED
+        assert second.telemetry is not None
+        assert second.telemetry.provider_member == "backup"
+        assert second.telemetry.retry_count == 0
+        assert second.telemetry.attempted_members == ["backup"]
+        assert captured["primary"] == 1
+        assert captured["backup"] == 2
+
+        report = snapshot_provider_pool_health(provider_pools, db_path=db_path)[0]
+        primary = next(member for member in report.members if member.member_name == "primary")
+        assert primary.status is ProviderPoolMemberHealthStatus.QUARANTINED
+        assert reset_provider_pool_health(
+            pool_name=pool_name,
+            member_name="primary",
+            db_path=db_path,
+        ) == 1
+
+        third_executor = create_executor(
+            executor_config=ExecutorConfig(kind=ExecutorKind.OPENAI_COMPATIBLE),
+            provider_config=ProviderConfig(pool=pool_name),
+            provider_pools=provider_pools,
+            provider_health_db_path=db_path,
+        )
+        third = third_executor.execute("prove foo reset", system_prompt="plan")
+
+        assert third.status is ExecutionStatus.COMPLETED
+        assert third.telemetry is not None
+        assert third.telemetry.attempted_members == ["primary", "backup"]
+        assert captured["primary"] == 2
+        assert captured["backup"] == 3
+    finally:
+        primary_server.shutdown()
+        backup_server.shutdown()
+        primary_server.server_close()
+        backup_server.server_close()
+        primary_thread.join(timeout=2)
+        backup_thread.join(timeout=2)
+        reset_provider_pool_health()
+        reset_provider_pool_health(db_path=db_path)

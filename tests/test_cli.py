@@ -1519,7 +1519,7 @@ def test_queue_provider_health_and_reset_commands_accept_workspace_config(
 
     monkeypatch.setattr(
         "archonlab.app.snapshot_provider_pool_health",
-        lambda provider_pools: [
+        lambda provider_pools, *, db_path=None: [
             ProviderPoolHealthReport(
                 pool_name="lab",
                 status=ProviderPoolHealthStatus.DEGRADED,
@@ -1552,9 +1552,11 @@ def test_queue_provider_health_and_reset_commands_accept_workspace_config(
         *,
         pool_name: str | None = None,
         member_name: str | None = None,
+        db_path: Path | None = None,
     ) -> int:
         captured["pool_name"] = pool_name
         captured["member_name"] = member_name
+        captured["db_path"] = db_path
         return 1
 
     monkeypatch.setattr(
@@ -1586,7 +1588,11 @@ def test_queue_provider_health_and_reset_commands_accept_workspace_config(
     assert "backup | healthy | failures=0 | model=gpt-5.4" in health_result.output
     assert reset_result.exit_code == 0
     assert "Reset health entries: 1" in reset_result.output
-    assert captured == {"pool_name": "lab", "member_name": "primary"}
+    assert captured == {
+        "pool_name": "lab",
+        "member_name": "primary",
+        "db_path": artifact_root / "archonlab.db",
+    }
 
 
 def test_queue_runtime_summary_command_accepts_workspace_config(

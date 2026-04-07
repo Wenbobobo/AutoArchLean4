@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from typer.testing import CliRunner
+
+from archonlab.app import app
 from archonlab.config import load_config, load_workspace_config
 from archonlab.execution_policy import (
     collect_required_execution_capabilities,
@@ -17,6 +22,8 @@ from archonlab.models import (
     ProviderPoolConfig,
 )
 from archonlab.services import RunService
+
+runner = CliRunner()
 
 
 def test_load_config_parses_executor_and_provider_sections(tmp_path: Path) -> None:
@@ -204,6 +211,99 @@ def test_run_service_execute_supports_provider_pool_routing(
     assert result.execution.telemetry.provider_pool == "lab"
     assert result.execution.telemetry.provider_member == "member-a"
     assert result.execution.telemetry.retry_count == 0
+
+
+def test_run_service_persists_provider_pool_health_for_cli(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    class PrimaryHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            encoded = json.dumps({"error": "primary unavailable"}).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    class BackupHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            encoded = json.dumps({"output_text": "backup-ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    primary_server = ThreadingHTTPServer(("127.0.0.1", 0), PrimaryHandler)
+    backup_server = ThreadingHTTPServer(("127.0.0.1", 0), BackupHandler)
+    primary_thread = threading.Thread(target=primary_server.serve_forever, daemon=True)
+    backup_thread = threading.Thread(target=backup_server.serve_forever, daemon=True)
+    primary_thread.start()
+    backup_thread.start()
+    try:
+        config_path = tmp_path / "archonlab.toml"
+        artifact_root = tmp_path / "artifacts"
+        config_path.write_text(
+            "[project]\n"
+            'name = "demo"\n'
+            f'project_path = "{fake_archon_project}"\n'
+            f'archon_path = "{fake_archon_root}"\n\n'
+            "[run]\n"
+            'workflow = "adaptive_loop"\n'
+            f'artifact_root = "{artifact_root}"\n'
+            "dry_run = false\n\n"
+            "[executor]\n"
+            'kind = "openai_compatible"\n'
+            "\n"
+            "[provider]\n"
+            'pool = "lab"\n'
+            "\n"
+            "[provider_pool.lab]\n"
+            "max_consecutive_failures = 1\n"
+            "quarantine_seconds = 60\n"
+            "\n"
+            "[[provider_pool.lab.members]]\n"
+            'name = "primary"\n'
+            f'base_url = "http://127.0.0.1:{primary_server.server_port}/v1"\n'
+            'model = "gpt-5.4-mini"\n'
+            "\n"
+            "[[provider_pool.lab.members]]\n"
+            'name = "backup"\n'
+            f'base_url = "http://127.0.0.1:{backup_server.server_port}/v1"\n'
+            'model = "gpt-5.4-mini"\n',
+            encoding="utf-8",
+        )
+
+        result = RunService(load_config(config_path)).start(dry_run=False)
+
+        assert result.execution is not None
+        assert result.execution.telemetry is not None
+        assert result.execution.telemetry.provider_member == "backup"
+
+        health_result = runner.invoke(
+            app,
+            ["queue", "provider-health", "--config", str(config_path)],
+        )
+
+        assert health_result.exit_code == 0
+        assert "lab default | degraded | available=1/2 | quarantined=1" in health_result.output
+        assert "primary | quarantined | failures=1 | model=gpt-5.4-mini" in health_result.output
+        assert "backup | healthy | failures=0 | model=gpt-5.4-mini" in health_result.output
+    finally:
+        primary_server.shutdown()
+        backup_server.shutdown()
+        primary_server.server_close()
+        backup_server.server_close()
+        primary_thread.join(timeout=2)
+        backup_thread.join(timeout=2)
 
 
 def test_run_service_preview_uses_configured_command_lean_analyzer(
