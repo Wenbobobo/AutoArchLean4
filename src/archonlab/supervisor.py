@@ -34,6 +34,21 @@ def decide_supervisor_action(
             evidence={"task_results_count": pending_task_results},
         )
 
+    if snapshot.analysis_fallback_used:
+        return SupervisorDecision(
+            project_id=snapshot.project_id,
+            action=SupervisorAction.INVESTIGATE_INFRA,
+            reason=SupervisorReason.ANALYZER_DEGRADED,
+            summary=(
+                "The configured Lean analyzer degraded to a fallback backend, so task "
+                "dependency and proof-gap signals may be stale."
+            ),
+            evidence={
+                "analysis_backend": snapshot.analysis_backend,
+                "analysis_fallback_reason": snapshot.analysis_fallback_reason or "unknown",
+            },
+        )
+
     if repeated_next_actions >= 3:
         return SupervisorDecision(
             project_id=snapshot.project_id,

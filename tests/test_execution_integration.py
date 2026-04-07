@@ -262,6 +262,8 @@ def test_run_service_preview_uses_configured_command_lean_analyzer(
 
     assert preview.snapshot.theorem_count == 3
     assert preview.snapshot.sorry_count == 1
+    assert preview.snapshot.analysis_backend == "command"
+    assert preview.snapshot.analysis_fallback_used is False
     assert any(node.id == "lean:Injected.lean:injected_goal" for node in preview.task_graph.nodes)
 
 
@@ -298,6 +300,11 @@ def test_run_service_preview_falls_back_when_command_lean_analyzer_fails(
 
     assert preview.snapshot.lean_file_count >= 1
     assert preview.snapshot.theorem_count >= 1
+    assert preview.snapshot.analysis_backend == "regex"
+    assert preview.snapshot.analysis_fallback_used is True
+    assert "Lean analyzer command failed" in (preview.snapshot.analysis_fallback_reason or "")
+    assert preview.supervisor.action.value == "investigate_infra"
+    assert preview.supervisor.reason.value == "analyzer_degraded"
 
 
 def test_run_service_execute_uses_configured_executor(

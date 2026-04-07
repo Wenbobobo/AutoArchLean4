@@ -60,6 +60,7 @@ class SupervisorReason(StrEnum):
     REPEATED_NO_PROGRESS = "repeated_no_progress"
     HIGH_BLOCKED_RATIO = "high_blocked_ratio"
     HIGH_SORRY_LOAD = "high_sorry_load"
+    ANALYZER_DEGRADED = "analyzer_degraded"
 
 
 class RunStatus(StrEnum):
@@ -672,6 +673,9 @@ class ProjectSnapshot(BaseModel):
     progress: ProgressSnapshot
     task_results: list[Path] = Field(default_factory=list)
     review_sessions: list[Path] = Field(default_factory=list)
+    analysis_backend: str = "regex"
+    analysis_fallback_used: bool = False
+    analysis_fallback_reason: str | None = None
     lean_file_count: int
     theorem_count: int
     sorry_count: int

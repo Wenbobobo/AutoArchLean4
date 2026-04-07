@@ -129,6 +129,9 @@ def test_collect_project_snapshot_falls_back_when_analyzer_fails(
     assert snapshot.theorem_count == 1
     assert snapshot.sorry_count == 1
     assert snapshot.axiom_count == 0
+    assert snapshot.analysis_backend == "regex"
+    assert snapshot.analysis_fallback_used is True
+    assert snapshot.analysis_fallback_reason == "sidecar unavailable"
 
 
 def test_collect_lean_analysis_marks_fallback_metadata_when_analyzer_fails(
