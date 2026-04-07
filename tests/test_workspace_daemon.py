@@ -223,3 +223,53 @@ def test_workspace_daemon_runner_releases_lock_after_failure(
     assert persisted.exit_reason == "daemon_failed"
     assert persisted.error_message == "daemon loop boom"
     assert not workspace_daemon_lock_path(artifact_root).exists()
+
+
+def test_workspace_daemon_runner_stops_before_next_tick_when_stop_requested_during_sleep(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_run(self, **kwargs) -> WorkspaceLoopResult:
+        calls.append(dict(kwargs))
+        return WorkspaceLoopResult(
+            workspace_id="demo-workspace",
+            loop_run_id="loop-daemon-sleep-stop-1",
+            loop_id="loop-daemon-sleep-stop-1",
+            stop_reason="idle_cycles_exhausted",
+            cycles_completed=1,
+        )
+
+    def fake_sleep(seconds: float) -> None:
+        del seconds
+        request_workspace_daemon_stop(
+            artifact_root,
+            reason="stop_during_sleep",
+            requested_by="test",
+        )
+
+    monkeypatch.setattr("archonlab.workspace_daemon.WorkspaceLoopController.run", fake_run)
+    monkeypatch.setattr("archonlab.workspace_daemon.time.sleep", fake_sleep)
+
+    state = WorkspaceDaemonRunner(config_path).run(
+        max_ticks=4,
+        poll_seconds=5.0,
+        fleet_max_cycles=1,
+        queue_poll_seconds=0.01,
+        queue_idle_timeout_seconds=0.01,
+    )
+
+    assert len(calls) == 1
+    assert state.status == "stopped"
+    assert state.exit_reason == "stop_during_sleep"
+    assert state.request_reason == "stop_during_sleep"

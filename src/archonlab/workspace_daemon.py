@@ -238,6 +238,12 @@ class WorkspaceDaemonRunner:
         tick_count = 0
         try:
             while True:
+                observed_state = self.status()
+                if observed_state.stop_requested:
+                    return self._finalize_state(
+                        status="stopped",
+                        exit_reason=observed_state.request_reason or "operator_stop_requested",
+                    )
                 if max_ticks is not None and tick_count >= max_ticks:
                     return self._finalize_state(status="idle", exit_reason="max_ticks_reached")
 
