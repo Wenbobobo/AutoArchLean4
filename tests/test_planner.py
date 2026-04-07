@@ -4,6 +4,8 @@ from pathlib import Path
 
 from archonlab.adapter import ArchonAdapter
 from archonlab.models import (
+    LeanAnalysisSnapshot,
+    LeanDeclaration,
     ProjectConfig,
     SupervisorAction,
     SupervisorDecision,
@@ -203,4 +205,66 @@ def test_select_next_action_prefers_dependency_that_unblocks_objective(tmp_path:
 
     assert action.phase == "prover"
     assert action.task_title == "helper"
+    assert action.objective_relevant is True
+
+
+def test_select_next_action_surfaces_axiom_blocker_from_dependency(tmp_path: Path) -> None:
+    project_path, archon_path = _make_project(
+        tmp_path,
+        with_review_session=True,
+        with_task_results=False,
+        theorem_body="trivial",
+    )
+    project = ProjectConfig(name="demo", project_path=project_path, archon_path=archon_path)
+    adapter = ArchonAdapter(project)
+
+    class AxiomAnalyzer:
+        def analyze(self, *, project_path: Path, archon_path: Path) -> LeanAnalysisSnapshot:
+            del archon_path
+            return LeanAnalysisSnapshot(
+                project_id=project_path.name,
+                project_path=project_path,
+                lean_file_count=1,
+                theorem_count=2,
+                sorry_count=0,
+                axiom_count=1,
+                declarations=[
+                    LeanDeclaration(
+                        name="helper",
+                        file_path=Path("Core.lean"),
+                        declaration_kind="theorem",
+                        dependencies=[],
+                        uses_axiom=True,
+                    ),
+                    LeanDeclaration(
+                        name="foo",
+                        file_path=Path("Core.lean"),
+                        declaration_kind="theorem",
+                        dependencies=["helper"],
+                    ),
+                ],
+            )
+
+    snapshot = collect_project_snapshot(
+        project_path=project_path,
+        archon_path=archon_path,
+        analyzer=AxiomAnalyzer(),
+    )
+    task_graph = build_task_graph(
+        project_path=project_path,
+        archon_path=archon_path,
+        analyzer=AxiomAnalyzer(),
+    )
+
+    action = select_next_action(
+        adapter=adapter,
+        workflow=WorkflowMode.ADAPTIVE_LOOP,
+        snapshot=snapshot,
+        task_graph=task_graph,
+        supervisor=_healthy_supervisor(snapshot.project_id),
+    )
+
+    assert action.phase == "prover"
+    assert action.task_title == "helper"
+    assert action.task_blockers == ["uses_axiom"]
     assert action.objective_relevant is True

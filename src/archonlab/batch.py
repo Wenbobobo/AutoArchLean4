@@ -547,6 +547,7 @@ class BatchRunner:
             executor=manifest.executor,
             provider=manifest.provider,
             execution_policy=manifest.execution_policy,
+            lean_analyzer=manifest.lean_analyzer,
         )
         summary_path = artifact_dir / "summary.json"
         summary_path.write_text(

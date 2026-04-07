@@ -5,7 +5,15 @@ from pathlib import Path
 
 from .adapter import ArchonAdapter
 from .lean_analyzer import LeanAnalyzer, collect_lean_analysis
-from .models import ProjectConfig, TaskEdge, TaskGraph, TaskNode, TaskSource, TaskStatus
+from .models import (
+    LeanDeclaration,
+    ProjectConfig,
+    TaskEdge,
+    TaskGraph,
+    TaskNode,
+    TaskSource,
+    TaskStatus,
+)
 
 OBJECTIVE_PATTERN = re.compile(
     r"\*\*(?P<file>[^*]+)\*\*\s*[-—]\s*(?:fill\s+theorem\s+)?`(?P<theorem>[^`]+)`"
@@ -43,17 +51,16 @@ def build_task_graph(
         nodes[objective_node.id] = objective_node
 
     for declaration in analysis.declarations:
-        status = TaskStatus.BLOCKED if declaration.blocked_by_sorry else TaskStatus.COMPLETED
         node_id = f"lean:{declaration.file_path}:{declaration.name}"
         nodes[node_id] = TaskNode(
             id=node_id,
             title=declaration.name,
-            status=status,
+            status=TaskStatus.COMPLETED,
             sources=[TaskSource.LEAN_DECLARATION],
             file_path=declaration.file_path,
             theorem_name=declaration.name,
             priority=0,
-            blockers=["contains_sorry"] if status is TaskStatus.BLOCKED else [],
+            blockers=_direct_declaration_blockers(declaration),
             metadata={"declaration_kind": declaration.declaration_kind},
         )
         theorem_to_id[declaration.name] = node_id
@@ -73,6 +80,34 @@ def build_task_graph(
                     kind="depends_on",
                 )
             )
+
+    dependency_map = {
+        node_id: {
+            edge.target_id
+            for edge in edges
+            if edge.kind == "depends_on" and edge.source_id == node_id
+        }
+        for node_id in theorem_to_id.values()
+    }
+    declaration_nodes = {
+        node_id: nodes[node_id]
+        for node_id in theorem_to_id.values()
+        if node_id in nodes
+    }
+    blocker_cache: dict[str, list[str]] = {}
+    for node_id, node in declaration_nodes.items():
+        blockers = _resolve_declaration_blockers(
+            node_id=node_id,
+            declaration_nodes=declaration_nodes,
+            dependency_map=dependency_map,
+            blocker_cache=blocker_cache,
+        )
+        nodes[node_id] = node.model_copy(
+            update={
+                "status": TaskStatus.BLOCKED if blockers else TaskStatus.COMPLETED,
+                "blockers": blockers,
+            }
+        )
 
     for objective_node in list(nodes.values()):
         if TaskSource.OBJECTIVE not in objective_node.sources:
@@ -125,3 +160,61 @@ def _objective_to_node(objective: str, *, index: int) -> TaskNode:
         priority=1,
         metadata={"raw_objective": objective},
     )
+
+
+def _direct_declaration_blockers(declaration: LeanDeclaration) -> list[str]:
+    blockers: list[str] = []
+    if declaration.blocked_by_sorry:
+        blockers.append("contains_sorry")
+    if declaration.uses_axiom:
+        blockers.append("uses_axiom")
+    return blockers
+
+
+def _resolve_declaration_blockers(
+    *,
+    node_id: str,
+    declaration_nodes: dict[str, TaskNode],
+    dependency_map: dict[str, set[str]],
+    blocker_cache: dict[str, list[str]],
+    visiting: set[str] | None = None,
+) -> list[str]:
+    if node_id in blocker_cache:
+        return blocker_cache[node_id]
+    active_visiting = visiting or set()
+    if node_id in active_visiting:
+        return ["cyclic_dependency"]
+
+    active_visiting.add(node_id)
+    node = declaration_nodes[node_id]
+    blockers = list(node.blockers)
+    for dependency_id in sorted(dependency_map.get(node_id, set())):
+        dependency_node = declaration_nodes.get(dependency_id)
+        if dependency_node is None:
+            continue
+        dependency_blockers = _resolve_declaration_blockers(
+            node_id=dependency_id,
+            declaration_nodes=declaration_nodes,
+            dependency_map=dependency_map,
+            blocker_cache=blocker_cache,
+            visiting=active_visiting,
+        )
+        if not dependency_blockers:
+            continue
+        blockers.append(f"depends_on:{dependency_node.theorem_name or dependency_node.title}")
+        blockers.extend(dependency_blockers)
+    active_visiting.remove(node_id)
+    resolved = _dedupe_preserve_order(blockers)
+    blocker_cache[node_id] = resolved
+    return resolved
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered

@@ -657,6 +657,7 @@ class BenchmarkManifest(BaseModel):
 
     benchmark: BenchmarkConfig
     projects: list[BenchmarkProjectConfig]
+    lean_analyzer: LeanAnalyzerConfig = Field(default_factory=LeanAnalyzerConfig)
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     execution_policy: ExecutionPolicy = Field(default_factory=lambda: ExecutionPolicy())

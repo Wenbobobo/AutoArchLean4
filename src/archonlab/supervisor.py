@@ -23,6 +23,7 @@ def decide_supervisor_action(
     blocked_count = sum(1 for node in task_graph.nodes if node.status is TaskStatus.BLOCKED)
     pending_task_results = len(snapshot.task_results)
     repeated_next_actions = _max_repeated_next_actions(recent_events)
+    proof_gap_count = snapshot.sorry_count + snapshot.axiom_count
 
     if pending_task_results > 0:
         return SupervisorDecision(
@@ -44,17 +45,21 @@ def decide_supervisor_action(
 
     node_count = max(1, len(task_graph.nodes))
     blocked_ratio = blocked_count / node_count
-    if blocked_ratio >= 0.5 and snapshot.sorry_count > 0:
+    if blocked_ratio >= 0.5 and proof_gap_count > 0:
         return SupervisorDecision(
             project_id=snapshot.project_id,
             action=SupervisorAction.INVESTIGATE_INFRA,
             reason=SupervisorReason.HIGH_BLOCKED_RATIO,
-            summary="A large share of known tasks are blocked by unresolved proof gaps.",
+            summary=(
+                "A large share of known tasks are blocked by unresolved proof gaps "
+                "or unsound assumptions."
+            ),
             evidence={
                 "blocked_count": blocked_count,
                 "task_count": len(task_graph.nodes),
                 "blocked_ratio": round(blocked_ratio, 4),
                 "sorry_count": snapshot.sorry_count,
+                "axiom_count": snapshot.axiom_count,
             },
         )
 

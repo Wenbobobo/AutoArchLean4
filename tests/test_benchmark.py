@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from archonlab.benchmark import (
@@ -82,9 +83,21 @@ def _write_benchmark_manifest(tmp_path: Path) -> Path:
 
 
 def test_load_benchmark_manifest_parses_benchmark_and_projects(tmp_path: Path) -> None:
-    from archonlab.models import WorkflowMode
+    from archonlab.models import LeanAnalyzerKind, WorkflowMode
 
     manifest_path = _write_benchmark_manifest(tmp_path)
+    analyzer_script = tmp_path / "lean_sidecar.py"
+    analyzer_script.write_text("print('{}')\n", encoding="utf-8")
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8")
+        + (
+            "\n[lean_analyzer]\n"
+            'kind = "command"\n'
+            f'command = ["{sys.executable}", "{analyzer_script}"]\n'
+            "timeout_seconds = 15\n"
+        ),
+        encoding="utf-8",
+    )
 
     manifest = load_benchmark_manifest(manifest_path)
 
@@ -100,6 +113,9 @@ def test_load_benchmark_manifest_parses_benchmark_and_projects(tmp_path: Path) -
     assert project.archon_path == (tmp_path / "Archon").resolve()
     assert project.budget_minutes == 30
     assert project.workflow is WorkflowMode.ADAPTIVE_LOOP
+    assert manifest.lean_analyzer.kind is LeanAnalyzerKind.COMMAND
+    assert manifest.lean_analyzer.command == [sys.executable, str(analyzer_script)]
+    assert manifest.lean_analyzer.timeout_seconds == 15
 
 
 def test_collect_project_snapshot_and_score(
@@ -213,3 +229,63 @@ def test_benchmark_run_service_can_use_worktrees(tmp_path: Path) -> None:
     assert result.projects[0].lease_path is not None
     assert result.projects[0].worktree_path.exists()
     assert result.projects[0].lease_path.exists()
+
+
+def test_benchmark_run_service_uses_configured_command_lean_analyzer(tmp_path: Path) -> None:
+    manifest_path = _write_benchmark_manifest(tmp_path)
+    analyzer_script = tmp_path / "benchmark_sidecar.py"
+    analyzer_script.write_text(
+        "from __future__ import annotations\n"
+        "import json\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "\n"
+        "args = sys.argv[1:]\n"
+        "project_path = Path(args[args.index('--project-path') + 1]).resolve()\n"
+        "print(json.dumps({\n"
+        '    "project_id": project_path.name,\n'
+        '    "project_path": str(project_path),\n'
+        '    "lean_file_count": 1,\n'
+        '    "theorem_count": 3,\n'
+        '    "sorry_count": 0,\n'
+        '    "axiom_count": 1,\n'
+        '    "declarations": [\n'
+        '        {\n'
+        '            "name": "sidecar_goal",\n'
+        '            "file_path": "Injected.lean",\n'
+        '            "declaration_kind": "theorem",\n'
+        '            "dependencies": [],\n'
+        '            "blocked_by_sorry": False,\n'
+        '            "uses_axiom": True\n'
+        '        }\n'
+        '    ]\n'
+        '}))\n',
+        encoding="utf-8",
+    )
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8")
+        + (
+            "\n[lean_analyzer]\n"
+            'kind = "command"\n'
+            f'command = ["{sys.executable}", "{analyzer_script}"]\n'
+        ),
+        encoding="utf-8",
+    )
+
+    result = BenchmarkRunService(manifest_path).run()
+
+    project_summary = result.projects[0]
+    assert project_summary.snapshot.theorem_count == 3
+    assert project_summary.snapshot.axiom_count == 1
+    assert [outcome.theorem_name for outcome in project_summary.theorem_outcomes] == [
+        "sidecar_goal"
+    ]
+    assert project_summary.theorem_outcomes[0].after_state.value == "uses_axiom"
+
+    assert project_summary.artifact_dir is not None
+    run_summary = json.loads(
+        (project_summary.artifact_dir / "run-summary.json").read_text(encoding="utf-8")
+    )
+    assert run_summary["snapshot"]["theorem_count"] == 3
+    node_ids = {node["id"] for node in run_summary["task_graph"]["nodes"]}
+    assert "lean:Injected.lean:sidecar_goal" in node_ids

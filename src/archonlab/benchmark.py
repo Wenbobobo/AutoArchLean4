@@ -13,7 +13,7 @@ from .experiment_ledger import (
     build_failure_taxonomy,
     build_theorem_outcome_ledger,
 )
-from .lean_analyzer import collect_lean_analysis
+from .lean_analyzer import build_lean_analyzer, collect_lean_analysis
 from .models import (
     AppConfig,
     BenchmarkConfig,
@@ -24,6 +24,8 @@ from .models import (
     BenchmarkRunStatus,
     ExecutionPolicy,
     ExecutorConfig,
+    LeanAnalyzerConfig,
+    LeanAnalyzerKind,
     ProjectConfig,
     ProviderConfig,
     RunConfig,
@@ -41,6 +43,25 @@ def _resolve_path(base_dir: Path, raw_path: str) -> Path:
     return (base_dir / path).resolve()
 
 
+def _get_command_list(raw: dict[str, object], key: str) -> list[str]:
+    value = raw.get(key, [])
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
+
+
+def _load_lean_analyzer_config(raw: object) -> LeanAnalyzerConfig:
+    if not isinstance(raw, dict):
+        return LeanAnalyzerConfig()
+    return LeanAnalyzerConfig(
+        kind=LeanAnalyzerKind(str(raw.get("kind", LeanAnalyzerKind.REGEX.value))),
+        command=_get_command_list(raw, "command"),
+        timeout_seconds=int(raw.get("timeout_seconds", 60)),
+    )
+
+
 def load_benchmark_manifest(manifest_path: Path) -> BenchmarkManifest:
     raw = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
     base_dir = manifest_path.parent.resolve()
@@ -53,6 +74,7 @@ def load_benchmark_manifest(manifest_path: Path) -> BenchmarkManifest:
     task_matcher_raw = raw.get("task_matcher", {})
     task_executor_raw = raw.get("task_executor", {})
     task_provider_raw = raw.get("task_provider", {})
+    lean_analyzer_raw = raw.get("lean_analyzer", {})
 
     projects = [
         BenchmarkProjectConfig(
@@ -104,6 +126,7 @@ def load_benchmark_manifest(manifest_path: Path) -> BenchmarkManifest:
             worker_slots=benchmark_raw.get("worker_slots", 1),
         ),
         projects=projects,
+        lean_analyzer=_load_lean_analyzer_config(lean_analyzer_raw),
         executor=executor,
         provider=provider,
         execution_policy=build_execution_policy(
@@ -160,6 +183,7 @@ class BenchmarkRunService:
                     executor=self.manifest.executor,
                     provider=self.manifest.provider,
                     execution_policy=self.manifest.execution_policy,
+                    lean_analyzer=self.manifest.lean_analyzer,
                 )
                 for project in self.manifest.projects
             ]
@@ -176,6 +200,7 @@ class BenchmarkRunService:
                         executor=self.manifest.executor,
                         provider=self.manifest.provider,
                         execution_policy=self.manifest.execution_policy,
+                        lean_analyzer=self.manifest.lean_analyzer,
                     )
                     for project in self.manifest.projects
                 ]
@@ -244,14 +269,18 @@ def run_benchmark_project(
     executor: ExecutorConfig,
     provider: ProviderConfig,
     execution_policy: ExecutionPolicy,
+    lean_analyzer: LeanAnalyzerConfig,
 ) -> BenchmarkProjectResult:
+    analyzer = build_lean_analyzer(lean_analyzer)
     baseline_snapshot = collect_project_snapshot(
         project_path=benchmark_project.project_path,
         archon_path=benchmark_project.archon_path,
+        analyzer=analyzer,
     )
     baseline_analysis = collect_lean_analysis(
         project_path=benchmark_project.project_path,
         archon_path=benchmark_project.archon_path,
+        analyzer=analyzer,
     )
     effective_project_path = benchmark_project.project_path
     lease = None
@@ -292,6 +321,7 @@ def run_benchmark_project(
                     dry_run=dry_run,
                     artifact_root=artifact_root,
                 ),
+                lean_analyzer=lean_analyzer,
                 executor=executor,
                 provider=provider,
                 execution_policy=execution_policy,
@@ -304,10 +334,12 @@ def run_benchmark_project(
         final_snapshot = collect_project_snapshot(
             project_path=effective_project_path,
             archon_path=benchmark_project.archon_path,
+            analyzer=analyzer,
         )
         final_analysis = collect_lean_analysis(
             project_path=effective_project_path,
             archon_path=benchmark_project.archon_path,
+            analyzer=analyzer,
         )
     except Exception as exc:
         error_message = str(exc)
