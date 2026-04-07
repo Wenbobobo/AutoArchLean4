@@ -275,6 +275,18 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             "loops": [item.model_dump(mode="json") for item in loops],
         }
 
+    @app.get("/api/workspace/fleet-runs")
+    def get_workspace_fleet_runs(limit: int = 20) -> dict[str, Any]:
+        workspace_name = workspace_config.name if workspace_config is not None else "standalone"
+        runs = store.list_fleet_runs(
+            workspace_id=workspace_name,
+            limit=limit,
+        )
+        return {
+            "workspace": workspace_name,
+            "runs": [item.model_dump(mode="json") for item in runs],
+        }
+
     @app.post("/api/workspace/enqueue")
     def enqueue_workspace(body: WorkspaceEnqueueRequest) -> list[dict[str, Any]]:
         resolved_workspace = _require_workspace_mode(workspace_config)
@@ -487,9 +499,17 @@ def _build_workspace_overview(
         iter(store.list_workspace_loop_runs(workspace_id=workspace_name, limit=1)),
         None,
     )
+    latest_fleet = next(
+        iter(store.list_fleet_runs(workspace_id=workspace_name, limit=1)),
+        None,
+    )
     loop_history = [
         item.model_dump(mode="json")
         for item in store.list_workspace_loop_runs(workspace_id=workspace_name, limit=20)
+    ]
+    fleet_history = [
+        item.model_dump(mode="json")
+        for item in store.list_fleet_runs(workspace_id=workspace_name, limit=20)
     ]
 
     project_ids = {project.id for project in project_rows}
@@ -571,7 +591,11 @@ def _build_workspace_overview(
         "latest_loop": (
             latest_loop.model_dump(mode="json") if latest_loop is not None else None
         ),
+        "latest_fleet": (
+            latest_fleet.model_dump(mode="json") if latest_fleet is not None else None
+        ),
         "loop_history": loop_history,
+        "fleet_history": fleet_history,
         "projects": project_summaries,
         "provider_runtime": [
             item.model_dump(mode="json")
@@ -1180,6 +1204,10 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
             <div class="rule-list" id="workspace-loop-history"></div>
           </section>
           <section class="preview-card">
+            <h3>Fleet History</h3>
+            <div class="rule-list" id="workspace-fleet-history"></div>
+          </section>
+          <section class="preview-card">
             <h3>Sessions</h3>
             <div class="rule-list" id="workspace-session-table"></div>
           </section>
@@ -1273,6 +1301,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       const workspaceRuntimeSummary = document.getElementById("workspace-runtime-summary");
       const workspaceLatestLoop = document.getElementById("workspace-latest-loop");
       const workspaceLoopHistory = document.getElementById("workspace-loop-history");
+      const workspaceFleetHistory = document.getElementById("workspace-fleet-history");
       const workspaceSessionTable = document.getElementById("workspace-session-table");
       const workspaceProviderRuntime = document.getElementById("workspace-provider-runtime");
       const workspaceProviderHealth = document.getElementById("workspace-provider-health");
@@ -1753,6 +1782,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       function renderWorkspaceOverview(payload) {{
         const budget = payload.budget || {{}};
         const latestLoop = payload.latest_loop || null;
+        const latestFleet = payload.latest_fleet || null;
         const sessions = payload.sessions || [];
         const workers = payload.workers || [];
         const projects = payload.projects || [];
@@ -1800,6 +1830,12 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
               ["stop", latestLoop.stop_reason || "-"],
               ["cycles", `${{latestLoop.cycles_completed || 0}}`],
               ["processed", `${{latestLoop.total_processed_jobs || 0}}`],
+              [
+                "fleet",
+                latestFleet
+                  ? `${{latestFleet.fleet_run_id || "-"}} · ${{latestFleet.stop_reason || "-"}}`
+                  : "-",
+              ],
             ])
           : '<div class="meta">No workspace loop history yet.</div>';
         const loopHistory = payload.loop_history || [];
@@ -1817,6 +1853,22 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
               </div>
             `).join("")
           : '<div class="meta">No workspace loop history yet.</div>';
+        const fleetHistory = payload.fleet_history || [];
+        workspaceFleetHistory.innerHTML = fleetHistory.length
+          ? fleetHistory.slice(0, 8).map((run) => `
+              <div class="rule">
+                <strong>${{run.fleet_run_id || "-"}}</strong>
+                <div class="meta">
+                  launcher=${{run.launcher || "-"}} · stop=${{run.stop_reason || "-"}}
+                </div>
+                <div class="meta">
+                  cycles=${{run.cycles_completed || 0}}
+                  · processed=${{run.total_processed_jobs || 0}}
+                  · workers=${{run.total_workers_launched || 0}}
+                </div>
+              </div>
+            `).join("")
+          : '<div class="meta">No fleet history yet.</div>';
         workspaceSessionTable.innerHTML = sessions.length
           ? sessions.slice(0, 8).map((session) => `
               <div class="rule">

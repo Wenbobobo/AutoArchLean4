@@ -146,6 +146,9 @@ class WorkspaceLoopController:
                         queue_store=self.queue_store,
                         batch_runner=batch_runner,
                         worker_launcher=self.worker_launcher,
+                        config_path=self.config_path,
+                        workspace_id=self.workspace_config.name,
+                        note=note or f"workspace_loop:{loop_id}:cycle:{cycle_index}",
                     ).run(
                         max_cycles=fleet_max_cycles,
                         idle_cycles=fleet_idle_cycles,

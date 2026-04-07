@@ -14,6 +14,7 @@ from archonlab.models import (  # noqa: E402
     BatchRunReport,
     EventRecord,
     ExecutorKind,
+    FleetControllerResult,
     ProjectSession,
     ProviderKind,
     ProviderPoolHealthReport,
@@ -512,6 +513,17 @@ def test_dashboard_workspace_overview_and_project_switching(
             total_workers_launched=1,
         )
     )
+    store.upsert_fleet_run(
+        FleetControllerResult(
+            fleet_run_id="fleet-dashboard-1",
+            workspace_id="demo-workspace",
+            launcher="subprocess",
+            stop_reason="queue_drained",
+            cycles_completed=1,
+            total_processed_jobs=1,
+            total_workers_launched=1,
+        )
+    )
 
     monkeypatch.setattr(
         "archonlab.dashboard.snapshot_provider_pool_health",
@@ -553,6 +565,7 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert 'id="workspace-provider-runtime"' in index_response.text
     assert 'id="workspace-provider-health"' in index_response.text
     assert 'id="workspace-loop-history"' in index_response.text
+    assert 'id="workspace-fleet-history"' in index_response.text
     assert 'id="workspace-enqueue-button"' in index_response.text
     assert 'id="workspace-resume-button"' in index_response.text
 
@@ -573,6 +586,8 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert overview["budget"]["remaining_iterations"] == 7
     assert overview["latest_loop"]["loop_run_id"] == "loop-dashboard-1"
     assert overview["latest_loop"]["stop_reason"] == "idle_cycles_exhausted"
+    assert overview["latest_fleet"]["fleet_run_id"] == "fleet-dashboard-1"
+    assert overview["latest_fleet"]["launcher"] == "subprocess"
 
     loops_response = client.get("/api/workspace/loops")
     assert loops_response.status_code == 200
@@ -580,6 +595,12 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert loops_payload["workspace"] == "demo-workspace"
     assert len(loops_payload["loops"]) == 1
     assert loops_payload["loops"][0]["loop_run_id"] == "loop-dashboard-1"
+    fleet_response = client.get("/api/workspace/fleet-runs")
+    assert fleet_response.status_code == 200
+    fleet_payload = fleet_response.json()
+    assert fleet_payload["workspace"] == "demo-workspace"
+    assert len(fleet_payload["runs"]) == 1
+    assert fleet_payload["runs"][0]["fleet_run_id"] == "fleet-dashboard-1"
 
     assert {item["project_id"] for item in overview["projects"]} == {"alpha", "beta"}
     beta_summary = next(item for item in overview["projects"] if item["project_id"] == "beta")

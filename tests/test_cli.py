@@ -15,6 +15,7 @@ from archonlab.models import (
     BatchRunReport,
     EventRecord,
     ExecutorKind,
+    FleetControllerResult,
     ProjectSession,
     ProviderKind,
     ProviderPoolHealthReport,
@@ -2321,6 +2322,9 @@ def test_queue_autoscale_command_accepts_workspace_config(
     def fake_run(self, **kwargs) -> object:
         captured.update(kwargs)
         return self.result_model(
+            fleet_run_id="fleet-cli-1",
+            workspace_id="demo-workspace",
+            artifact_dir=artifact_root / "fleet-runs" / "fleet-cli-1",
             cycles_completed=2,
             stop_reason="queue_drained",
             total_processed_jobs=3,
@@ -2350,11 +2354,47 @@ def test_queue_autoscale_command_accepts_workspace_config(
     )
 
     assert result.exit_code == 0
+    assert "Fleet: fleet-cli-1" in result.output
     assert "Stop reason: queue_drained" in result.output
     assert "Processed: 3" in result.output
     assert captured["max_cycles"] == 5
     assert captured["idle_cycles"] == 2
     assert captured["target_jobs_per_worker"] == 3
+
+
+def test_queue_fleet_runs_command_lists_persisted_workspace_runs(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    EventStore(artifact_root / "archonlab.db").upsert_fleet_run(
+        FleetControllerResult(
+            fleet_run_id="fleet-workspace-1",
+            workspace_id="demo-workspace",
+            launcher="subprocess",
+            stop_reason="queue_drained",
+            cycles_completed=2,
+            total_processed_jobs=3,
+            total_workers_launched=2,
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        ["queue", "fleet-runs", "--config", str(config_path), "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload[0]["fleet_run_id"] == "fleet-workspace-1"
+    assert payload[0]["workspace_id"] == "demo-workspace"
 
 
 def test_queue_fleet_command_processes_jobs_with_auto_slot_workers(

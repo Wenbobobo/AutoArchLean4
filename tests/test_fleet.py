@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 from archonlab.batch import BatchRunner
 from archonlab.control import ControlService
+from archonlab.events import EventStore
 from archonlab.fleet import (
     FleetController,
     InProcessWorkerLauncher,
@@ -119,6 +121,50 @@ def test_fleet_controller_stops_after_idle_cycle_budget(tmp_path: Path) -> None:
     assert result.cycles_completed == 1
     assert result.total_processed_jobs == 0
     assert len(launcher.requests) == 1
+
+
+def test_fleet_controller_persists_run_artifacts_and_event_store(tmp_path: Path) -> None:
+    queue_store = QueueStore(tmp_path / "queue.db")
+    queue_store.enqueue("benchmark", {"manifest_path": "bench-a.toml"})
+    batch_runner = BatchRunner(
+        queue_store=queue_store,
+        control_service=ControlService(tmp_path / "control"),
+        artifact_root=tmp_path / "artifacts",
+        slot_limit=1,
+    )
+    launcher = FakeWorkerLauncher(queue_store)
+    controller = FleetController(
+        queue_store=queue_store,
+        batch_runner=batch_runner,
+        worker_launcher=launcher,
+        config_path=tmp_path / "workspace.toml",
+        workspace_id="demo-workspace",
+        note="dashboard_manual_fleet",
+    )
+
+    result = controller.run(
+        max_cycles=2,
+        idle_cycles=1,
+        poll_seconds=0.01,
+        idle_timeout_seconds=0.01,
+    )
+
+    assert result.fleet_run_id.startswith("fleet-run-")
+    assert result.artifact_dir is not None
+    assert result.workspace_id == "demo-workspace"
+    assert result.launcher == "FakeWorkerLauncher"
+    assert result.note == "dashboard_manual_fleet"
+    assert (result.artifact_dir / "request.json").exists()
+    assert (result.artifact_dir / "summary.json").exists()
+    assert json.loads((result.artifact_dir / "summary.json").read_text(encoding="utf-8"))[
+        "fleet_run_id"
+    ] == result.fleet_run_id
+
+    store = EventStore(tmp_path / "queue.db")
+    persisted = store.get_fleet_run(result.fleet_run_id)
+    assert persisted is not None
+    assert persisted.total_processed_jobs == 1
+    assert persisted.stop_reason == "queue_drained"
 
 
 def test_in_process_worker_launcher_delegates_to_batch_runner(tmp_path: Path, monkeypatch) -> None:

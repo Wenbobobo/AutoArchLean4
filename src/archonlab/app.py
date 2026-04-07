@@ -103,6 +103,14 @@ def _resolve_queue_runtime(config_path: Path) -> tuple[Path, int]:
         return app_config.run.artifact_root, app_config.run.max_parallel
 
 
+def _resolve_workspace_name(config_path: Path) -> str:
+    resolved_config_path = config_path.resolve()
+    try:
+        return load_workspace_config(resolved_config_path).name
+    except (KeyError, ValueError):
+        return "standalone"
+
+
 def _resolve_provider_runtime(
     config_path: Path,
 ) -> tuple[str | None, dict[str, ProviderPoolConfig]]:
@@ -724,6 +732,9 @@ def workspace_run(
         queue_store=queue_store,
         batch_runner=batch_runner,
         worker_launcher=worker_launcher,
+        config_path=config,
+        workspace_id=workspace_config.name,
+        note=note,
     ).run(
         max_cycles=max_cycles,
         idle_cycles=idle_cycles,
@@ -734,6 +745,9 @@ def workspace_run(
         idle_timeout_seconds=idle_timeout_seconds,
         stale_after_seconds=stale_after_seconds,
     )
+    typer.echo(f"Fleet: {result.fleet_run_id}")
+    if result.artifact_dir is not None:
+        typer.echo(f"Artifacts: {result.artifact_dir}")
     typer.echo(f"Cycles: {result.cycles_completed}")
     typer.echo(f"Stop reason: {result.stop_reason}")
     typer.echo(f"Processed: {result.total_processed_jobs}")
@@ -1854,6 +1868,8 @@ def queue_autoscale(
         queue_store=queue_store,
         batch_runner=batch_runner,
         worker_launcher=worker_launcher,
+        config_path=config,
+        workspace_id=_resolve_workspace_name(config),
     ).run(
         max_cycles=max_cycles,
         idle_cycles=idle_cycles,
@@ -1864,12 +1880,54 @@ def queue_autoscale(
         idle_timeout_seconds=idle_timeout_seconds,
         stale_after_seconds=stale_after_seconds,
     )
+    typer.echo(f"Fleet: {result.fleet_run_id}")
+    if result.artifact_dir is not None:
+        typer.echo(f"Artifacts: {result.artifact_dir}")
     typer.echo(f"Cycles: {result.cycles_completed}")
     typer.echo(f"Stop reason: {result.stop_reason}")
     typer.echo(f"Processed: {result.total_processed_jobs}")
     typer.echo(f"Paused: {result.total_paused_jobs}")
     typer.echo(f"Failed: {result.total_failed_jobs}")
     typer.echo(f"Workers launched: {result.total_workers_launched}")
+
+
+@queue_app.command("fleet-runs")
+def queue_fleet_runs(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    limit: Annotated[
+        int, typer.Option("--limit", min=1, max=200, help="Number of fleet runs to show.")
+    ] = 20,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable JSON.")
+    ] = False,
+) -> None:
+    artifact_root, _ = _resolve_queue_runtime(config)
+    workspace_id = _resolve_workspace_name(config)
+    runs = EventStore(artifact_root / "archonlab.db").list_fleet_runs(
+        workspace_id=workspace_id,
+        limit=limit,
+    )
+    if json_output:
+        typer.echo(
+            json.dumps(
+                [item.model_dump(mode="json") for item in runs],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+    if not runs:
+        typer.echo("No fleet runs.")
+        return
+    for run in runs:
+        fleet_id = run.fleet_run_id or "-"
+        typer.echo(
+            f"{fleet_id} | stop={run.stop_reason} | cycles={run.cycles_completed} | "
+            f"processed={run.total_processed_jobs} | workers={run.total_workers_launched}"
+        )
 
 
 @queue_app.command("status")

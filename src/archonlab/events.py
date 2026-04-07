@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .models import (
     EventRecord,
+    FleetControllerResult,
     ProjectSession,
     ProviderMemberRuntimeSummary,
     ProviderPoolRuntimeSummary,
@@ -107,6 +108,14 @@ class EventStore:
 
             CREATE TABLE IF NOT EXISTS workspace_loop_runs (
                 loop_run_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS fleet_runs (
+                fleet_run_id TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
                 started_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -561,6 +570,31 @@ class EventStore:
         )
         self._conn.commit()
 
+    def upsert_fleet_run(self, result: FleetControllerResult) -> None:
+        if not result.fleet_run_id:
+            raise ValueError("Fleet controller result requires fleet_run_id.")
+        updated_at = datetime.now(UTC).isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO fleet_runs (
+                fleet_run_id, workspace_id, started_at, updated_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(fleet_run_id) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                started_at = excluded.started_at,
+                updated_at = excluded.updated_at,
+                payload_json = excluded.payload_json
+            """,
+            (
+                result.fleet_run_id,
+                result.workspace_id,
+                result.started_at.isoformat(),
+                updated_at,
+                result.model_dump_json(),
+            ),
+        )
+        self._conn.commit()
+
     def list_workspace_loop_runs(
         self,
         *,
@@ -595,6 +629,41 @@ class EventStore:
         if row is None:
             return None
         return WorkspaceLoopResult.model_validate_json(str(row["payload_json"]))
+
+    def list_fleet_runs(
+        self,
+        *,
+        workspace_id: str | None = None,
+        limit: int = 20,
+    ) -> list[FleetControllerResult]:
+        query = """
+            SELECT payload_json
+            FROM fleet_runs
+        """
+        params: list[str | int] = []
+        if workspace_id is not None:
+            query += " WHERE workspace_id = ?"
+            params.append(workspace_id)
+        query += " ORDER BY started_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
+        return [
+            FleetControllerResult.model_validate_json(str(row["payload_json"]))
+            for row in rows
+        ]
+
+    def get_fleet_run(self, fleet_run_id: str) -> FleetControllerResult | None:
+        row = self._conn.execute(
+            """
+            SELECT payload_json
+            FROM fleet_runs
+            WHERE fleet_run_id = ?
+            """,
+            (fleet_run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return FleetControllerResult.model_validate_json(str(row["payload_json"]))
 
     def get_run(self, run_id: str) -> RunSummary | None:
         row = self._conn.execute(

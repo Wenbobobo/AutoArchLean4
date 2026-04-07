@@ -9,6 +9,8 @@ from archonlab.events import EventStore
 from archonlab.models import (
     ActionPhase,
     EventRecord,
+    FleetControllerCycle,
+    FleetControllerResult,
     ProjectSession,
     RunStatus,
     RunSummary,
@@ -303,3 +305,36 @@ def test_event_store_round_trips_workspace_loop_runs(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.workspace_id == "demo-workspace"
     assert loaded.project_id == "alpha"
+
+
+def test_event_store_round_trips_fleet_runs(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "artifacts" / "archonlab.db")
+    record = FleetControllerResult(
+        fleet_run_id="fleet-demo-1",
+        workspace_id="demo-workspace",
+        launcher="subprocess",
+        stop_reason="queue_drained",
+        cycles_completed=1,
+        total_processed_jobs=2,
+        total_workers_launched=1,
+        cycles=[
+            FleetControllerCycle(
+                cycle_index=1,
+                started_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC),
+            )
+        ],
+    )
+
+    store.upsert_fleet_run(record)
+
+    listed = store.list_fleet_runs(workspace_id="demo-workspace", limit=10)
+    loaded = store.get_fleet_run("fleet-demo-1")
+
+    assert len(listed) == 1
+    assert listed[0].fleet_run_id == "fleet-demo-1"
+    assert listed[0].launcher == "subprocess"
+    assert listed[0].cycles[0].cycle_index == 1
+    assert loaded is not None
+    assert loaded.workspace_id == "demo-workspace"
+    assert loaded.stop_reason == "queue_drained"

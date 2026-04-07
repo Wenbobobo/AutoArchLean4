@@ -1361,13 +1361,21 @@ class FleetControllerCycle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     cycle_index: int
-    plan: QueueFleetPlan
-    report: BatchRunReport
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    plan: QueueFleetPlan = Field(default_factory=QueueFleetPlan)
+    report: BatchRunReport = Field(default_factory=BatchRunReport)
 
 
 class FleetControllerResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    fleet_run_id: str = ""
+    workspace_id: str = ""
+    config_path: Path | None = None
+    artifact_dir: Path | None = None
+    launcher: str | None = None
+    note: str | None = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
     cycles_completed: int = 0
