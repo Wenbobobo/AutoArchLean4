@@ -253,5 +253,6 @@ def test_run_service_session_quantum_advances_one_iteration_at_a_time(
     assert second.stop_reason == "max_iterations_reached"
     assert stored is not None
     assert stored.status is SessionStatus.PAUSED
+    assert stored.last_stop_reason == "max_iterations_reached"
     assert len(iterations) == 2
     assert all(iteration.run_id is not None for iteration in iterations)

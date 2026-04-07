@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -67,6 +68,8 @@ class EventStore:
                 finished_at TEXT,
                 last_run_id TEXT,
                 error_message TEXT,
+                last_stop_reason TEXT,
+                last_resume_reason TEXT,
                 note TEXT
             );
 
@@ -85,6 +88,11 @@ class EventStore:
             );
             """
         )
+        for column in ["last_stop_reason", "last_resume_reason"]:
+            with suppress(sqlite3.OperationalError):
+                self._conn.execute(
+                    f"ALTER TABLE project_sessions ADD COLUMN {column} TEXT"
+                )
         self._conn.commit()
 
     def register_run(self, summary: RunSummary) -> None:
@@ -154,8 +162,9 @@ class EventStore:
             INSERT INTO project_sessions (
                 session_id, workspace_id, project_id, status, workflow, dry_run,
                 max_iterations, completed_iterations, created_at, updated_at,
-                started_at, finished_at, last_run_id, error_message, note
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                started_at, finished_at, last_run_id, error_message,
+                last_stop_reason, last_resume_reason, note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session.session_id,
@@ -172,6 +181,8 @@ class EventStore:
                 session.finished_at.isoformat() if session.finished_at is not None else None,
                 session.last_run_id,
                 session.error_message,
+                session.last_stop_reason,
+                session.last_resume_reason,
                 session.note,
             ),
         )
@@ -222,7 +233,11 @@ class EventStore:
         max_iterations: int | None = None,
         last_run_id: str | None = None,
         error_message: str | None = None,
+        stop_reason: str | None = None,
+        resume_reason: str | None = None,
         clear_error_message: bool = False,
+        clear_stop_reason: bool = False,
+        clear_resume_reason: bool = False,
         note: str | None = None,
     ) -> ProjectSession:
         current = self.get_session(session_id)
@@ -247,7 +262,8 @@ class EventStore:
             UPDATE project_sessions
             SET status = ?, completed_iterations = ?, max_iterations = ?,
                 updated_at = ?, started_at = ?,
-                finished_at = ?, last_run_id = ?, error_message = ?, note = ?
+                finished_at = ?, last_run_id = ?, error_message = ?,
+                last_stop_reason = ?, last_resume_reason = ?, note = ?
             WHERE session_id = ?
             """,
             (
@@ -267,6 +283,20 @@ class EventStore:
                     if clear_error_message
                     else (
                         error_message if error_message is not None else current.error_message
+                    )
+                ),
+                (
+                    None
+                    if clear_stop_reason
+                    else (stop_reason if stop_reason is not None else current.last_stop_reason)
+                ),
+                (
+                    None
+                    if clear_resume_reason
+                    else (
+                        resume_reason
+                        if resume_reason is not None
+                        else current.last_resume_reason
                     )
                 ),
                 note if note is not None else current.note,
@@ -424,6 +454,8 @@ class EventStore:
             else None,
             last_run_id=row["last_run_id"],
             error_message=row["error_message"],
+            last_stop_reason=row["last_stop_reason"],
+            last_resume_reason=row["last_resume_reason"],
             note=row["note"],
         )
 

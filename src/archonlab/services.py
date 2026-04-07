@@ -383,6 +383,8 @@ class RunService:
         session = self.event_store.update_session(
             session.session_id,
             status=SessionStatus.RUNNING,
+            resume_reason="run_loop",
+            clear_stop_reason=True,
             note=note,
         )
         run_ids: list[str] = []
@@ -427,6 +429,7 @@ class RunService:
                     status=terminal_status,
                     completed_iterations=iteration_index,
                     last_run_id=result.run_id,
+                    stop_reason=stop_reason,
                     note=note,
                 )
                 if terminal_status is not SessionStatus.RUNNING:
@@ -437,6 +440,7 @@ class RunService:
                 status=SessionStatus.FAILED,
                 completed_iterations=iteration_index,
                 error_message=str(exc),
+                stop_reason="run_failed",
                 note=note,
             )
             stop_reason = "run_failed"
@@ -468,6 +472,7 @@ class RunService:
             paused = self.event_store.update_session(
                 session_id,
                 status=SessionStatus.PAUSED,
+                stop_reason="max_iterations_reached",
                 note=note,
             )
             return SessionQuantumResult(
@@ -485,6 +490,7 @@ class RunService:
             session_id,
             status=SessionStatus.RUNNING,
             clear_error_message=True,
+            clear_stop_reason=True,
             note=note,
         )
         try:
@@ -522,6 +528,7 @@ class RunService:
                 completed_iterations=iteration_index,
                 last_run_id=result.run_id,
                 clear_error_message=True,
+                stop_reason=stop_reason,
                 note=note,
             )
             return SessionQuantumResult(
@@ -543,6 +550,7 @@ class RunService:
                 status=SessionStatus.FAILED,
                 completed_iterations=session.completed_iterations,
                 error_message=str(exc),
+                stop_reason="run_failed",
                 note=note,
             )
             raise

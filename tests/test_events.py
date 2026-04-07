@@ -117,6 +117,8 @@ def test_event_store_tracks_project_sessions_and_iterations(tmp_path: Path) -> N
         status=SessionStatus.RUNNING,
         completed_iterations=1,
         last_run_id="run-1",
+        stop_reason="quantum_complete",
+        resume_reason="manual_resume",
     )
 
     listed = store.list_sessions(workspace_id="demo-workspace")
@@ -125,6 +127,8 @@ def test_event_store_tracks_project_sessions_and_iterations(tmp_path: Path) -> N
     assert updated.status is SessionStatus.RUNNING
     assert updated.completed_iterations == 1
     assert updated.started_at is not None
+    assert updated.last_stop_reason == "quantum_complete"
+    assert updated.last_resume_reason == "manual_resume"
     assert len(listed) == 1
     assert listed[0].last_run_id == "run-1"
     assert len(iterations) == 1
