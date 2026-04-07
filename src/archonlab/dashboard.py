@@ -12,8 +12,9 @@ from .batch import BatchRunner
 from .config import load_config
 from .control import ControlService
 from .events import EventStore
-from .models import ExecutorKind, ProviderKind
+from .models import ExecutorKind, ProviderKind, QueueJob, TaskGraph, TaskStatus
 from .queue import QueueStore
+from .services import RunService
 
 
 class PauseRequest(BaseModel):
@@ -90,6 +91,32 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
         _ensure_project(config.project.name, project_id)
         return control.read(config.project).model_dump(mode="json")
 
+    @app.get("/api/projects/{project_id}/preview")
+    def get_project_preview(project_id: str) -> dict[str, Any]:
+        _ensure_project(config.project.name, project_id)
+        preview = RunService(config).preview()
+        workflow_spec = preview.workflow_spec
+        return {
+            "project_id": config.project.name,
+            "workflow": config.run.workflow.value,
+            "workflow_spec_path": (
+                str(config.run.workflow_spec)
+                if config.run.workflow_spec is not None
+                else None
+            ),
+            "workflow_spec": (
+                {
+                    "name": workflow_spec.name,
+                    "description": workflow_spec.description,
+                    "rule_count": len(workflow_spec.rules),
+                }
+                if workflow_spec is not None
+                else None
+            ),
+            "task_graph_summary": _summarize_task_graph(preview.task_graph),
+            "preview": preview.model_dump(mode="json"),
+        }
+
     @app.post("/api/projects/{project_id}/pause")
     def pause_project(project_id: str, body: PauseRequest) -> dict[str, Any]:
         _ensure_project(config.project.name, project_id)
@@ -112,6 +139,10 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
     @app.get("/api/queue/jobs")
     def list_queue_jobs(limit: int = 50) -> list[dict[str, Any]]:
         return [job.model_dump(mode="json") for job in queue.list_jobs(limit=limit)]
+
+    @app.get("/api/queue/jobs/{job_id}")
+    def queue_job_detail(job_id: str) -> dict[str, Any]:
+        return _queue_job_or_404(queue, job_id).model_dump(mode="json")
 
     @app.get("/api/queue/workers")
     def list_queue_workers(stale_after_seconds: float | None = 120.0) -> list[dict[str, Any]]:
@@ -162,7 +193,17 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
 
     @app.post("/api/queue/jobs/{job_id}/cancel")
     def cancel_queue_job(job_id: str, body: QueueCancelRequest) -> dict[str, Any]:
+        _queue_job_or_404(queue, job_id)
         job = queue.cancel(job_id, reason=body.reason)
+        return job.model_dump(mode="json")
+
+    @app.post("/api/queue/jobs/{job_id}/requeue")
+    def requeue_queue_job(job_id: str) -> dict[str, Any]:
+        _queue_job_or_404(queue, job_id)
+        try:
+            job = queue.requeue(job_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return job.model_dump(mode="json")
 
     @app.post("/api/queue/workers/sweep")
@@ -179,6 +220,28 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
 def _ensure_project(expected_project_id: str, actual_project_id: str) -> None:
     if expected_project_id != actual_project_id:
         raise HTTPException(status_code=404, detail="Project not found")
+
+
+def _queue_job_or_404(queue: QueueStore, job_id: str) -> QueueJob:
+    job = queue.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Queue job not found")
+    return job
+
+
+def _summarize_task_graph(task_graph: TaskGraph) -> dict[str, int]:
+    return {
+        "total_nodes": len(task_graph.nodes),
+        "blocked_nodes": sum(
+            1 for node in task_graph.nodes if node.status is TaskStatus.BLOCKED
+        ),
+        "pending_nodes": sum(
+            1 for node in task_graph.nodes if node.status is TaskStatus.PENDING
+        ),
+        "completed_nodes": sum(
+            1 for node in task_graph.nodes if node.status is TaskStatus.COMPLETED
+        ),
+    }
 
 
 def render_dashboard_html(project_id: str) -> str:
@@ -297,6 +360,12 @@ def render_dashboard_html(project_id: str) -> str:
         background: linear-gradient(135deg, #f4d8c9, #f6f1e6);
       }}
       button:hover {{ transform: translateY(-1px); }}
+      button:disabled {{
+        opacity: 0.55;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }}
       textarea {{
         width: 100%;
         min-height: 110px;
@@ -340,8 +409,97 @@ def render_dashboard_html(project_id: str) -> str:
         color: var(--muted);
         font-size: 13px;
       }}
+      .summary-grid {{
+        display: grid;
+        gap: 10px;
+      }}
+      .board-grid {{
+        display: grid;
+        grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr);
+        gap: 18px;
+        margin-top: 18px;
+      }}
+      .section-head {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+      }}
+      .section-head h2 {{
+        margin: 0;
+      }}
+      .chip-row {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }}
+      .chip {{
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.64);
+        font-size: 12px;
+        color: var(--muted);
+      }}
+      .board {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+      }}
+      .column {{
+        display: grid;
+        gap: 10px;
+        align-content: start;
+        padding: 12px;
+        min-height: 260px;
+        border-radius: 20px;
+        border: 1px solid var(--line);
+        background: rgba(255,255,255,0.42);
+      }}
+      .column-head {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }}
+      .stack {{
+        display: grid;
+        gap: 10px;
+      }}
+      .card {{
+        width: 100%;
+        text-align: left;
+        padding: 12px;
+        border-radius: 16px;
+        border: 1px solid transparent;
+        background: linear-gradient(135deg, rgba(255,255,255,0.88), rgba(245,236,223,0.92));
+        color: var(--ink);
+        box-shadow: 0 8px 18px rgba(31, 40, 51, 0.08);
+      }}
+      .card.active {{
+        border-color: rgba(196, 71, 45, 0.55);
+        box-shadow: 0 14px 28px rgba(196, 71, 45, 0.18);
+      }}
+      .card strong {{
+        display: block;
+        margin-bottom: 6px;
+      }}
+      .compact-controls {{
+        display: grid;
+        gap: 10px;
+        margin: 12px 0;
+      }}
       @media (max-width: 920px) {{
         .grid {{ grid-template-columns: 1fr; }}
+        .board-grid {{ grid-template-columns: 1fr; }}
       }}
     </style>
   </head>
@@ -383,19 +541,53 @@ def render_dashboard_html(project_id: str) -> str:
         </section>
 
         <aside class="panel">
-          <h2>Queue</h2>
+          <h2>Queue Ops</h2>
           <div class="controls">
             <button class="secondary" id="queue-run-button">Run Pending Queue</button>
             <button class="secondary" id="queue-fleet-button">Run Auto-Slot Fleet</button>
             <button class="secondary" id="worker-sweep-button">Sweep Stale Workers</button>
           </div>
           <div style="height: 12px"></div>
-          <div class="list" id="queue-list"></div>
+          <div class="summary-grid" id="queue-summary"></div>
           <div style="height: 16px"></div>
           <h2>Workers</h2>
           <div class="list" id="workers-list"></div>
         </aside>
       </div>
+
+      <div class="board-grid">
+        <section class="panel">
+          <div class="section-head">
+            <h2>Queue Board</h2>
+            <div class="chip-row" id="queue-counts"></div>
+          </div>
+          <div class="board" id="queue-board"></div>
+        </section>
+
+        <aside class="panel">
+          <h2>Job Detail</h2>
+          <div class="meta" id="queue-detail-meta">
+            Select a queue card to inspect and operate on it.
+          </div>
+          <div class="compact-controls">
+            <button class="secondary" id="job-requeue-button" disabled>Requeue Selected Job</button>
+            <button class="secondary" id="job-cancel-button" disabled>Cancel Selected Job</button>
+          </div>
+          <pre id="queue-detail-json">{{}}</pre>
+        </aside>
+      </div>
+
+      <section class="panel" style="margin-top: 18px;">
+        <div class="section-head">
+          <h2>Current Preview</h2>
+          <div class="meta" id="project-preview-meta">
+            Inspect the live supervisor/workflow prediction before launching the next run.
+          </div>
+        </div>
+        <div class="chip-row" id="project-preview-chips"></div>
+        <div style="height: 12px"></div>
+        <pre id="project-preview-json">{{}}</pre>
+      </section>
     </div>
 
     <script>
@@ -405,8 +597,19 @@ def render_dashboard_html(project_id: str) -> str:
       const detailMeta = document.getElementById("detail-meta");
       const detailJson = document.getElementById("detail-json");
       const hintInput = document.getElementById("hint-input");
-      const queueList = document.getElementById("queue-list");
+      const queueSummary = document.getElementById("queue-summary");
+      const queueCounts = document.getElementById("queue-counts");
+      const queueBoard = document.getElementById("queue-board");
+      const queueDetailMeta = document.getElementById("queue-detail-meta");
+      const queueDetailJson = document.getElementById("queue-detail-json");
+      const projectPreviewMeta = document.getElementById("project-preview-meta");
+      const projectPreviewChips = document.getElementById("project-preview-chips");
+      const projectPreviewJson = document.getElementById("project-preview-json");
+      const jobRequeueButton = document.getElementById("job-requeue-button");
+      const jobCancelButton = document.getElementById("job-cancel-button");
       const workersList = document.getElementById("workers-list");
+      let latestJobs = [];
+      let selectedQueueJobId = null;
 
       async function fetchJson(url, options) {{
         const response = await fetch(url, options);
@@ -450,51 +653,179 @@ def render_dashboard_html(project_id: str) -> str:
         }}
       }}
 
-      function renderQueue(jobs) {{
+      function queueBuckets() {{
+        return [
+          {{ key: "queued", label: "Queued", statuses: ["queued", "pending"] }},
+          {{ key: "running", label: "Running", statuses: ["running"] }},
+          {{ key: "paused", label: "Paused", statuses: ["paused"] }},
+          {{ key: "failed", label: "Failed", statuses: ["failed"] }},
+          {{ key: "done", label: "Done", statuses: ["completed", "canceled"] }},
+        ];
+      }}
+
+      function queueCountsByStatus(jobs) {{
+        const counts = {{}};
+        for (const job of jobs) {{
+          counts[job.status] = (counts[job.status] || 0) + 1;
+        }}
+        return counts;
+      }}
+
+      function summarizeQueueJob(job) {{
+        const preview = job.preview || {{}};
+        const focus = preview.theorem_name || preview.task_title || preview.task_id || "-";
+        const phase = preview.phase || "-";
+        const stage = preview.stage || "-";
+        const reason = preview.reason || "-";
+        const priority = preview.final_priority ?? job.priority;
+        const workerId = job.worker_id || "-";
+        return {{
+          focus,
+          phase,
+          stage,
+          reason,
+          priority,
+          workerId,
+          executors: (job.required_executor_kinds || []).join(",") || "-",
+          providers: (job.required_provider_kinds || []).join(",") || "-",
+          models: (job.required_models || []).join(",") || "-",
+          costTiers: (job.required_cost_tiers || []).join(",") || "-",
+          endpointClasses: (job.required_endpoint_classes || []).join(",") || "-",
+        }};
+      }}
+
+      function renderQueueSummary(jobs) {{
+        const counts = queueCountsByStatus(jobs);
+        queueSummary.innerHTML = `
+          <div class="pill">Total jobs: <strong>${{jobs.length}}</strong></div>
+          <div class="pill">
+            Queued: <strong>${{(counts.queued || 0) + (counts.pending || 0)}}</strong>
+          </div>
+          <div class="pill">Running: <strong>${{counts.running || 0}}</strong></div>
+          <div class="pill">
+            Blocked: <strong>${{(counts.paused || 0) + (counts.failed || 0)}}</strong>
+          </div>
+        `;
+        const bucketCounts = queueBuckets().map((bucket) => {{
+          const total = bucket.statuses.reduce((sum, status) => sum + (counts[status] || 0), 0);
+          return `<div class="chip">${{bucket.label}} <strong>${{total}}</strong></div>`;
+        }});
+        queueCounts.innerHTML = bucketCounts.join("");
+      }}
+
+      function renderQueueBoard(jobs) {{
         if (!jobs.length) {{
-          queueList.innerHTML = '<div class="meta">No queued jobs.</div>';
+          queueBoard.innerHTML = '<div class="meta">No queue jobs.</div>';
           return;
         }}
-        queueList.innerHTML = "";
-        for (const job of jobs) {{
-          const item = document.createElement("div");
-          item.className = "run";
-          const preview = job.preview || {{}};
-          const workerId = job.worker_id || "-";
-          const executors = (job.required_executor_kinds || []).join(",") || "-";
-          const providers = (job.required_provider_kinds || []).join(",") || "-";
-          const models = (job.required_models || []).join(",") || "-";
-          const costTiers = (job.required_cost_tiers || []).join(",") || "-";
-          const endpointClasses = (job.required_endpoint_classes || []).join(",") || "-";
-          const phase = preview.phase || "-";
-          const stage = preview.stage || "-";
-          const reason = preview.reason || "-";
-          const focus = preview.theorem_name || preview.task_title || preview.task_id || "-";
-          const supervisor = preview.supervisor_action
-            ? `${{preview.supervisor_action}}/${{preview.supervisor_reason || "-"}}`
-            : "-";
-          const supervisorSummary = preview.supervisor_summary || "-";
-          const priority = preview.final_priority ?? job.priority;
-          const basePriority = preview.base_priority ?? 0;
-          const taskBonus = preview.task_priority_bonus ?? 0;
-          const objectiveBonus = preview.objective_relevance_bonus ?? 0;
-          const prioritySummary =
-            `focus=${{focus}} · priority=${{priority}} ` +
-            `(base=${{basePriority}} + task=${{taskBonus}} + objective=${{objectiveBonus}})`;
-          const resourceSummary =
-            `models=${{models}} · cost_tiers=${{costTiers}} · ` +
-            `endpoints=${{endpointClasses}}`;
-          item.innerHTML = `
-            <strong>${{job.job_id}}</strong>
-            <div class="meta">${{job.status}} · ${{job.project_id}} · worker=${{workerId}}</div>
-            <div class="meta">phase=${{phase}} · stage=${{stage}} · reason=${{reason}}</div>
-            <div class="meta">supervisor=${{supervisor}} · ${{supervisorSummary}}</div>
-            <div class="meta">${{prioritySummary}}</div>
-            <div class="meta">requires executors=${{executors}} · providers=${{providers}}</div>
-            <div class="meta">${{resourceSummary}}</div>
+        queueBoard.innerHTML = "";
+        for (const bucket of queueBuckets()) {{
+          const column = document.createElement("section");
+          column.className = "column";
+          const cards = jobs.filter((job) => bucket.statuses.includes(job.status));
+          column.innerHTML = `
+            <div class="column-head">
+              <span>${{bucket.label}}</span>
+              <strong>${{cards.length}}</strong>
+            </div>
+            <div class="stack"></div>
           `;
-          queueList.appendChild(item);
+          const stack = column.querySelector(".stack");
+          if (!cards.length) {{
+            stack.innerHTML = '<div class="meta">No jobs.</div>';
+          }} else {{
+            for (const job of cards) {{
+              const summary = summarizeQueueJob(job);
+              const item = document.createElement("button");
+              item.className = selectedQueueJobId === job.job_id ? "card active" : "card";
+              item.innerHTML = `
+                <strong>${{job.project_id}}</strong>
+                <div class="meta">${{job.job_id}}</div>
+                <div class="meta">
+                  ${{summary.phase}} · ${{summary.stage}} · p=${{summary.priority}}
+                </div>
+                <div class="meta">${{summary.focus}}</div>
+                <div class="meta">worker=${{summary.workerId}}</div>
+              `;
+              item.addEventListener("click", async () => {{
+                await selectQueueJob(job.job_id);
+              }});
+              stack.appendChild(item);
+            }}
+          }}
+          queueBoard.appendChild(column);
         }}
+      }}
+
+      function renderQueueDetail(job) {{
+        if (!job) {{
+          queueDetailMeta.textContent = "Select a queue card to inspect and operate on it.";
+          queueDetailJson.textContent = JSON.stringify({{}}, null, 2);
+          jobRequeueButton.disabled = true;
+          jobCancelButton.disabled = true;
+          return;
+        }}
+        const summary = summarizeQueueJob(job);
+        queueDetailMeta.textContent =
+          `${{job.job_id}} · ${{job.status}} · phase=${{summary.phase}} · focus=${{summary.focus}}`;
+        queueDetailJson.textContent = JSON.stringify(job, null, 2);
+        jobRequeueButton.disabled = ["queued", "pending", "running"].includes(job.status);
+        jobCancelButton.disabled = ["completed", "canceled"].includes(job.status);
+      }}
+
+      async function selectQueueJob(jobId) {{
+        selectedQueueJobId = jobId;
+        const detail = await fetchJson(`/api/queue/jobs/${{jobId}}`);
+        latestJobs = latestJobs.map((job) => (job.job_id === jobId ? detail : job));
+        renderQueue(latestJobs);
+      }}
+
+      function renderQueue(jobs) {{
+        latestJobs = jobs;
+        if (!selectedQueueJobId || !jobs.some((job) => job.job_id === selectedQueueJobId)) {{
+          selectedQueueJobId = jobs.length ? jobs[0].job_id : null;
+        }}
+        renderQueueSummary(jobs);
+        renderQueueBoard(jobs);
+        renderQueueDetail(
+          jobs.find((job) => job.job_id === selectedQueueJobId) || null,
+        );
+      }}
+
+      function renderProjectPreview(payload) {{
+        const preview = payload.preview || {{}};
+        const action = preview.action || {{}};
+        const supervisor = preview.supervisor || {{}};
+        const executor = preview.resolved_executor || {{}};
+        const provider = preview.resolved_provider || {{}};
+        const graph = payload.task_graph_summary || {{}};
+        const workflowSpec = payload.workflow_spec;
+        const chips = [
+          ["workflow", payload.workflow || "-"],
+          ["phase", action.phase || "-"],
+          ["reason", action.reason || "-"],
+          ["stage", action.stage || preview.progress?.stage || "-"],
+          ["supervisor", `${{supervisor.action || "-"}}/${{supervisor.reason || "-"}}`],
+          ["executor", executor.kind || "-"],
+          ["model", provider.model || "-"],
+          ["cost_tier", provider.cost_tier || "-"],
+          ["task_graph", `${{graph.total_nodes || 0}} nodes / ${{graph.blocked_nodes || 0}} blocked`],
+        ];
+        if (workflowSpec) {{
+          chips.push(["workflow_spec", `${{workflowSpec.name}} (${{workflowSpec.rule_count}} rules)`]);
+        }}
+        projectPreviewMeta.textContent =
+          `${{payload.project_id}} · ${{action.phase || "-"}} · ${{action.reason || "-"}}`;
+        projectPreviewChips.innerHTML = chips
+          .map(([label, value]) => `<div class="chip">${{label}} <strong>${{value}}</strong></div>`)
+          .join("");
+        projectPreviewJson.textContent = JSON.stringify(payload, null, 2);
+      }}
+
+      function renderProjectPreviewError(message) {{
+        projectPreviewMeta.textContent = "Current preview is unavailable.";
+        projectPreviewChips.innerHTML = '<div class="chip">error <strong>preview_failed</strong></div>';
+        projectPreviewJson.textContent = message;
       }}
 
       function renderWorkers(workers) {{
@@ -529,16 +860,24 @@ def render_dashboard_html(project_id: str) -> str:
       }}
 
       async function refresh() {{
-        const [control, runs, jobs, workers] = await Promise.all([
+        const previewPromise = fetchJson(`/api/projects/${{projectId}}/preview`)
+          .catch((error) => ({{ error: error.message }}));
+        const [control, runs, jobs, workers, projectPreview] = await Promise.all([
           fetchJson(`/api/projects/${{projectId}}/control`),
           fetchJson(`/api/runs?limit=20`),
           fetchJson(`/api/queue/jobs?limit=20`),
           fetchJson(`/api/queue/workers`),
+          previewPromise,
         ]);
         renderControl(control);
         renderRuns(runs);
         renderQueue(jobs);
         renderWorkers(workers);
+        if (projectPreview.error) {{
+          renderProjectPreviewError(projectPreview.error);
+        }} else {{
+          renderProjectPreview(projectPreview);
+        }}
       }}
 
       document.getElementById("pause-button").addEventListener("click", async () => {{
@@ -587,6 +926,30 @@ def render_dashboard_html(project_id: str) -> str:
           method: "POST",
           headers: {{ "Content-Type": "application/json" }},
           body: JSON.stringify({{}}),
+        }});
+        await refresh();
+      }});
+
+      jobRequeueButton.addEventListener("click", async () => {{
+        if (!selectedQueueJobId) {{
+          return;
+        }}
+        await fetchJson(`/api/queue/jobs/${{selectedQueueJobId}}/requeue`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{}}),
+        }});
+        await refresh();
+      }});
+
+      jobCancelButton.addEventListener("click", async () => {{
+        if (!selectedQueueJobId) {{
+          return;
+        }}
+        await fetchJson(`/api/queue/jobs/${{selectedQueueJobId}}/cancel`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{ reason: "Canceled from dashboard" }}),
         }});
         await refresh();
       }});

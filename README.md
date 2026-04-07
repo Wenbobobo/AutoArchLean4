@@ -78,6 +78,7 @@ benchmark 则已经支持在隔离 `git worktree` 中运行。
 queue/batch 层已经支持 benchmark 作业排队、slot-aware 并发处理、pause-aware 跳过和 job 级 artifacts。
 benchmark project 入队前现在会先做一次 `preview()`，按当前预测的 next action 派生 executor/provider 约束和 job priority。
 queue job 现在还会持久化一份精简的 preview 摘要，dashboard/API 能直接解释当前 phase、reason、focus task 和 priority 组成。
+dashboard 里的 queue 现在是状态分栏的 board，并支持查看 job detail、直接 cancel、直接 requeue。
 queue worker 现在会留下可查询的 lease / heartbeat / 当前 job telemetry。
 你现在还可以单独启动 `queue worker` 进程，让多个外部 worker 共享同一个 sqlite 队列。
 独立 worker 现在支持 `--auto-slot`，可以自动抢占当前空闲 slot，而不必人工分配编号。

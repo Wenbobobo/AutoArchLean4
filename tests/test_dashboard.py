@@ -28,14 +28,32 @@ from archonlab.queue import QueueStore  # noqa: E402
 def _make_project(tmp_path: Path) -> Path:
     project_path = tmp_path / "DemoProject"
     state_dir = project_path / ".archon"
-    state_dir.mkdir(parents=True)
+    prompts_dir = state_dir / "prompts"
+    prompts_dir.mkdir(parents=True)
+    (state_dir / "CLAUDE.md").write_text("# demo\n", encoding="utf-8")
+    (prompts_dir / "plan.md").write_text("# plan\n", encoding="utf-8")
+    (prompts_dir / "prover-prover.md").write_text("# prover\n", encoding="utf-8")
     (state_dir / "PROGRESS.md").write_text(
         "# Project Progress\n\n"
         "## Current Stage\n"
-        "prover\n",
+        "prover\n\n"
+        "## Current Objectives\n\n"
+        "1. Understand the current proving bottleneck.\n",
+        encoding="utf-8",
+    )
+    (project_path / "Core.lean").write_text(
+        "theorem helper : True := by\n"
+        "  trivial\n",
         encoding="utf-8",
     )
     return project_path
+
+
+def _make_archon(tmp_path: Path) -> Path:
+    archon_path = tmp_path / "Archon"
+    archon_path.mkdir()
+    (archon_path / "archon-loop.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    return archon_path
 
 
 def _seed_run(artifact_root: Path) -> None:
@@ -65,6 +83,7 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_path = _make_project(tmp_path)
+    archon_path = _make_archon(tmp_path)
     artifact_root = tmp_path / "artifacts"
     _seed_run(artifact_root)
 
@@ -82,7 +101,7 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
         "[project]\n"
         'name = "DemoProject"\n'
         f'project_path = "{project_path}"\n'
-        f'archon_path = "{tmp_path / "Archon"}"\n\n'
+        f'archon_path = "{archon_path}"\n\n'
         "[run]\n"
         'workflow = "adaptive_loop"\n'
         f'artifact_root = "{artifact_root}"\n'
@@ -110,6 +129,14 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     control = control_response.json()
     assert control["paused"] is False
 
+    preview_response = client.get("/api/projects/DemoProject/preview")
+    assert preview_response.status_code == 200
+    preview_payload = preview_response.json()
+    assert preview_payload["workflow"] == "adaptive_loop"
+    assert preview_payload["preview"]["action"]["phase"] == "plan"
+    assert preview_payload["preview"]["action"]["reason"] == "bootstrap_first_iteration"
+    assert preview_payload["task_graph_summary"]["total_nodes"] >= 1
+
     pause_response = client.post(
         "/api/projects/DemoProject/pause",
         json={"reason": "manual_hold"},
@@ -135,7 +162,7 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert (project_path / ".archon" / "USER_HINTS.md").exists()
 
     queue_store = QueueStore(artifact_root / "archonlab.db")
-    queue_store.enqueue(
+    queued_job = queue_store.enqueue(
         "benchmark_project",
         {"manifest_path": str(tmp_path / "demo.toml")},
         project_id="demo-project",
@@ -186,6 +213,28 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert jobs[0]["preview"]["final_priority"] == 10
     assert jobs[0]["preview"]["model"] == "gpt-5.4"
     assert jobs[0]["preview"]["supervisor_summary"].startswith("Current state looks healthy")
+
+    job_detail_response = client.get(f"/api/queue/jobs/{queued_job.id}")
+    assert job_detail_response.status_code == 200
+    job_detail = job_detail_response.json()
+    assert job_detail["job_id"] == queued_job.id
+    assert job_detail["preview"]["theorem_name"] == "foo"
+
+    cancel_job_response = client.post(
+        f"/api/queue/jobs/{queued_job.id}/cancel",
+        json={"reason": "dashboard_cancel"},
+    )
+    assert cancel_job_response.status_code == 200
+    canceled_job = cancel_job_response.json()
+    assert canceled_job["status"] == "canceled"
+    assert canceled_job["cancel_reason"] == "dashboard_cancel"
+
+    requeue_job_response = client.post(f"/api/queue/jobs/{queued_job.id}/requeue")
+    assert requeue_job_response.status_code == 200
+    requeued_job = requeue_job_response.json()
+    assert requeued_job["status"] == "queued"
+    assert requeued_job["cancel_reason"] is None
+    assert requeued_job["preview"]["final_priority"] == 10
 
     sweep_response = client.post(
         "/api/queue/workers/sweep",

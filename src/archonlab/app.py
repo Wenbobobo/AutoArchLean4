@@ -846,6 +846,23 @@ def queue_cancel(
     typer.echo(f"Canceled: {job.id}")
 
 
+@queue_app.command("requeue")
+def queue_requeue(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    job_id: Annotated[
+        str, typer.Option("--job-id", help="Queue job identifier.")
+    ] = "",
+) -> None:
+    if not job_id:
+        raise typer.BadParameter("--job-id is required")
+    app_config = load_config(config)
+    job = QueueStore(app_config.run.artifact_root / "archonlab.db").requeue(job_id)
+    typer.echo(f"Requeued: {job.id} | priority={job.priority}")
+
+
 def main() -> None:
     app()
 

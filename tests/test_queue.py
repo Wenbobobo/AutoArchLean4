@@ -50,3 +50,29 @@ def test_queue_store_marks_paused_and_canceled_jobs(tmp_path: Path) -> None:
     assert jobs[paused.id].pause_reason == "manual_hold"
     assert jobs[canceled.id].status is QueueJobStatus.CANCELED
     assert jobs[canceled.id].cancel_reason == "obsolete_manifest"
+
+
+def test_queue_store_requeues_terminal_job_and_clears_terminal_metadata(
+    tmp_path: Path,
+) -> None:
+    store = QueueStore(tmp_path / "queue.db")
+    job = store.enqueue("benchmark", {"manifest_path": "failed.toml"}, priority=7)
+    failed = store.finish_job(
+        job.id,
+        status=QueueJobStatus.FAILED,
+        artifact_dir=tmp_path / "artifacts" / job.id,
+        result_path=tmp_path / "artifacts" / job.id / "error.json",
+        error_message="executor_crashed",
+        worker_id="worker-1",
+    )
+
+    requeued = store.requeue(failed.id)
+
+    assert requeued.status is QueueJobStatus.QUEUED
+    assert requeued.priority == 7
+    assert requeued.artifact_dir is None
+    assert requeued.result_path is None
+    assert requeued.error_message is None
+    assert requeued.pause_reason is None
+    assert requeued.cancel_reason is None
+    assert requeued.worker_id is None

@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict, cast
 
+from pydantic import ValidationError
+
 from .benchmark import load_benchmark_manifest
 from .models import (
     ActionPhase,
@@ -332,6 +334,89 @@ class QueueStore:
             status=QueueJobStatus.CANCELED,
             cancel_reason=reason,
         )
+
+    def requeue(self, job_id: str) -> QueueJob:
+        job = self.get_job(job_id)
+        if job is None:
+            raise KeyError(f"Unknown queue job: {job_id}")
+        if job.status in {
+            QueueJobStatus.QUEUED,
+            QueueJobStatus.PENDING,
+            QueueJobStatus.RUNNING,
+        }:
+            raise ValueError("Only paused, failed, canceled, or completed jobs can be requeued.")
+        refreshed = self._refresh_job_requirements(job)
+        priority = refreshed["priority"] if refreshed is not None else job.priority
+        required_executor_kinds = (
+            refreshed["required_executor_kinds"]
+            if refreshed is not None
+            else job.required_executor_kinds
+        )
+        required_provider_kinds = (
+            refreshed["required_provider_kinds"]
+            if refreshed is not None
+            else job.required_provider_kinds
+        )
+        required_models = (
+            refreshed["required_models"]
+            if refreshed is not None
+            else job.required_models
+        )
+        required_cost_tiers = (
+            refreshed["required_cost_tiers"]
+            if refreshed is not None
+            else job.required_cost_tiers
+        )
+        required_endpoint_classes = (
+            refreshed["required_endpoint_classes"]
+            if refreshed is not None
+            else job.required_endpoint_classes
+        )
+        preview = refreshed["preview"] if refreshed is not None else job.preview
+        updated_at = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE queue_jobs
+                SET status = ?, priority = ?, updated_at = ?, started_at = NULL,
+                    finished_at = NULL, artifact_dir = NULL, result_path = NULL,
+                    error_message = NULL, pause_reason = NULL, cancel_reason = NULL,
+                    worker_id = NULL, required_executor_kinds = ?,
+                    required_provider_kinds = ?, required_models = ?, required_cost_tiers = ?,
+                    required_endpoint_classes = ?, preview_json = ?
+                WHERE job_id = ?
+                """,
+                (
+                    QueueJobStatus.QUEUED.value,
+                    priority,
+                    updated_at,
+                    json.dumps(
+                        [kind.value for kind in required_executor_kinds],
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        [kind.value for kind in required_provider_kinds],
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(required_models, ensure_ascii=False),
+                    json.dumps(required_cost_tiers, ensure_ascii=False),
+                    json.dumps(required_endpoint_classes, ensure_ascii=False),
+                    (
+                        json.dumps(preview.model_dump(mode="json"), ensure_ascii=False)
+                        if preview is not None
+                        else None
+                    ),
+                    job_id,
+                ),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                "SELECT * FROM queue_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown queue job: {job_id}")
+            return self._row_to_job(row)
 
     def finish_job(
         self,
@@ -1034,6 +1119,28 @@ class QueueStore:
                 final_priority=final_priority,
             ),
         }
+
+    def _refresh_job_requirements(self, job: QueueJob) -> ProjectRequirements | None:
+        if job.kind is not QueueJobKind.BENCHMARK_PROJECT:
+            return None
+        try:
+            payload = QueueBenchmarkPayload.model_validate(job.payload)
+        except ValidationError:
+            return None
+        manifest = load_benchmark_manifest(payload.manifest_path)
+        base_priority = job.preview.base_priority if job.preview is not None else job.priority
+        return self._derive_project_requirements(
+            project_id=payload.project.id,
+            project_path=payload.project.project_path,
+            archon_path=payload.project.archon_path,
+            workflow=payload.project.workflow,
+            max_iterations=payload.project.max_iterations,
+            artifact_root=manifest.benchmark.artifact_root,
+            executor=manifest.executor,
+            provider=manifest.provider,
+            execution_policy=manifest.execution_policy,
+            base_priority=base_priority,
+        )
 
     @staticmethod
     def _build_queue_preview(

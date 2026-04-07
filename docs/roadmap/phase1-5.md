@@ -91,6 +91,7 @@
 - workflow DSL 及规则加载器
 - dashboard 中的 pause/resume/hint 操作
 - queue dashboard/API 现在可解释每个 job 的 phase/reason/focus task/priority 组成
+- queue board 已支持按状态分栏查看 job，并可在 dashboard / CLI 中直接 requeue 终态 job
 - provider/executor 抽象，可切换 `dry_run` / `codex_exec` / OpenAI-compatible HTTP
 - `run start --execute` 已接通 executor
 - phase-aware execution policy 已接通，可按 `plan / prover / review` 选不同 executor/provider

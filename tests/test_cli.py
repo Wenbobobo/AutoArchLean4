@@ -376,6 +376,47 @@ def test_queue_sweep_workers_command_reaps_stale_worker(
     assert "worker-stale | slot=1 | failed" in workers_result.output
 
 
+def test_queue_requeue_command_requeues_terminal_job(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+    job = queue_store.enqueue("benchmark", {"manifest_path": "demo.toml"}, priority=4)
+    queue_store.cancel(job.id, reason="obsolete_manifest")
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "requeue",
+            "--config",
+            str(config_path),
+            "--job-id",
+            job.id,
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert f"Requeued: {job.id}" in result.output
+    requeued = queue_store.get_job(job.id)
+    assert requeued is not None
+    assert requeued.status.value == "queued"
+    assert requeued.priority == 4
+
+
 def test_queue_fleet_command_processes_jobs_with_auto_slot_workers(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:

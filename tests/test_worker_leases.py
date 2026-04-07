@@ -529,3 +529,27 @@ def test_enqueue_benchmark_manifest_paused_project_keeps_base_priority_breakdown
     assert job.preview.task_priority_bonus == 0
     assert job.preview.objective_relevance_bonus == 0
     assert job.preview.final_priority == 3
+
+    queue_store.pause(job.id, reason="manual_hold")
+    ControlService(tmp_path / "artifacts" / "paused-previewed").resume(
+        ProjectConfig(
+            name="demo-project",
+            project_path=project_path,
+            archon_path=archon_path,
+        )
+    )
+
+    requeued = queue_store.requeue(job.id)
+
+    assert requeued.status is QueueJobStatus.QUEUED
+    assert requeued.priority == 10
+    assert requeued.required_models == ["gpt-5.4"]
+    assert requeued.required_cost_tiers == ["premium"]
+    assert requeued.required_endpoint_classes == ["lab"]
+    assert requeued.preview is not None
+    assert requeued.preview.phase is ActionPhase.PROVER
+    assert requeued.preview.reason == "task_graph_focus"
+    assert requeued.preview.base_priority == 3
+    assert requeued.preview.task_priority_bonus == 2
+    assert requeued.preview.objective_relevance_bonus == 5
+    assert requeued.preview.final_priority == 10
