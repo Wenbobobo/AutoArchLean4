@@ -41,6 +41,9 @@ uv run archonlab project init --project-path /path/to/lean-project --archon-path
 uv run archonlab run start --config archonlab.toml --dry-run
 uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-run
 uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --use-worktrees
+uv run archonlab queue enqueue-benchmark --config archonlab.toml --manifest benchmarks/smoke.example.toml
+uv run archonlab queue run --config archonlab.toml
+uv run archonlab queue status --config archonlab.toml
 uv run archonlab control pause --config archonlab.toml --reason "manual_hold"
 uv run archonlab control hint --config archonlab.toml --text "Try `rw` before `simp`."
 uv run archonlab dashboard serve --config archonlab.toml --port 8000
@@ -61,6 +64,7 @@ uv run archonlab worktree create --repo-path /path/to/repo --name phase4-run
 而不再只是复用最早的固定启发式。
 supervisor 也会读取同一项目的近期历史事件，识别重复无进展的 loop。
 benchmark 则已经支持在隔离 `git worktree` 中运行。
+queue/batch 层已经支持 benchmark 作业排队、串行批处理、pause-aware 跳过和 job 级 artifacts。
 
 ## Workflow DSL
 

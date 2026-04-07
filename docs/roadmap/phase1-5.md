@@ -80,6 +80,7 @@
 - `control pause/resume/hint` CLI
 - workflow DSL 及规则加载器
 - dashboard 中的 pause/resume/hint 操作
+- benchmark queue / batch runner 基线
 
 ## 优先级原则
 

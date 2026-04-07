@@ -8,9 +8,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from .batch import BatchRunner
 from .config import load_config
 from .control import ControlService
 from .events import EventStore
+from .queue import QueueStore
 
 
 class PauseRequest(BaseModel):
@@ -22,10 +24,21 @@ class HintRequest(BaseModel):
     author: str = "user"
 
 
+class QueueEnqueueRequest(BaseModel):
+    manifest_path: Path
+    dry_run: bool = True
+    use_worktrees: bool = False
+
+
+class QueueCancelRequest(BaseModel):
+    reason: str | None = None
+
+
 def create_dashboard_app(config_path: Path) -> FastAPI:
     config = load_config(config_path)
     store = EventStore(config.run.artifact_root / "archonlab.db")
     control = ControlService(config.run.artifact_root)
+    queue = QueueStore(config.run.artifact_root / "archonlab.db")
     app = FastAPI(title="ArchonLab Dashboard")
 
     @app.get("/", response_class=HTMLResponse)
@@ -76,6 +89,33 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             text=body.text,
             author=body.author,
         ).model_dump(mode="json")
+
+    @app.get("/api/queue/jobs")
+    def list_queue_jobs(limit: int = 50) -> list[dict[str, Any]]:
+        return [job.model_dump(mode="json") for job in queue.list_jobs(limit=limit)]
+
+    @app.post("/api/queue/enqueue")
+    def enqueue_queue_job(body: QueueEnqueueRequest) -> list[dict[str, Any]]:
+        jobs = queue.enqueue_benchmark_manifest(
+            body.manifest_path,
+            dry_run=body.dry_run,
+            use_worktrees=body.use_worktrees,
+        )
+        return [job.model_dump(mode="json") for job in jobs]
+
+    @app.post("/api/queue/run")
+    def run_queue(max_jobs: int | None = None) -> dict[str, Any]:
+        runner = BatchRunner(
+            queue_store=queue,
+            control_service=control,
+            artifact_root=config.run.artifact_root,
+        )
+        return runner.run_pending(max_jobs=max_jobs).model_dump(mode="json")
+
+    @app.post("/api/queue/jobs/{job_id}/cancel")
+    def cancel_queue_job(job_id: str, body: QueueCancelRequest) -> dict[str, Any]:
+        job = queue.cancel(job_id, reason=body.reason)
+        return job.model_dump(mode="json")
 
     return app
 
@@ -148,7 +188,7 @@ def render_dashboard_html(project_id: str) -> str:
       }}
       .grid {{
         display: grid;
-        grid-template-columns: 340px minmax(0, 1fr);
+        grid-template-columns: 340px minmax(0, 1fr) 320px;
         gap: 18px;
         margin-top: 18px;
       }}
@@ -285,6 +325,15 @@ def render_dashboard_html(project_id: str) -> str:
           <div style="height: 10px"></div>
           <pre id="detail-json">{{}}</pre>
         </section>
+
+        <aside class="panel">
+          <h2>Queue</h2>
+          <div class="controls">
+            <button class="secondary" id="queue-run-button">Run Pending Queue</button>
+          </div>
+          <div style="height: 12px"></div>
+          <div class="list" id="queue-list"></div>
+        </aside>
       </div>
     </div>
 
@@ -295,6 +344,7 @@ def render_dashboard_html(project_id: str) -> str:
       const detailMeta = document.getElementById("detail-meta");
       const detailJson = document.getElementById("detail-json");
       const hintInput = document.getElementById("hint-input");
+      const queueList = document.getElementById("queue-list");
 
       async function fetchJson(url, options) {{
         const response = await fetch(url, options);
@@ -338,13 +388,32 @@ def render_dashboard_html(project_id: str) -> str:
         }}
       }}
 
+      function renderQueue(jobs) {{
+        if (!jobs.length) {{
+          queueList.innerHTML = '<div class="meta">No queued jobs.</div>';
+          return;
+        }}
+        queueList.innerHTML = "";
+        for (const job of jobs) {{
+          const item = document.createElement("div");
+          item.className = "run";
+          item.innerHTML = `
+            <strong>${{job.job_id}}</strong>
+            <div class="meta">${{job.status}} · ${{job.project_id}}</div>
+          `;
+          queueList.appendChild(item);
+        }}
+      }}
+
       async function refresh() {{
-        const [control, runs] = await Promise.all([
+        const [control, runs, jobs] = await Promise.all([
           fetchJson(`/api/projects/${{projectId}}/control`),
           fetchJson(`/api/runs?limit=20`),
+          fetchJson(`/api/queue/jobs?limit=20`),
         ]);
         renderControl(control);
         renderRuns(runs);
+        renderQueue(jobs);
       }}
 
       document.getElementById("pause-button").addEventListener("click", async () => {{
@@ -376,6 +445,15 @@ def render_dashboard_html(project_id: str) -> str:
           body: JSON.stringify({{ text, author: "dashboard" }}),
         }});
         hintInput.value = "";
+        await refresh();
+      }});
+
+      document.getElementById("queue-run-button").addEventListener("click", async () => {{
+        await fetchJson(`/api/queue/run`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{}}),
+        }});
         await refresh();
       }});
 

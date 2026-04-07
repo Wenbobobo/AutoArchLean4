@@ -59,6 +59,20 @@ class BenchmarkRunStatus(StrEnum):
     FAILED = "failed"
 
 
+class QueueJobKind(StrEnum):
+    BENCHMARK_PROJECT = "benchmark_project"
+
+
+class QueueJobStatus(StrEnum):
+    QUEUED = "queued"
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PAUSED = "paused"
+    CANCELED = "canceled"
+
+
 class ChecklistItem(BaseModel):
     label: str
     done: bool
@@ -337,3 +351,46 @@ class WorktreeLease(BaseModel):
     worktree_path: Path
     head_sha: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class QueueBenchmarkPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    benchmark_name: str
+    manifest_path: Path
+    project: BenchmarkProjectConfig
+    dry_run: bool = True
+    use_worktrees: bool = False
+    cleanup_worktrees: bool = True
+
+
+class QueueJob(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    batch_id: str | None = None
+    kind: QueueJobKind
+    project_id: str
+    status: QueueJobStatus
+    priority: int = 0
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    artifact_dir: Path | None = None
+    result_path: Path | None = None
+    error_message: str | None = None
+    pause_reason: str | None = None
+    cancel_reason: str | None = None
+
+    @property
+    def id(self) -> str:
+        return self.job_id
+
+
+class BatchRunReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    processed_job_ids: list[str] = Field(default_factory=list)
+    paused_job_ids: list[str] = Field(default_factory=list)

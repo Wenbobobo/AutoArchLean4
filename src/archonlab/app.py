@@ -6,13 +6,15 @@ from typing import Annotated
 
 import typer
 
+from .batch import BatchRunner
 from .benchmark import BenchmarkRunService
 from .checks import gather_doctor_report
 from .config import init_config, load_config
 from .control import ControlService
 from .dashboard import create_dashboard_app
 from .events import EventStore
-from .models import WorkflowMode, WorktreeLease
+from .models import QueueJobStatus, WorkflowMode, WorktreeLease
+from .queue import QueueStore
 from .services import RunService
 from .worktree import WorktreeManager
 
@@ -23,12 +25,14 @@ benchmark_app = typer.Typer(no_args_is_help=True)
 worktree_app = typer.Typer(no_args_is_help=True)
 control_app = typer.Typer(no_args_is_help=True)
 dashboard_app = typer.Typer(no_args_is_help=True)
+queue_app = typer.Typer(no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(run_app, name="run")
 app.add_typer(benchmark_app, name="benchmark")
 app.add_typer(worktree_app, name="worktree")
 app.add_typer(control_app, name="control")
 app.add_typer(dashboard_app, name="dashboard")
+app.add_typer(queue_app, name="queue")
 
 
 @app.command()
@@ -359,6 +363,108 @@ def dashboard_serve(
     import uvicorn
 
     uvicorn.run(create_dashboard_app(config), host=host, port=port)
+
+
+@queue_app.command("enqueue-benchmark")
+def queue_enqueue_benchmark(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    manifest: Annotated[
+        Path,
+        typer.Option("--manifest", exists=True, help="Benchmark manifest TOML."),
+    ] = Path("benchmarks/smoke.example.toml"),
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run/--execute", help="Queue dry-run benchmark jobs.")
+    ] = True,
+    use_worktrees: Annotated[
+        bool,
+        typer.Option("--use-worktrees/--direct-checkout", help="Use isolated worktrees."),
+    ] = False,
+) -> None:
+    app_config = load_config(config)
+    runner = BatchRunner(
+        queue_store=QueueStore(app_config.run.artifact_root / "archonlab.db"),
+        control_service=ControlService(app_config.run.artifact_root),
+        artifact_root=app_config.run.artifact_root,
+    )
+    jobs = runner.queue_store.enqueue_benchmark_manifest(
+        manifest,
+        dry_run=dry_run,
+        use_worktrees=use_worktrees,
+    )
+    typer.echo(f"Enqueued: {len(jobs)} jobs")
+    for job in jobs:
+        typer.echo(f"{job.id} | {job.project_id} | {job.status.value}")
+
+
+@queue_app.command("run")
+def queue_run(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    max_jobs: Annotated[
+        int | None,
+        typer.Option("--max-jobs", min=1, help="Optional maximum number of jobs to process."),
+    ] = None,
+) -> None:
+    app_config = load_config(config)
+    runner = BatchRunner(
+        queue_store=QueueStore(app_config.run.artifact_root / "archonlab.db"),
+        control_service=ControlService(app_config.run.artifact_root),
+        artifact_root=app_config.run.artifact_root,
+    )
+    report = runner.run_pending(max_jobs=max_jobs)
+    typer.echo(f"Processed: {len(report.processed_job_ids)}")
+    typer.echo(f"Paused: {len(report.paused_job_ids)}")
+
+
+@queue_app.command("status")
+def queue_status(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    limit: Annotated[
+        int, typer.Option("--limit", min=1, max=200, help="Number of jobs to show.")
+    ] = 20,
+    status: Annotated[
+        QueueJobStatus | None,
+        typer.Option("--status", case_sensitive=False, help="Optional status filter."),
+    ] = None,
+) -> None:
+    app_config = load_config(config)
+    jobs = QueueStore(app_config.run.artifact_root / "archonlab.db").list_jobs(
+        limit=limit,
+        status=status,
+    )
+    if not jobs:
+        typer.echo("No queue jobs.")
+        return
+    for job in jobs:
+        typer.echo(f"{job.id} | {job.status.value} | {job.project_id}")
+
+
+@queue_app.command("cancel")
+def queue_cancel(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    job_id: Annotated[
+        str, typer.Option("--job-id", help="Queue job identifier.")
+    ] = "",
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Optional cancellation reason.")
+    ] = None,
+) -> None:
+    if not job_id:
+        raise typer.BadParameter("--job-id is required")
+    app_config = load_config(config)
+    job = QueueStore(app_config.run.artifact_root / "archonlab.db").cancel(job_id, reason=reason)
+    typer.echo(f"Canceled: {job.id}")
 
 
 def main() -> None:
