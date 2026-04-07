@@ -200,6 +200,21 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
             "preview": preview.model_dump(mode="json"),
         }
 
+    @app.get("/api/projects/{project_id}/run-loops")
+    def get_project_run_loops(project_id: str, limit: int = 20) -> dict[str, Any]:
+        project_config = resolve_project_app_config(project_id)
+        workspace_name = workspace_config.name if workspace_config is not None else "standalone"
+        loops = store.list_run_loop_runs(
+            workspace_id=workspace_name,
+            project_id=project_config.project.name,
+            limit=limit,
+        )
+        return {
+            "project": project_config.project.name,
+            "workspace": workspace_name,
+            "loops": [loop.model_dump(mode="json") for loop in loops],
+        }
+
     @app.post("/api/projects/{project_id}/workflow")
     def set_project_workflow(project_id: str, body: WorkflowOverrideRequest) -> dict[str, Any]:
         project_config = resolve_project_app_config(project_id)
@@ -1294,6 +1309,14 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
             <div class="fact-grid" id="project-preview-supervisor"></div>
           </section>
           <section class="preview-card">
+            <h3>Latest Run Loop</h3>
+            <div class="fact-grid" id="project-latest-run-loop"></div>
+          </section>
+          <section class="preview-card">
+            <h3>Run Loop History</h3>
+            <div class="rule-list" id="project-run-loop-history"></div>
+          </section>
+          <section class="preview-card">
             <h3>Workflow Rules</h3>
             <div class="rule-list" id="project-preview-rules"></div>
           </section>
@@ -1332,6 +1355,8 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       const projectPreviewOverview = document.getElementById("project-preview-overview");
       const projectPreviewFocus = document.getElementById("project-preview-focus");
       const projectPreviewSupervisor = document.getElementById("project-preview-supervisor");
+      const projectLatestRunLoop = document.getElementById("project-latest-run-loop");
+      const projectRunLoopHistory = document.getElementById("project-run-loop-history");
       const projectPreviewRules = document.getElementById("project-preview-rules");
       const projectPreviewGraph = document.getElementById("project-preview-graph");
       const projectPreviewJson = document.getElementById("project-preview-json");
@@ -1771,6 +1796,44 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         projectPreviewJson.textContent = message;
       }}
 
+      function renderProjectRunLoops(payload) {{
+        const loops = payload.loops || [];
+        const latestLoop = loops.length ? loops[0] : null;
+        projectLatestRunLoop.innerHTML = latestLoop
+          ? renderFacts([
+              ["id", latestLoop.loop_run_id || "-"],
+              ["stop", latestLoop.stop_reason || "-"],
+              ["status", latestLoop.status || "-"],
+              [
+                "iterations",
+                `${{latestLoop.completed_iterations || 0}} / ${{latestLoop.max_iterations || 0}}`,
+              ],
+              ["runs", `${{(latestLoop.run_ids || []).length}}`],
+              ["note", latestLoop.note || "-"],
+            ])
+          : '<div class="meta">No project run loops yet.</div>';
+        projectRunLoopHistory.innerHTML = loops.length
+          ? loops.slice(0, 8).map((loop) => `
+              <div class="rule">
+                <strong>${{loop.loop_run_id || "-"}}</strong>
+                <div class="meta">
+                  stop=${{loop.stop_reason || "-"}} · status=${{loop.status || "-"}}
+                </div>
+                <div class="meta">
+                  iterations=${{loop.completed_iterations || 0}}/${{loop.max_iterations || 0}}
+                  · runs=${{(loop.run_ids || []).length}}
+                </div>
+                <div class="meta">note=${{loop.note || "-"}}</div>
+              </div>
+            `).join("")
+          : '<div class="meta">No project run loop history yet.</div>';
+      }}
+
+      function renderProjectRunLoopsError(message) {{
+        projectLatestRunLoop.innerHTML = '<div class="meta">Project run loops unavailable.</div>';
+        projectRunLoopHistory.innerHTML = `<div class="meta">${{message}}</div>`;
+      }}
+
       function renderFacts(entries) {{
         return entries.map(([label, value]) => `
           <div class="fact">
@@ -2043,17 +2106,29 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       async function refresh() {{
         const previewPromise = fetchJson(`/api/projects/${{projectId}}/preview`)
           .catch((error) => ({{ error: error.message }}));
+        const projectRunLoopsPromise = fetchJson(`/api/projects/${{projectId}}/run-loops`)
+          .catch((error) => ({{ error: error.message }}));
         const fleetPlanPromise = fetchJson(`/api/queue/fleet-plan`)
           .catch((error) => ({{ error: error.message }}));
         const workspaceOverviewPromise = fetchJson(`/api/workspace/overview`)
           .catch((error) => ({{ error: error.message }}));
-        const [control, runs, jobs, workers, projectPreview, fleetPlan, workspaceOverview] =
+        const [
+          control,
+          runs,
+          jobs,
+          workers,
+          projectPreview,
+          projectRunLoops,
+          fleetPlan,
+          workspaceOverview,
+        ] =
           await Promise.all([
           fetchJson(`/api/projects/${{projectId}}/control`),
           fetchJson(`/api/runs?limit=20`),
           fetchJson(`/api/queue/jobs?limit=20`),
           fetchJson(`/api/queue/workers`),
           previewPromise,
+          projectRunLoopsPromise,
           fleetPlanPromise,
           workspaceOverviewPromise,
         ]);
@@ -2070,6 +2145,11 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
           renderProjectPreviewError(projectPreview.error);
         }} else {{
           renderProjectPreview(projectPreview);
+        }}
+        if (projectRunLoops.error) {{
+          renderProjectRunLoopsError(projectRunLoops.error);
+        }} else {{
+          renderProjectRunLoops(projectRunLoops);
         }}
         if (workspaceOverview.error) {{
           renderWorkspaceOverviewError(workspaceOverview.error);

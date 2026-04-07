@@ -22,6 +22,7 @@ from archonlab.models import (  # noqa: E402
     ProviderPoolMemberHealth,
     ProviderPoolMemberHealthStatus,
     QueueJobPreview,
+    RunLoopResult,
     RunStatus,
     RunSummary,
     SessionStatus,
@@ -95,6 +96,21 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     archon_path = _make_archon(tmp_path)
     artifact_root = tmp_path / "artifacts"
     _seed_run(artifact_root)
+    EventStore(artifact_root / "archonlab.db").upsert_run_loop_run(
+        RunLoopResult(
+            loop_run_id="run-loop-dashboard-1",
+            session_id="session-demo-1",
+            workspace_id="standalone",
+            project_id="DemoProject",
+            status=SessionStatus.PAUSED,
+            dry_run=True,
+            max_iterations=3,
+            completed_iterations=2,
+            run_ids=["run-1"],
+            stop_reason="max_iterations_reached",
+            note="dashboard_project_history",
+        )
+    )
 
     original_connect = sqlite3.connect
 
@@ -124,6 +140,8 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     index_response = client.get("/")
     assert index_response.status_code == 200
     assert 'id="project-preview-overview"' in index_response.text
+    assert 'id="project-latest-run-loop"' in index_response.text
+    assert 'id="project-run-loop-history"' in index_response.text
     assert 'id="project-preview-rules"' in index_response.text
     assert 'id="fleet-plan-summary"' in index_response.text
     assert 'id="fleet-plan-list"' in index_response.text
@@ -164,6 +182,15 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert preview_payload["focus_task"] is not None
     assert preview_payload["workflow_rules"] == []
     assert isinstance(preview_payload["supervisor_evidence"], dict)
+
+    run_loops_response = client.get("/api/projects/DemoProject/run-loops")
+    assert run_loops_response.status_code == 200
+    run_loops_payload = run_loops_response.json()
+    assert run_loops_payload["project"] == "DemoProject"
+    assert run_loops_payload["workspace"] == "standalone"
+    assert len(run_loops_payload["loops"]) == 1
+    assert run_loops_payload["loops"][0]["loop_run_id"] == "run-loop-dashboard-1"
+    assert run_loops_payload["loops"][0]["note"] == "dashboard_project_history"
 
     workflow_override_response = client.post(
         "/api/projects/DemoProject/workflow",
@@ -691,3 +718,26 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert beta_preview["workflow"] == "fixed_loop"
     assert beta_preview["configured_workflow"] == "fixed_loop"
     assert beta_preview["preview"]["action"]["reason"] == "fixed_loop_baseline"
+
+    store.upsert_run_loop_run(
+        RunLoopResult(
+            loop_run_id="run-loop-alpha-dashboard-1",
+            session_id="session-alpha-1",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.PAUSED,
+            dry_run=True,
+            max_iterations=6,
+            completed_iterations=2,
+            run_ids=["run-alpha-1"],
+            stop_reason="quantum_complete",
+            note="workspace_project_history",
+        )
+    )
+    project_loops_response = client.get("/api/projects/alpha/run-loops")
+    assert project_loops_response.status_code == 200
+    project_loops_payload = project_loops_response.json()
+    assert project_loops_payload["project"] == "alpha"
+    assert project_loops_payload["workspace"] == "demo-workspace"
+    assert len(project_loops_payload["loops"]) == 1
+    assert project_loops_payload["loops"][0]["loop_run_id"] == "run-loop-alpha-dashboard-1"
