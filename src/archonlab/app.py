@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -9,16 +10,24 @@ import typer
 from .batch import BatchRunner
 from .benchmark import BenchmarkRunService
 from .checks import gather_doctor_report
-from .config import init_config, load_config
+from .config import (
+    build_workspace_project_app_config,
+    init_config,
+    init_workspace_config,
+    load_config,
+    load_workspace_config,
+)
 from .control import ControlService
 from .dashboard import create_dashboard_app
 from .events import EventStore
 from .models import (
     ExecutorConfig,
     ExecutorKind,
+    ProjectSession,
     ProviderConfig,
     ProviderKind,
     QueueJobStatus,
+    SessionStatus,
     WorkflowMode,
     WorktreeLease,
 )
@@ -34,6 +43,7 @@ worktree_app = typer.Typer(no_args_is_help=True)
 control_app = typer.Typer(no_args_is_help=True)
 dashboard_app = typer.Typer(no_args_is_help=True)
 queue_app = typer.Typer(no_args_is_help=True)
+workspace_app = typer.Typer(no_args_is_help=True)
 app.add_typer(project_app, name="project")
 app.add_typer(run_app, name="run")
 app.add_typer(benchmark_app, name="benchmark")
@@ -41,6 +51,7 @@ app.add_typer(worktree_app, name="worktree")
 app.add_typer(control_app, name="control")
 app.add_typer(dashboard_app, name="dashboard")
 app.add_typer(queue_app, name="queue")
+app.add_typer(workspace_app, name="workspace")
 
 
 def _parse_executor_kinds(raw: str | None) -> list[ExecutorKind]:
@@ -187,6 +198,270 @@ def project_init(
     typer.echo(f"  2. archonlab run start --config {written} --dry-run")
 
 
+@workspace_app.command("init")
+def workspace_init(
+    project_path: Annotated[
+        Path,
+        typer.Option("--project-path", exists=False, help="Initial Lean project path."),
+    ],
+    archon_path: Annotated[
+        Path,
+        typer.Option("--archon-path", exists=False, help="Archon checkout path."),
+    ],
+    config_path: Annotated[
+        Path,
+        typer.Option("--config-path", help="Output workspace config file."),
+    ] = Path("workspace.toml"),
+    workspace_name: Annotated[
+        str | None,
+        typer.Option("--name", help="Workspace name. Defaults to the initial project name."),
+    ] = None,
+    project_id: Annotated[
+        str | None,
+        typer.Option("--project-id", help="Initial workspace project identifier."),
+    ] = None,
+    artifact_root: Annotated[
+        Path,
+        typer.Option("--artifact-root", help="Workspace artifact directory."),
+    ] = Path("artifacts"),
+    workflow: Annotated[
+        WorkflowMode,
+        typer.Option("--workflow", case_sensitive=False, help="Default workflow mode."),
+    ] = WorkflowMode.ADAPTIVE_LOOP,
+    workflow_spec: Annotated[
+        Path | None,
+        typer.Option("--workflow-spec", exists=False, help="Optional workflow DSL TOML."),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run/--execute", help="Default workspace run mode.")
+    ] = True,
+    executor_kind: Annotated[
+        ExecutorKind,
+        typer.Option("--executor-kind", case_sensitive=False, help="Executor backend."),
+    ] = ExecutorKind.DRY_RUN,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Provider model or Codex model override."),
+    ] = None,
+    base_url: Annotated[
+        str | None,
+        typer.Option("--base-url", help="OpenAI-compatible base URL."),
+    ] = None,
+    api_key_env: Annotated[
+        str,
+        typer.Option("--api-key-env", help="Environment variable holding the API key."),
+    ] = "OPENAI_API_KEY",
+    codex_command: Annotated[
+        str,
+        typer.Option("--codex-command", help="Codex executable path."),
+    ] = "codex",
+    codex_profile: Annotated[
+        str | None,
+        typer.Option("--codex-profile", help="Optional Codex profile."),
+    ] = None,
+    codex_auto_approve: Annotated[
+        bool,
+        typer.Option("--codex-auto-approve", help="Allow unattended codex exec runs."),
+    ] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="Overwrite an existing config.")
+    ] = False,
+) -> None:
+    resolved_project_id = project_id or project_path.name
+    written = init_workspace_config(
+        config_path=config_path,
+        workspace_name=workspace_name or resolved_project_id,
+        project_id=resolved_project_id,
+        project_path=project_path.resolve(),
+        archon_path=archon_path.resolve(),
+        artifact_root=artifact_root,
+        workflow=workflow,
+        workflow_spec=workflow_spec.resolve() if workflow_spec is not None else None,
+        dry_run=dry_run,
+        executor=ExecutorConfig(
+            kind=executor_kind,
+            command=codex_command,
+            profile=codex_profile,
+            auto_approve=codex_auto_approve,
+        ),
+        provider=ProviderConfig(
+            model=model,
+            base_url=base_url,
+            api_key_env=api_key_env,
+        ),
+        force=force,
+    )
+    typer.echo(f"Wrote workspace config: {written}")
+    typer.echo("Next steps:")
+    typer.echo(f"  1. archonlab workspace status --config {written}")
+    typer.echo(
+        "  2. archonlab workspace start-session "
+        f"--config {written} --project-id {resolved_project_id}"
+    )
+
+
+@workspace_app.command("status")
+def workspace_status(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable JSON.")
+    ] = False,
+) -> None:
+    workspace_config = load_workspace_config(config)
+    store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+    sessions = store.list_sessions(workspace_id=workspace_config.name, limit=500)
+    project_rows = []
+    for project in workspace_config.projects:
+        project_sessions = [item for item in sessions if item.project_id == project.id]
+        running_sessions = sum(
+            1 for item in project_sessions if item.status is SessionStatus.RUNNING
+        )
+        project_rows.append(
+            {
+                "project_id": project.id,
+                "enabled": project.enabled,
+                "workflow": (
+                    project.workflow or workspace_config.run.workflow
+                ).value,
+                "dry_run": (
+                    project.dry_run
+                    if project.dry_run is not None
+                    else workspace_config.run.dry_run
+                ),
+                "session_count": len(project_sessions),
+                "running_sessions": running_sessions,
+            }
+        )
+    payload = {
+        "workspace": workspace_config.name,
+        "artifact_root": str(workspace_config.run.artifact_root),
+        "project_count": len(workspace_config.projects),
+        "session_count": len(sessions),
+        "projects": project_rows,
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"Workspace: {workspace_config.name}")
+    typer.echo(f"Artifact root: {workspace_config.run.artifact_root}")
+    typer.echo(f"Projects: {len(workspace_config.projects)}")
+    typer.echo(f"Sessions: {len(sessions)}")
+    for row in project_rows:
+        typer.echo(
+            f"{row['project_id']} | enabled={row['enabled']} | workflow={row['workflow']} | "
+            f"dry_run={row['dry_run']} | sessions={row['session_count']} | "
+            f"running={row['running_sessions']}"
+        )
+
+
+@workspace_app.command("start-session")
+def workspace_start_session(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    project_id: Annotated[
+        str,
+        typer.Option("--project-id", help="Workspace project identifier."),
+    ] = "",
+    max_iterations: Annotated[
+        int | None,
+        typer.Option("--max-iterations", min=1, help="Optional session iteration cap."),
+    ] = None,
+    dry_run: Annotated[
+        bool | None,
+        typer.Option("--dry-run/--execute", help="Override the workspace project run mode."),
+    ] = None,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", help="Optional session note."),
+    ] = None,
+) -> None:
+    if not project_id:
+        raise typer.BadParameter("--project-id is required")
+    workspace_config = load_workspace_config(config)
+    project = next(
+        (candidate for candidate in workspace_config.projects if candidate.id == project_id),
+        None,
+    )
+    if project is None:
+        raise typer.BadParameter(f"Unknown workspace project: {project_id}")
+    if not project.enabled:
+        raise typer.BadParameter(f"Workspace project is disabled: {project_id}")
+    session = ProjectSession(
+        session_id=f"session-{project_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
+        workspace_id=workspace_config.name,
+        project_id=project.id,
+        workflow=project.workflow or workspace_config.run.workflow,
+        dry_run=workspace_config.run.dry_run if dry_run is None else dry_run,
+        max_iterations=(
+            max_iterations
+            if max_iterations is not None
+            else (
+                project.max_iterations
+                if project.max_iterations is not None
+                else workspace_config.run.max_iterations
+            )
+        ),
+        note=note,
+    )
+    store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+    store.register_session(session)
+    typer.echo(f"Session: {session.session_id}")
+    typer.echo(f"Project: {session.project_id}")
+    typer.echo(f"Workflow: {session.workflow.value}")
+    typer.echo(f"Dry run: {session.dry_run}")
+    typer.echo(f"Max iterations: {session.max_iterations}")
+
+
+@workspace_app.command("run-project")
+def workspace_run_project(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    project_id: Annotated[
+        str,
+        typer.Option("--project-id", help="Workspace project identifier."),
+    ] = "",
+    max_iterations: Annotated[
+        int | None,
+        typer.Option("--max-iterations", min=1, help="Optional session iteration cap."),
+    ] = None,
+    dry_run: Annotated[
+        bool | None,
+        typer.Option("--dry-run/--execute", help="Override the project run mode."),
+    ] = None,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", help="Optional session note."),
+    ] = None,
+) -> None:
+    if not project_id:
+        raise typer.BadParameter("--project-id is required")
+    workspace_config = load_workspace_config(config)
+    app_config = build_workspace_project_app_config(
+        workspace_config,
+        project_id=project_id,
+    )
+    result = RunService(app_config).run_loop(
+        dry_run=dry_run,
+        max_iterations=max_iterations,
+        workspace_id=workspace_config.name,
+        note=note,
+    )
+    typer.echo(f"Session: {result.session_id}")
+    typer.echo(f"Project: {result.project_id}")
+    typer.echo(f"Status: {result.status.value}")
+    typer.echo(f"Completed iterations: {result.completed_iterations}")
+    typer.echo(f"Stop reason: {result.stop_reason}")
+    typer.echo(f"Runs: {len(result.run_ids)}")
+
+
 @run_app.command("start")
 def run_start(
     config: Annotated[
@@ -256,6 +531,38 @@ def run_status(
             f"{run.run_id} | {run.status.value} | {run.workflow.value} | "
             f"stage={run.stage} | dry_run={run.dry_run}"
         )
+
+
+@run_app.command("loop")
+def run_loop(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    max_iterations: Annotated[
+        int | None,
+        typer.Option("--max-iterations", min=1, help="Optional iteration cap."),
+    ] = None,
+    dry_run: Annotated[
+        bool | None,
+        typer.Option("--dry-run/--execute", help="Override the configured run mode."),
+    ] = None,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", help="Optional session note."),
+    ] = None,
+) -> None:
+    app_config = load_config(config)
+    result = RunService(app_config).run_loop(
+        dry_run=dry_run,
+        max_iterations=max_iterations,
+        note=note,
+    )
+    typer.echo(f"Session: {result.session_id}")
+    typer.echo(f"Status: {result.status.value}")
+    typer.echo(f"Completed iterations: {result.completed_iterations}")
+    typer.echo(f"Stop reason: {result.stop_reason}")
+    typer.echo(f"Runs: {len(result.run_ids)}")
 
 
 @benchmark_app.command("run")

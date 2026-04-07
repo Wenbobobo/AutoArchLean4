@@ -11,16 +11,21 @@ from .events import EventStore
 from .execution_policy import resolve_app_phase_configs
 from .executors import create_executor
 from .models import (
+    ActionPhase,
     AppConfig,
     ControlState,
     EventRecord,
     ExecutionCapability,
     ExecutionRequest,
     ExecutionStatus,
+    ProjectSession,
+    RunLoopResult,
     RunPreview,
     RunResult,
     RunStatus,
     RunSummary,
+    SessionIteration,
+    SessionStatus,
     SupervisorAction,
     SupervisorDecision,
     SupervisorReason,
@@ -339,6 +344,102 @@ class RunService:
             execution=execution_result,
         )
 
+    def run_loop(
+        self,
+        *,
+        dry_run: bool | None = None,
+        max_iterations: int | None = None,
+        workspace_id: str = "standalone",
+        session_id: str | None = None,
+        note: str | None = None,
+    ) -> RunLoopResult:
+        actual_dry_run = self.config.run.dry_run if dry_run is None else dry_run
+        session = self.event_store.get_session(session_id) if session_id is not None else None
+        if session is None:
+            session = ProjectSession(
+                session_id=session_id or self._new_session_id(),
+                workspace_id=workspace_id,
+                project_id=self.config.project.name,
+                workflow=self.config.run.workflow,
+                dry_run=actual_dry_run,
+                max_iterations=max_iterations or self.config.run.max_iterations,
+                note=note,
+            )
+            self.event_store.register_session(session)
+        limit = max_iterations or session.max_iterations
+        session = self.event_store.update_session(
+            session.session_id,
+            status=SessionStatus.RUNNING,
+            note=note,
+        )
+        run_ids: list[str] = []
+        stop_reason = "max_iterations_reached"
+        iteration_index = session.completed_iterations
+        try:
+            while iteration_index < limit:
+                result = self.start(dry_run=actual_dry_run)
+                iteration_index += 1
+                run_ids.append(result.run_id)
+                self.event_store.append_session_iteration(
+                    SessionIteration(
+                        session_id=session.session_id,
+                        iteration_index=iteration_index,
+                        project_id=self.config.project.name,
+                        run_id=result.run_id,
+                        status=result.status,
+                        action_phase=(
+                            result.action.phase
+                            if isinstance(result.action.phase, ActionPhase)
+                            else ActionPhase(str(result.action.phase))
+                        ),
+                        action_reason=result.action.reason,
+                        finished_at=datetime.now(UTC),
+                    )
+                )
+                terminal_status = (
+                    SessionStatus.COMPLETED
+                    if str(result.action.phase) == ActionPhase.STOP.value
+                    else (
+                        SessionStatus.PAUSED
+                        if iteration_index >= limit
+                        else SessionStatus.RUNNING
+                    )
+                )
+                if terminal_status is SessionStatus.COMPLETED:
+                    stop_reason = f"stop:{result.action.reason}"
+                elif terminal_status is SessionStatus.PAUSED:
+                    stop_reason = "max_iterations_reached"
+                session = self.event_store.update_session(
+                    session.session_id,
+                    status=terminal_status,
+                    completed_iterations=iteration_index,
+                    last_run_id=result.run_id,
+                    note=note,
+                )
+                if terminal_status is not SessionStatus.RUNNING:
+                    break
+        except Exception as exc:
+            session = self.event_store.update_session(
+                session.session_id,
+                status=SessionStatus.FAILED,
+                completed_iterations=iteration_index,
+                error_message=str(exc),
+                note=note,
+            )
+            stop_reason = "run_failed"
+            raise
+        return RunLoopResult(
+            session_id=session.session_id,
+            workspace_id=session.workspace_id,
+            project_id=session.project_id,
+            status=session.status,
+            dry_run=session.dry_run,
+            max_iterations=limit,
+            completed_iterations=session.completed_iterations,
+            run_ids=run_ids,
+            stop_reason=stop_reason,
+        )
+
     def preview(self) -> RunPreview:
         self.adapter.ensure_valid()
         progress = self.adapter.read_progress()
@@ -446,3 +547,8 @@ class RunService:
     def _new_run_id() -> str:
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         return f"run-{timestamp}-{uuid.uuid4().hex[:8]}"
+
+    @staticmethod
+    def _new_session_id() -> str:
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        return f"session-{timestamp}-{uuid.uuid4().hex[:8]}"

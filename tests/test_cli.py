@@ -8,12 +8,15 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from archonlab.app import app
+from archonlab.events import EventStore
 from archonlab.models import (
     ActionPhase,
     BatchRunReport,
     ExecutorKind,
+    ProjectSession,
     ProviderKind,
     QueueJobPreview,
+    SessionStatus,
     SupervisorAction,
     SupervisorReason,
 )
@@ -59,6 +62,124 @@ def test_project_init_command_writes_config(tmp_path: Path) -> None:
     assert (tmp_path / "archonlab.toml").exists()
 
 
+def test_workspace_init_command_writes_config(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "init",
+            "--name",
+            "demo-workspace",
+            "--project-id",
+            "alpha",
+            "--project-path",
+            str(tmp_path / "LeanProject"),
+            "--archon-path",
+            str(tmp_path / "Archon"),
+            "--config-path",
+            str(tmp_path / "workspace.toml"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (tmp_path / "workspace.toml").exists()
+
+
+def test_workspace_status_and_start_session_commands(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 10\n\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    store.register_session(
+        ProjectSession(
+            session_id="session-demo-project-1",
+            workspace_id="demo-workspace",
+            project_id="demo-project",
+            status=SessionStatus.RUNNING,
+            max_iterations=10,
+        )
+    )
+
+    status_result = runner.invoke(
+        app,
+        ["workspace", "status", "--config", str(config_path)],
+    )
+    start_result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "start-session",
+            "--config",
+            str(config_path),
+            "--project-id",
+            "demo-project",
+            "--max-iterations",
+            "3",
+        ],
+    )
+
+    assert status_result.exit_code == 0
+    assert "Workspace: demo-workspace" in status_result.output
+    assert "demo-project | enabled=True" in status_result.output
+    assert "sessions=1 | running=1" in status_result.output
+    assert start_result.exit_code == 0
+    assert "Session: session-demo-project-" in start_result.output
+
+
+def test_workspace_run_project_command_executes_loop(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "run-project",
+            "--config",
+            str(config_path),
+            "--project-id",
+            "demo-project",
+            "--max-iterations",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Project: demo-project" in result.output
+    assert "Completed iterations: 2" in result.output
+
+
 def test_run_start_creates_artifacts(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:
@@ -86,6 +207,40 @@ def test_run_start_creates_artifacts(
     run_dir = run_dirs[0]
     assert (run_dir / "task-graph.json").exists()
     assert (run_dir / "supervisor.json").exists()
+
+
+def test_run_loop_command_creates_session_iterations(
+    tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
+) -> None:
+    config_path = tmp_path / "archonlab.toml"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{tmp_path / "artifacts"}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "loop",
+            "--config",
+            str(config_path),
+            "--max-iterations",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Session: session-" in result.output
+    assert "Completed iterations: 2" in result.output
 
 
 def test_benchmark_run_creates_summary(

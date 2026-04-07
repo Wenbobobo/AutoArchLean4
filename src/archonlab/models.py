@@ -95,6 +95,15 @@ class WorkerStatus(StrEnum):
     FAILED = "failed"
 
 
+class SessionStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
 class ChecklistItem(BaseModel):
     label: str
     done: bool
@@ -113,6 +122,29 @@ class ProjectConfig(BaseModel):
     project_path: Path
     archon_path: Path
     backend: str = "archon"
+
+
+class WorkspaceProjectConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    project_path: Path
+    archon_path: Path
+    workflow: WorkflowMode | None = None
+    workflow_spec: Path | None = None
+    max_iterations: int | None = None
+    dry_run: bool | None = None
+    backend: str = "archon"
+    enabled: bool = True
+    tags: list[str] = Field(default_factory=list)
+
+    def as_project_config(self) -> ProjectConfig:
+        return ProjectConfig(
+            name=self.id,
+            project_path=self.project_path,
+            archon_path=self.archon_path,
+            backend=self.backend,
+        )
 
 
 class ProviderConfig(BaseModel):
@@ -163,6 +195,17 @@ class AppConfig(BaseModel):
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     execution_policy: ExecutionPolicy = Field(default_factory=lambda: ExecutionPolicy())
+
+
+class WorkspaceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    run: RunConfig
+    executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
+    provider: ProviderConfig = Field(default_factory=ProviderConfig)
+    execution_policy: ExecutionPolicy = Field(default_factory=lambda: ExecutionPolicy())
+    projects: list[WorkspaceProjectConfig] = Field(default_factory=list)
 
 
 class ExecutionCapability(BaseModel):
@@ -407,6 +450,20 @@ class RunResult(BaseModel):
     execution: ExecutionResult | None = None
 
 
+class RunLoopResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    workspace_id: str
+    project_id: str
+    status: SessionStatus
+    dry_run: bool
+    max_iterations: int
+    completed_iterations: int
+    run_ids: list[str] = Field(default_factory=list)
+    stop_reason: str
+
+
 class RunPreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -640,6 +697,45 @@ class ControlState(BaseModel):
     workflow_spec_override: Path | None = None
     clear_workflow_spec: bool = False
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ProjectSession(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    workspace_id: str
+    project_id: str
+    status: SessionStatus = SessionStatus.PENDING
+    workflow: WorkflowMode = WorkflowMode.ADAPTIVE_LOOP
+    dry_run: bool = True
+    max_iterations: int = 10
+    completed_iterations: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    last_run_id: str | None = None
+    error_message: str | None = None
+    note: str | None = None
+
+    @property
+    def id(self) -> str:
+        return self.session_id
+
+
+class SessionIteration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    iteration_index: int
+    project_id: str
+    run_id: str | None = None
+    status: RunStatus = RunStatus.STARTED
+    action_phase: ActionPhase | None = None
+    action_reason: str | None = None
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    finished_at: datetime | None = None
+    error_message: str | None = None
 
 
 class WorktreeLease(BaseModel):
