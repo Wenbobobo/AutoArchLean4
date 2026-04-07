@@ -211,6 +211,7 @@ class QueueStore:
         workspace_config_path: Path,
         *,
         project_ids: list[str] | None = None,
+        project_tags: list[str] | None = None,
         max_iterations: int | None = None,
         dry_run: bool | None = None,
         priority: int = 0,
@@ -222,12 +223,15 @@ class QueueStore:
         workspace_config = load_workspace_config(resolved_workspace_config_path)
         event_store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
         selected_project_ids = set(project_ids) if project_ids is not None else None
+        selected_project_tags = set(project_tags) if project_tags is not None else None
         batch_id = self._new_batch_id()
         jobs: list[QueueJob] = []
         for project in workspace_config.projects:
-            if not project.enabled:
-                continue
-            if selected_project_ids is not None and project.id not in selected_project_ids:
+            if not self._workspace_project_matches(
+                project,
+                selected_project_ids=selected_project_ids,
+                selected_project_tags=selected_project_tags,
+            ):
                 continue
             latest_session = self._latest_workspace_session(
                 workspace_id=workspace_config.name,
@@ -384,6 +388,7 @@ class QueueStore:
         workspace_config_path: Path,
         *,
         project_ids: list[str] | None = None,
+        project_tags: list[str] | None = None,
         max_iterations: int | None = None,
         priority: int = 0,
         resume_reason: str | None = None,
@@ -395,11 +400,14 @@ class QueueStore:
         workspace_config = load_workspace_config(resolved_workspace_config_path)
         event_store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
         selected_project_ids = set(project_ids) if project_ids is not None else None
+        selected_project_tags = set(project_tags) if project_tags is not None else None
         result = WorkspaceSessionResumeResult()
         for project in workspace_config.projects:
-            if not project.enabled:
-                continue
-            if selected_project_ids is not None and project.id not in selected_project_ids:
+            if not self._workspace_project_matches(
+                project,
+                selected_project_ids=selected_project_ids,
+                selected_project_tags=selected_project_tags,
+            ):
                 continue
             session = self._latest_workspace_session(
                 workspace_id=workspace_config.name,
@@ -488,6 +496,21 @@ class QueueStore:
             required_endpoint_classes=requirements["required_endpoint_classes"],
             preview=requirements["preview"],
         )
+
+    @staticmethod
+    def _workspace_project_matches(
+        project: WorkspaceProjectConfig,
+        *,
+        selected_project_ids: set[str] | None,
+        selected_project_tags: set[str] | None,
+    ) -> bool:
+        if not project.enabled:
+            return False
+        if selected_project_ids is not None and project.id not in selected_project_ids:
+            return False
+        if selected_project_tags is None:
+            return True
+        return selected_project_tags.issubset(set(project.tags))
 
     def enqueue_benchmark_manifest(
         self,

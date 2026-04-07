@@ -520,6 +520,203 @@ def test_workspace_run_command_selects_subprocess_launcher(
     assert captured["launcher_type"] == "FakeLauncher"
 
 
+def test_workspace_loop_command_selects_subprocess_launcher(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_cli_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+
+    class FakeLauncher:
+        pass
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "archonlab.app.create_worker_launcher",
+        lambda kind, config_path: (
+            captured.update({"kind": kind, "config_path": config_path}) or FakeLauncher()
+        ),
+    )
+
+    def fake_run(self, **kwargs) -> object:
+        captured["launcher_type"] = type(self.worker_launcher).__name__
+        captured.update(kwargs)
+        return self.result_model(
+            cycles_completed=1,
+            stop_reason="max_cycles_reached",
+            total_processed_jobs=2,
+            total_paused_jobs=0,
+            total_failed_jobs=0,
+            total_workers_launched=1,
+            cycles=[],
+        )
+
+    monkeypatch.setattr("archonlab.app.WorkspaceLoopController.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "loop",
+            "--config",
+            str(config_path),
+            "--launcher",
+            "subprocess",
+            "--max-cycles",
+            "2",
+            "--fleet-max-cycles",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["kind"] == "subprocess"
+    assert captured["config_path"] == config_path
+    assert captured["launcher_type"] == "FakeLauncher"
+    assert captured["max_cycles"] == 2
+    assert captured["fleet_max_cycles"] == 3
+    assert "Stop reason: max_cycles_reached" in result.output
+    assert "Processed: 2" in result.output
+
+
+def test_workspace_loop_command_passes_tag_filters(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = tmp_path / "workspace.toml"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n"
+        "max_parallel = 2\n\n"
+        "[[projects]]\n"
+        'id = "alpha"\n'
+        'tags = ["core"]\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[[projects]]\n"
+        'id = "beta"\n'
+        'tags = ["geometry", "batch"]\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run(self, **kwargs) -> object:
+        captured.update(kwargs)
+        return self.result_model(
+            cycles_completed=1,
+            stop_reason="idle_cycles_exhausted",
+            total_scheduled_jobs=1,
+            total_processed_jobs=0,
+            total_paused_jobs=0,
+            total_failed_jobs=0,
+            total_workers_launched=0,
+            cycles=[],
+        )
+
+    monkeypatch.setattr("archonlab.app.WorkspaceLoopController.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "loop",
+            "--config",
+            str(config_path),
+            "--tag",
+            "geometry",
+            "--tag",
+            "batch",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["project_tags"] == ["geometry", "batch"]
+
+
+def test_workspace_run_command_filters_projects_by_tags(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = tmp_path / "workspace.toml"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n"
+        "max_parallel = 2\n\n"
+        "[[projects]]\n"
+        'id = "alpha"\n'
+        'tags = ["core"]\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[[projects]]\n"
+        'id = "beta"\n'
+        'tags = ["geometry", "batch"]\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "archonlab.app.FleetController.run",
+        lambda self, **kwargs: self.result_model(
+            cycles_completed=1,
+            stop_reason="queue_drained",
+            total_processed_jobs=1,
+            total_paused_jobs=0,
+            total_failed_jobs=0,
+            total_workers_launched=1,
+            cycles=[],
+            final_plan=self.queue_store.plan_fleet(),
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "run",
+            "--config",
+            str(config_path),
+            "--tag",
+            "geometry",
+            "--tag",
+            "batch",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Enqueued sessions: 1" in result.output
+    jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
+    assert len(jobs) == 1
+    assert jobs[0].project_id == "beta"
+
+
 def test_run_start_creates_artifacts(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:
@@ -1262,6 +1459,55 @@ def test_queue_enqueue_workspace_and_session_status_commands(
     assert "pending" in status_result.output
 
 
+def test_queue_enqueue_workspace_command_filters_projects_by_tags(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n\n"
+        "[[projects]]\n"
+        'id = "alpha"\n'
+        'tags = ["core", "batch"]\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[[projects]]\n"
+        'id = "beta"\n'
+        'tags = ["core"]\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "enqueue-workspace",
+            "--config",
+            str(config_path),
+            "--tag",
+            "core",
+            "--tag",
+            "batch",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Enqueued sessions: 1" in result.output
+    jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
+    assert len(jobs) == 1
+    assert jobs[0].project_id == "alpha"
+
+
 def test_queue_resume_session_command_extends_budget_and_enqueues_quantum(
     tmp_path: Path,
     fake_archon_project: Path,
@@ -1419,6 +1665,90 @@ def test_queue_resume_workspace_command_resumes_workspace_sessions(
     jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
     assert len(jobs) == 2
     assert {job.session_id for job in jobs} == {"session-alpha-1", "session-beta-1"}
+
+
+def test_queue_resume_workspace_command_filters_projects_by_tags(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n\n"
+        "[[projects]]\n"
+        'id = "alpha"\n'
+        'tags = ["core"]\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[[projects]]\n"
+        'id = "beta"\n'
+        'tags = ["geometry", "batch"]\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    store.register_session(
+        ProjectSession(
+            session_id="session-alpha-1",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.PAUSED,
+            max_iterations=1,
+            completed_iterations=1,
+            last_stop_reason="max_iterations_reached",
+        )
+    )
+    store.register_session(
+        ProjectSession(
+            session_id="session-beta-1",
+            workspace_id="demo-workspace",
+            project_id="beta",
+            status=SessionStatus.FAILED,
+            max_iterations=2,
+            completed_iterations=1,
+            error_message="executor failed",
+            last_stop_reason="run_failed",
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "resume-workspace",
+            "--config",
+            str(config_path),
+            "--tag",
+            "geometry",
+            "--tag",
+            "batch",
+            "--resume-reason",
+            "tagged_recover",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Resumed sessions: 1" in result.output
+    assert "project=beta" in result.output
+    assert "project=alpha" not in result.output
+    alpha = store.get_session("session-alpha-1")
+    beta = store.get_session("session-beta-1")
+    assert alpha is not None
+    assert beta is not None
+    assert alpha.status is SessionStatus.PAUSED
+    assert beta.status is SessionStatus.PENDING
+    assert beta.last_resume_reason == "tagged_recover"
+    jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
+    assert len(jobs) == 1
+    assert jobs[0].project_id == "beta"
 
 
 def test_queue_resume_session_command_resumes_control_paused_session_without_budget_extension(

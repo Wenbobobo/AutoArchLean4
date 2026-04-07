@@ -1380,6 +1380,31 @@ class FleetControllerResult(BaseModel):
     final_plan: QueueFleetPlan = Field(default_factory=QueueFleetPlan)
 
 
+class WorkspaceLoopCycle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cycle_index: int
+    plan: QueueFleetPlan = Field(default_factory=QueueFleetPlan)
+    scheduled_job_ids: list[str] = Field(default_factory=list)
+    scheduled_session_ids: list[str] = Field(default_factory=list)
+    fleet_result: FleetControllerResult | None = None
+
+
+class WorkspaceLoopResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    finished_at: datetime | None = None
+    cycles_completed: int = 0
+    stop_reason: str = "unknown"
+    total_scheduled_jobs: int = 0
+    total_processed_jobs: int = 0
+    total_paused_jobs: int = 0
+    total_failed_jobs: int = 0
+    total_workers_launched: int = 0
+    cycles: list[WorkspaceLoopCycle] = Field(default_factory=list)
+
+
 class ExecutionPhaseOverride(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

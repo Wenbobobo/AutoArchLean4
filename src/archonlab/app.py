@@ -43,6 +43,7 @@ from .models import (
 )
 from .queue import QueueStore
 from .services import RunService
+from .workspace_loop import WorkspaceLoopController
 from .worktree import WorktreeManager
 
 app = typer.Typer(no_args_is_help=True, help="archonlab external orchestrator control plane")
@@ -519,6 +520,13 @@ def workspace_run(
         str | None,
         typer.Option("--project-id", help="Optional workspace project filter."),
     ] = None,
+    tags: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tag",
+            help="Repeat to target projects containing all specified workspace tags.",
+        ),
+    ] = None,
     max_iterations: Annotated[
         int | None,
         typer.Option("--max-iterations", min=1, help="Optional session iteration cap."),
@@ -604,6 +612,7 @@ def workspace_run(
     jobs = queue_store.enqueue_workspace_sessions(
         config,
         project_ids=[project_id] if project_id is not None else None,
+        project_tags=tags,
         max_iterations=max_iterations,
         dry_run=dry_run,
         priority=priority,
@@ -644,6 +653,159 @@ def workspace_run(
     )
     typer.echo(f"Cycles: {result.cycles_completed}")
     typer.echo(f"Stop reason: {result.stop_reason}")
+    typer.echo(f"Processed: {result.total_processed_jobs}")
+    typer.echo(f"Paused: {result.total_paused_jobs}")
+    typer.echo(f"Failed: {result.total_failed_jobs}")
+    typer.echo(f"Workers launched: {result.total_workers_launched}")
+
+
+@workspace_app.command("loop")
+def workspace_loop(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    project_id: Annotated[
+        str | None,
+        typer.Option("--project-id", help="Optional workspace project filter."),
+    ] = None,
+    tags: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tag",
+            help="Repeat to target projects containing all specified workspace tags.",
+        ),
+    ] = None,
+    max_iterations: Annotated[
+        int | None,
+        typer.Option("--max-iterations", min=1, help="Optional session iteration cap."),
+    ] = None,
+    dry_run: Annotated[
+        bool | None,
+        typer.Option("--dry-run/--execute", help="Override the workspace project run mode."),
+    ] = None,
+    priority: Annotated[
+        int,
+        typer.Option("--priority", help="Base queue priority for created session jobs."),
+    ] = 0,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", help="Optional session note."),
+    ] = None,
+    max_cycles: Annotated[
+        int,
+        typer.Option("--max-cycles", min=1, help="Maximum workspace control cycles."),
+    ] = 10,
+    idle_cycles: Annotated[
+        int,
+        typer.Option(
+            "--idle-cycles",
+            min=1,
+            help="Stop after this many consecutive workspace idle cycles.",
+        ),
+    ] = 1,
+    sleep_seconds: Annotated[
+        float,
+        typer.Option(
+            "--sleep-seconds",
+            min=0.0,
+            help="Optional delay between workspace control cycles.",
+        ),
+    ] = 0.0,
+    fleet_max_cycles: Annotated[
+        int,
+        typer.Option("--fleet-max-cycles", min=1, help="Maximum autoscaling cycles per tick."),
+    ] = 10,
+    fleet_idle_cycles: Annotated[
+        int,
+        typer.Option(
+            "--fleet-idle-cycles",
+            min=1,
+            help="Stop a fleet tick after this many consecutive no-progress cycles.",
+        ),
+    ] = 1,
+    workers: Annotated[
+        int | None,
+        typer.Option(
+            "--workers",
+            min=1,
+            help="Optional cap on workers launched per fleet tick.",
+        ),
+    ] = None,
+    target_jobs_per_worker: Annotated[
+        int,
+        typer.Option(
+            "--target-jobs-per-worker",
+            min=1,
+            help="Heuristic queue load assigned to each planned worker profile.",
+        ),
+    ] = 2,
+    max_jobs_per_worker: Annotated[
+        int | None,
+        typer.Option(
+            "--max-jobs-per-worker",
+            min=1,
+            help="Optional maximum jobs processed by each worker in a tick.",
+        ),
+    ] = None,
+    poll_seconds: Annotated[
+        float,
+        typer.Option("--poll-seconds", min=0.1, help="Polling interval when the queue is empty."),
+    ] = 2.0,
+    idle_timeout_seconds: Annotated[
+        float,
+        typer.Option(
+            "--idle-timeout-seconds",
+            min=0.1,
+            help="Stop each launched worker after this many idle seconds.",
+        ),
+    ] = 30.0,
+    stale_after_seconds: Annotated[
+        float | None,
+        typer.Option(
+            "--stale-after-seconds",
+            min=0.1,
+            help="Ignore or reap active workers older than this heartbeat age.",
+        ),
+    ] = 120.0,
+    launcher: Annotated[
+        str,
+        typer.Option(
+            "--launcher",
+            help="Worker launcher kind used by autoscaling control cycles.",
+        ),
+    ] = "in_process",
+) -> None:
+    try:
+        worker_launcher = create_worker_launcher(launcher, config)
+    except ValueError as error:
+        raise typer.BadParameter(_exception_message(error), param_hint="--launcher") from error
+
+    result = WorkspaceLoopController(
+        config,
+        worker_launcher=worker_launcher,
+    ).run(
+        project_id=project_id,
+        project_tags=tags,
+        max_iterations=max_iterations,
+        dry_run=dry_run,
+        priority=priority,
+        note=note,
+        max_cycles=max_cycles,
+        idle_cycles=idle_cycles,
+        sleep_seconds=sleep_seconds,
+        fleet_max_cycles=fleet_max_cycles,
+        fleet_idle_cycles=fleet_idle_cycles,
+        workers=workers,
+        target_jobs_per_worker=target_jobs_per_worker,
+        max_jobs_per_worker=max_jobs_per_worker,
+        queue_poll_seconds=poll_seconds,
+        queue_idle_timeout_seconds=idle_timeout_seconds,
+        stale_after_seconds=stale_after_seconds,
+    )
+    typer.echo(f"Cycles: {result.cycles_completed}")
+    typer.echo(f"Stop reason: {result.stop_reason}")
+    typer.echo(f"Scheduled jobs: {result.total_scheduled_jobs}")
     typer.echo(f"Processed: {result.total_processed_jobs}")
     typer.echo(f"Paused: {result.total_paused_jobs}")
     typer.echo(f"Failed: {result.total_failed_jobs}")
@@ -1262,6 +1424,13 @@ def queue_enqueue_workspace(
         str | None,
         typer.Option("--project-id", help="Optional project filter."),
     ] = None,
+    tags: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tag",
+            help="Repeat to target projects containing all specified workspace tags.",
+        ),
+    ] = None,
     max_iterations: Annotated[
         int | None,
         typer.Option("--max-iterations", min=1, help="Optional session iteration cap."),
@@ -1280,6 +1449,7 @@ def queue_enqueue_workspace(
     jobs = queue_store.enqueue_workspace_sessions(
         config,
         project_ids=[project_id] if project_id is not None else None,
+        project_tags=tags,
         max_iterations=max_iterations,
         priority=priority,
         note=note,
@@ -2094,6 +2264,13 @@ def queue_resume_workspace(
         str | None,
         typer.Option("--project-id", help="Optional project filter."),
     ] = None,
+    tags: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tag",
+            help="Repeat to target projects containing all specified workspace tags.",
+        ),
+    ] = None,
     max_iterations: Annotated[
         int | None,
         typer.Option(
@@ -2120,6 +2297,7 @@ def queue_resume_workspace(
     result = queue_store.resume_workspace_sessions(
         config,
         project_ids=[project_id] if project_id is not None else None,
+        project_tags=tags,
         max_iterations=max_iterations,
         priority=priority,
         resume_reason=resume_reason,

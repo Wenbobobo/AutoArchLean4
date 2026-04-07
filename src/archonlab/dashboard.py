@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .batch import BatchRunner
 from .config import build_workspace_project_app_config, load_config, load_workspace_config
@@ -75,6 +75,7 @@ class QueueSweepWorkersRequest(BaseModel):
 
 class WorkspaceEnqueueRequest(BaseModel):
     project_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
     max_iterations: int | None = None
     dry_run: bool | None = None
     priority: int = 0
@@ -83,6 +84,7 @@ class WorkspaceEnqueueRequest(BaseModel):
 
 class WorkspaceResumeRequest(BaseModel):
     project_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
     max_iterations: int | None = None
     priority: int = 0
     resume_reason: str | None = None
@@ -274,6 +276,7 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
         jobs = queue.enqueue_workspace_sessions(
             resolved_config_path,
             project_ids=[body.project_id] if body.project_id is not None else None,
+            project_tags=body.tags or None,
             max_iterations=body.max_iterations,
             dry_run=body.dry_run,
             priority=body.priority,
@@ -294,6 +297,7 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
         result = queue.resume_workspace_sessions(
             resolved_config_path,
             project_ids=[body.project_id] if body.project_id is not None else None,
+            project_tags=body.tags or None,
             max_iterations=body.max_iterations,
             priority=body.priority,
             resume_reason=body.resume_reason,
@@ -469,6 +473,7 @@ def _build_workspace_overview(
         sessions = store.list_sessions(workspace_id=workspace_name, limit=limit_sessions)
 
     project_ids = {project.id for project in project_rows}
+    project_tags = {project.id: list(project.tags) for project in project_rows}
     jobs = [
         job
         for job in queue.list_jobs(limit=200)
@@ -487,6 +492,7 @@ def _build_workspace_overview(
                     session.max_iterations - session.completed_iterations,
                     0,
                 ),
+                "tags": project_tags.get(session.project_id, []),
             }
         )
 
@@ -499,6 +505,7 @@ def _build_workspace_overview(
                 "project_id": project.id,
                 "enabled": project.enabled,
                 "workflow": (project.workflow or config.run.workflow).value,
+                "tags": list(project.tags),
                 "dry_run": (
                     project.dry_run
                     if project.dry_run is not None
@@ -560,6 +567,7 @@ def _build_workspace_overview(
                     session.max_iterations - session.completed_iterations,
                     0,
                 ),
+                "tags": project_tags.get(session.project_id, []),
             }
             for session in sessions
         ],

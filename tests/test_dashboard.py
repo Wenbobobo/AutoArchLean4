@@ -403,10 +403,12 @@ def test_dashboard_workspace_overview_and_project_switching(
         'model = "gpt-5.4"\n\n'
         "[[projects]]\n"
         'id = "alpha"\n'
+        'tags = ["core", "batch"]\n'
         f'project_path = "{alpha_project}"\n'
         f'archon_path = "{archon_path}"\n\n'
         "[[projects]]\n"
         'id = "beta"\n'
+        'tags = ["geometry"]\n'
         f'project_path = "{beta_project}"\n'
         f'archon_path = "{archon_path}"\n'
         'workflow = "fixed_loop"\n'
@@ -561,6 +563,9 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert beta_summary["max_iterations"] == 4
     assert beta_summary["session_count"] == 1
     assert beta_summary["queued_jobs"] == 0
+    assert beta_summary["tags"] == ["geometry"]
+    alpha_summary = next(item for item in overview["projects"] if item["project_id"] == "alpha")
+    assert alpha_summary["tags"] == ["core", "batch"]
     assert overview["provider_runtime"][0]["pool_name"] == "lab"
     assert overview["provider_runtime"][0]["success_count"] == 1
     assert overview["provider_runtime"][0]["members"][0]["member_name"] == "member-a"
@@ -569,6 +574,16 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert overview["provider_health"][0]["members"][1]["status"] == "quarantined"
     alpha_session = next(item for item in overview["sessions"] if item["project_id"] == "alpha")
     assert alpha_session["remaining_iterations"] == 4
+    assert alpha_session["tags"] == ["core", "batch"]
+
+    tagged_enqueue_response = client.post(
+        "/api/workspace/enqueue",
+        json={"tags": ["geometry"]},
+    )
+    assert tagged_enqueue_response.status_code == 200
+    tagged_enqueue_payload = tagged_enqueue_response.json()
+    assert len(tagged_enqueue_payload) == 1
+    assert tagged_enqueue_payload[0]["project_id"] == "beta"
 
     enqueue_response = client.post(
         "/api/workspace/enqueue",
