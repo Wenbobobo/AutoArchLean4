@@ -19,6 +19,7 @@ from .models import (
     ActionPhase,
     AppConfig,
     ExecutorKind,
+    LeanAnalysisSnapshot,
     ProviderKind,
     QueueJob,
     RunPreview,
@@ -193,6 +194,7 @@ def create_dashboard_app(config_path: Path) -> FastAPI:
                 if workflow_spec is not None
                 else None
             ),
+            "analysis_summary": _summarize_analysis(preview.analysis),
             "task_graph_summary": _summarize_task_graph(preview.task_graph),
             "focus_task": _summarize_focus_task(preview),
             "workflow_rules": _summarize_workflow_rules(workflow_spec),
@@ -697,6 +699,28 @@ def _summarize_task_graph(task_graph: TaskGraph) -> dict[str, int]:
         "completed_nodes": sum(
             1 for node in task_graph.nodes if node.status is TaskStatus.COMPLETED
         ),
+    }
+
+
+def _summarize_analysis(analysis: LeanAnalysisSnapshot) -> dict[str, Any]:
+    proof_gaps = [
+        gap.kind
+        for gap in analysis.proof_gaps[:3]
+    ]
+    diagnostics = [
+        diagnostic.code or diagnostic.severity
+        for diagnostic in analysis.diagnostics[:3]
+    ]
+    return {
+        "backend": analysis.backend,
+        "fallback_used": analysis.fallback_used,
+        "fallback_reason": analysis.fallback_reason,
+        "theorem_count": analysis.theorem_count,
+        "declaration_count": len(analysis.declarations),
+        "proof_gap_count": len(analysis.proof_gaps),
+        "diagnostic_count": len(analysis.diagnostics),
+        "top_proof_gaps": proof_gaps,
+        "top_diagnostics": diagnostics,
     }
 
 
@@ -1309,6 +1333,10 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
             <div class="fact-grid" id="project-preview-supervisor"></div>
           </section>
           <section class="preview-card">
+            <h3>Lean Analysis</h3>
+            <div class="fact-grid" id="project-preview-analysis"></div>
+          </section>
+          <section class="preview-card">
             <h3>Latest Run Loop</h3>
             <div class="fact-grid" id="project-latest-run-loop"></div>
           </section>
@@ -1355,6 +1383,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
       const projectPreviewOverview = document.getElementById("project-preview-overview");
       const projectPreviewFocus = document.getElementById("project-preview-focus");
       const projectPreviewSupervisor = document.getElementById("project-preview-supervisor");
+      const projectPreviewAnalysis = document.getElementById("project-preview-analysis");
       const projectLatestRunLoop = document.getElementById("project-latest-run-loop");
       const projectRunLoopHistory = document.getElementById("project-run-loop-history");
       const projectPreviewRules = document.getElementById("project-preview-rules");
@@ -1645,6 +1674,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         const supervisor = preview.supervisor || {{}};
         const executor = preview.resolved_executor || {{}};
         const provider = preview.resolved_provider || {{}};
+        const analysis = payload.analysis_summary || {{}};
         const graph = payload.task_graph_summary || {{}};
         const workflowSpec = payload.workflow_spec;
         const workflowRules = payload.workflow_rules || [];
@@ -1734,6 +1764,16 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
                 .join("")
             : '<div class="meta">No supervisor evidence.</div>',
         ].join("");
+        projectPreviewAnalysis.innerHTML = renderFacts([
+          ["backend", analysis.backend || "-"],
+          ["fallback", analysis.fallback_used ? "yes" : "no"],
+          ["theorems", `${{analysis.theorem_count || 0}}`],
+          ["declarations", `${{analysis.declaration_count || 0}}`],
+          ["proof_gaps", `${{analysis.proof_gap_count || 0}}`],
+          ["diagnostics", `${{analysis.diagnostic_count || 0}}`],
+          ["top_gap", (analysis.top_proof_gaps || []).join(", ") || "-"],
+          ["top_diag", (analysis.top_diagnostics || []).join(", ") || "-"],
+        ]);
         projectPreviewRules.innerHTML = workflowRules.length
           ? [
               workflowSpec?.description
@@ -1791,6 +1831,7 @@ def render_dashboard_html(title: str, *, default_project_id: str) -> str:
         projectPreviewOverview.innerHTML = '<div class="meta">Preview unavailable.</div>';
         projectPreviewFocus.innerHTML = '<div class="meta">Preview unavailable.</div>';
         projectPreviewSupervisor.innerHTML = '<div class="meta">Preview unavailable.</div>';
+        projectPreviewAnalysis.innerHTML = '<div class="meta">Preview unavailable.</div>';
         projectPreviewRules.innerHTML = '<div class="meta">Preview unavailable.</div>';
         projectPreviewGraph.innerHTML = '<div class="meta">Preview unavailable.</div>';
         projectPreviewJson.textContent = message;

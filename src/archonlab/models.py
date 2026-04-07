@@ -642,6 +642,7 @@ class RunPreview(BaseModel):
     workflow: WorkflowMode
     workflow_spec_path: Path | None = None
     progress: ProgressSnapshot
+    analysis: LeanAnalysisSnapshot
     snapshot: ProjectSnapshot
     control: ControlState
     workflow_spec: WorkflowSpec | None = None

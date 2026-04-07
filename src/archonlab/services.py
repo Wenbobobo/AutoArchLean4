@@ -10,7 +10,7 @@ from .control import ControlService
 from .events import EventStore
 from .execution_policy import resolve_app_phase_configs
 from .executors import create_executor
-from .lean_analyzer import build_lean_analyzer
+from .lean_analyzer import build_lean_analyzer, collect_lean_analysis
 from .models import (
     ActionPhase,
     AppConfig,
@@ -57,6 +57,7 @@ class RunService:
         run_dir.mkdir(parents=True, exist_ok=True)
         events_jsonl = run_dir / "events.jsonl"
         prompt_path = run_dir / "next-prompt.txt"
+        analysis_path = run_dir / "lean-analysis.json"
         task_graph_path = run_dir / "task-graph.json"
         supervisor_path = run_dir / "supervisor.json"
         control_path = run_dir / "control.json"
@@ -95,9 +96,31 @@ class RunService:
 
         snapshot = preview.snapshot
         control_state = preview.control
+        analysis = preview.analysis
         control_path.write_text(
             json.dumps(control_state.model_dump(mode="json"), ensure_ascii=False, indent=2),
             encoding="utf-8",
+        )
+        analysis_path.write_text(
+            json.dumps(analysis.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.event_store.append(
+            EventRecord(
+                run_id=run_id,
+                kind="lean_analysis.generated",
+                project_id=self.config.project.name,
+                payload={
+                    "backend": analysis.backend,
+                    "fallback_used": analysis.fallback_used,
+                    "fallback_reason": analysis.fallback_reason,
+                    "theorem_count": analysis.theorem_count,
+                    "proof_gap_count": len(analysis.proof_gaps),
+                    "diagnostic_count": len(analysis.diagnostics),
+                    "analysis_path": str(analysis_path),
+                },
+            ),
+            jsonl_path=events_jsonl,
         )
         task_graph = preview.task_graph
         task_graph_path.write_text(
@@ -197,6 +220,7 @@ class RunService:
                     "provider": self.config.provider.model_dump(mode="json"),
                     "execution_policy": self.config.execution_policy.model_dump(mode="json"),
                     "progress": progress.model_dump(mode="json"),
+                    "analysis": analysis.model_dump(mode="json"),
                     "snapshot": snapshot.model_dump(mode="json"),
                     "control": control_state.model_dump(mode="json"),
                     "resolved_capability": (
@@ -661,16 +685,23 @@ class RunService:
         self.adapter.ensure_valid()
         progress = self.adapter.read_progress()
         analyzer = build_lean_analyzer(self.config.lean_analyzer)
+        analysis = collect_lean_analysis(
+            project_path=self.config.project.project_path,
+            archon_path=self.config.project.archon_path,
+            analyzer=analyzer,
+        )
         snapshot = collect_project_snapshot(
             project_path=self.config.project.project_path,
             archon_path=self.config.project.archon_path,
             analyzer=analyzer,
+            analysis=analysis,
         )
         control_state = self.control.read(self.config.project)
         task_graph = build_task_graph(
             project_path=self.config.project.project_path,
             archon_path=self.config.project.archon_path,
             analyzer=analyzer,
+            analysis=analysis,
         )
         workflow, workflow_spec_path = self._resolve_effective_workflow(control_state)
         workflow_spec = (
@@ -740,6 +771,7 @@ class RunService:
             workflow=workflow,
             workflow_spec_path=workflow_spec_path,
             progress=progress,
+            analysis=analysis,
             snapshot=snapshot,
             control=control_state,
             workflow_spec=workflow_spec,

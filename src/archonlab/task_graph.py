@@ -6,6 +6,7 @@ from pathlib import Path
 from .adapter import ArchonAdapter
 from .lean_analyzer import LeanAnalyzer, collect_lean_analysis
 from .models import (
+    LeanAnalysisSnapshot,
     LeanDeclaration,
     LeanDiagnostic,
     LeanProofGap,
@@ -27,6 +28,7 @@ def build_task_graph(
     project_path: Path,
     archon_path: Path,
     analyzer: LeanAnalyzer | None = None,
+    analysis: LeanAnalysisSnapshot | None = None,
 ) -> TaskGraph:
     resolved_project_path = project_path.resolve()
     resolved_archon_path = archon_path.resolve()
@@ -38,7 +40,7 @@ def build_task_graph(
     adapter = ArchonAdapter(project)
     adapter.ensure_valid()
     progress = adapter.read_progress()
-    analysis = collect_lean_analysis(
+    resolved_analysis = analysis or collect_lean_analysis(
         project_path=resolved_project_path,
         archon_path=resolved_archon_path,
         analyzer=analyzer,
@@ -52,15 +54,15 @@ def build_task_graph(
         objective_node = _objective_to_node(objective, index=index)
         nodes[objective_node.id] = objective_node
 
-    for declaration in analysis.declarations:
+    for declaration in resolved_analysis.declarations:
         node_id = f"lean:{declaration.file_path}:{declaration.name}"
         proof_gap_blockers = _proof_gap_blockers_for_declaration(
             declaration=declaration,
-            proof_gaps=analysis.proof_gaps,
+            proof_gaps=resolved_analysis.proof_gaps,
         )
         diagnostic_blockers = _diagnostic_blockers_for_declaration(
             declaration=declaration,
-            diagnostics=analysis.diagnostics,
+            diagnostics=resolved_analysis.diagnostics,
         )
         blockers = _dedupe_preserve_order(
             _direct_declaration_blockers(declaration)
@@ -84,7 +86,7 @@ def build_task_graph(
         )
         theorem_to_id[declaration.name] = node_id
 
-    for declaration in analysis.declarations:
+    for declaration in resolved_analysis.declarations:
         source_id = theorem_to_id.get(declaration.name)
         if source_id is None:
             continue

@@ -140,6 +140,7 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     index_response = client.get("/")
     assert index_response.status_code == 200
     assert 'id="project-preview-overview"' in index_response.text
+    assert 'id="project-preview-analysis"' in index_response.text
     assert 'id="project-latest-run-loop"' in index_response.text
     assert 'id="project-run-loop-history"' in index_response.text
     assert 'id="project-preview-rules"' in index_response.text
@@ -179,6 +180,8 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert preview_payload["preview"]["action"]["reason"] == "bootstrap_first_iteration"
     assert preview_payload["task_graph_summary"]["total_nodes"] >= 1
     assert preview_payload["task_graph_summary"]["objective_nodes"] >= 1
+    assert preview_payload["analysis_summary"]["backend"] == "regex"
+    assert preview_payload["analysis_summary"]["theorem_count"] >= 1
     assert preview_payload["focus_task"] is not None
     assert preview_payload["workflow_rules"] == []
     assert isinstance(preview_payload["supervisor_evidence"], dict)
@@ -717,6 +720,7 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert beta_preview["project_id"] == "beta"
     assert beta_preview["workflow"] == "fixed_loop"
     assert beta_preview["configured_workflow"] == "fixed_loop"
+    assert beta_preview["analysis_summary"]["backend"] == "regex"
     assert beta_preview["preview"]["action"]["reason"] == "fixed_loop_baseline"
 
     store.upsert_run_loop_run(

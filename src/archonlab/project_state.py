@@ -4,7 +4,13 @@ from pathlib import Path
 
 from .adapter import ArchonAdapter
 from .lean_analyzer import LeanAnalyzer, collect_lean_analysis
-from .models import ProjectConfig, ProjectScore, ProjectSnapshot, SnapshotDelta
+from .models import (
+    LeanAnalysisSnapshot,
+    ProjectConfig,
+    ProjectScore,
+    ProjectSnapshot,
+    SnapshotDelta,
+)
 
 
 def collect_project_snapshot(
@@ -12,6 +18,7 @@ def collect_project_snapshot(
     project_path: Path,
     archon_path: Path,
     analyzer: LeanAnalyzer | None = None,
+    analysis: LeanAnalysisSnapshot | None = None,
 ) -> ProjectSnapshot:
     resolved_project_path = project_path.resolve()
     resolved_archon_path = archon_path.resolve()
@@ -26,7 +33,7 @@ def collect_project_snapshot(
     progress = progress.model_copy(
         update={"objectives": [objective.replace("—", "-") for objective in progress.objectives]}
     )
-    analysis = collect_lean_analysis(
+    resolved_analysis = analysis or collect_lean_analysis(
         project_path=resolved_project_path,
         archon_path=resolved_archon_path,
         analyzer=analyzer,
@@ -39,15 +46,15 @@ def collect_project_snapshot(
         progress=progress,
         task_results=[path.resolve() for path in adapter.list_task_results()],
         review_sessions=[path.resolve() for path in adapter.list_review_sessions()],
-        analysis_backend=analysis.backend,
-        analysis_fallback_used=analysis.fallback_used,
-        analysis_fallback_reason=analysis.fallback_reason,
-        proof_gap_count=len(analysis.proof_gaps),
-        diagnostic_count=len(analysis.diagnostics),
-        lean_file_count=analysis.lean_file_count,
-        theorem_count=analysis.theorem_count,
-        sorry_count=analysis.sorry_count,
-        axiom_count=analysis.axiom_count,
+        analysis_backend=resolved_analysis.backend,
+        analysis_fallback_used=resolved_analysis.fallback_used,
+        analysis_fallback_reason=resolved_analysis.fallback_reason,
+        proof_gap_count=len(resolved_analysis.proof_gaps),
+        diagnostic_count=len(resolved_analysis.diagnostics),
+        lean_file_count=resolved_analysis.lean_file_count,
+        theorem_count=resolved_analysis.theorem_count,
+        sorry_count=resolved_analysis.sorry_count,
+        axiom_count=resolved_analysis.axiom_count,
     )
 
 

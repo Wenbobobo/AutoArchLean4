@@ -272,15 +272,16 @@ def run_benchmark_project(
     lean_analyzer: LeanAnalyzerConfig,
 ) -> BenchmarkProjectResult:
     analyzer = build_lean_analyzer(lean_analyzer)
-    baseline_snapshot = collect_project_snapshot(
-        project_path=benchmark_project.project_path,
-        archon_path=benchmark_project.archon_path,
-        analyzer=analyzer,
-    )
     baseline_analysis = collect_lean_analysis(
         project_path=benchmark_project.project_path,
         archon_path=benchmark_project.archon_path,
         analyzer=analyzer,
+    )
+    baseline_snapshot = collect_project_snapshot(
+        project_path=benchmark_project.project_path,
+        archon_path=benchmark_project.archon_path,
+        analyzer=analyzer,
+        analysis=baseline_analysis,
     )
     effective_project_path = benchmark_project.project_path
     lease = None
@@ -331,15 +332,16 @@ def run_benchmark_project(
         run_status = run_result.status
         run_id = run_result.run_id
         run_artifact_dir = run_result.artifact_dir
-        final_snapshot = collect_project_snapshot(
-            project_path=effective_project_path,
-            archon_path=benchmark_project.archon_path,
-            analyzer=analyzer,
-        )
         final_analysis = collect_lean_analysis(
             project_path=effective_project_path,
             archon_path=benchmark_project.archon_path,
             analyzer=analyzer,
+        )
+        final_snapshot = collect_project_snapshot(
+            project_path=effective_project_path,
+            archon_path=benchmark_project.archon_path,
+            analyzer=analyzer,
+            analysis=final_analysis,
         )
     except Exception as exc:
         error_message = str(exc)

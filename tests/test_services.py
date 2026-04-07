@@ -5,7 +5,15 @@ from pathlib import Path
 
 from archonlab.config import load_config
 from archonlab.control import ControlService
-from archonlab.models import ProjectSession, SessionStatus, WorkflowMode
+from archonlab.models import (
+    LeanAnalysisSnapshot,
+    LeanDeclaration,
+    LeanDiagnostic,
+    LeanProofGap,
+    ProjectSession,
+    SessionStatus,
+    WorkflowMode,
+)
 from archonlab.services import RunService
 
 
@@ -174,6 +182,116 @@ def test_run_service_uses_control_workflow_spec_override(
     assert preview.workflow_spec is not None
     assert preview.workflow_spec.name == "control-override"
     assert preview.action.reason == "from_control_spec"
+
+
+def test_run_service_preview_reuses_analysis_and_persists_artifact(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    (fake_archon_project / "Core.lean").write_text(
+        "theorem helper : True := by\n"
+        "  trivial\n\n"
+        "theorem foo : True := by\n"
+        "  exact helper\n",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "archonlab.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+
+    class CountingAnalyzer:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def analyze(self, *, project_path: Path, archon_path: Path) -> LeanAnalysisSnapshot:
+            del archon_path
+            self.calls += 1
+            return LeanAnalysisSnapshot(
+                project_id=project_path.name,
+                project_path=project_path,
+                backend="structured-test",
+                lean_file_count=1,
+                theorem_count=2,
+                sorry_count=0,
+                axiom_count=0,
+                declarations=[
+                    LeanDeclaration(
+                        name="helper",
+                        file_path=Path("Core.lean"),
+                        declaration_kind="theorem",
+                        dependencies=[],
+                    ),
+                    LeanDeclaration(
+                        name="foo",
+                        file_path=Path("Core.lean"),
+                        declaration_kind="theorem",
+                        dependencies=["helper"],
+                    ),
+                ],
+                proof_gaps=[
+                    LeanProofGap(
+                        kind="unsolved_goal",
+                        theorem_name="foo",
+                        file_path=Path("Core.lean"),
+                        message="stuck on final goal",
+                    )
+                ],
+                diagnostics=[
+                    LeanDiagnostic(
+                        severity="error",
+                        message="type mismatch",
+                        theorem_name="foo",
+                        file_path=Path("Core.lean"),
+                        code="lean.type_mismatch",
+                    )
+                ],
+            )
+
+    analyzer = CountingAnalyzer()
+    monkeypatch.setattr("archonlab.services.build_lean_analyzer", lambda config: analyzer)
+
+    service = RunService(load_config(config_path))
+    preview = service.preview()
+
+    assert analyzer.calls == 1
+    assert preview.analysis.backend == "structured-test"
+    assert preview.snapshot.analysis_backend == "structured-test"
+    assert preview.snapshot.proof_gap_count == 1
+    assert preview.snapshot.diagnostic_count == 1
+    foo_node = next(node for node in preview.task_graph.nodes if node.theorem_name == "foo")
+    assert foo_node.blockers == ["proof_gap:unsolved_goal", "diagnostic:lean.type_mismatch"]
+
+    result = service.start(dry_run=True)
+    assert analyzer.calls == 2
+    analysis_path = result.artifact_dir / "lean-analysis.json"
+    assert analysis_path.exists()
+
+    analysis_payload = json.loads(analysis_path.read_text(encoding="utf-8"))
+    run_summary = json.loads((result.artifact_dir / "run-summary.json").read_text(encoding="utf-8"))
+    events = service.event_store.get_run_events(result.run_id)
+    analysis_event = next(event for event in events if event.kind == "lean_analysis.generated")
+
+    assert analysis_payload["backend"] == "structured-test"
+    assert analysis_payload["proof_gaps"][0]["kind"] == "unsolved_goal"
+    assert analysis_payload["diagnostics"][0]["code"] == "lean.type_mismatch"
+    assert run_summary["analysis"]["backend"] == "structured-test"
+    assert run_summary["analysis"]["proof_gaps"][0]["kind"] == "unsolved_goal"
+    assert analysis_event.payload["analysis_path"] == str(analysis_path)
+    assert analysis_event.payload["backend"] == "structured-test"
+    assert analysis_event.payload["proof_gap_count"] == 1
+    assert analysis_event.payload["diagnostic_count"] == 1
 
 
 def test_run_service_loop_records_project_session_iterations(
