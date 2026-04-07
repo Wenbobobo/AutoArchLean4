@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "archonlab"
+version = "0.1.0"
+description = "External orchestration control plane for Archon-based formalization research."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "pydantic>=2.10,<3",
+  "typer>=0.16,<1",
+]
+
+[project.scripts]
+archonlab = "archonlab.app:main"
+
+[dependency-groups]
+dev = [
+  "hypothesis>=6.131,<7",
+  "mypy>=1.13,<2",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6.0,<7",
+  "pytest-xdist>=3.6,<4",
+  "ruff>=0.8,<1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["archonlab"]
+

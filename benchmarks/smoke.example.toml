@@ -1,0 +1,12 @@
+[benchmark]
+name = "smoke"
+description = "Minimal benchmark manifest placeholder for Phase 3."
+artifact_root = "artifacts/benchmarks/smoke"
+
+[[projects]]
+id = "example-project"
+path = "../path/to/lean-project"
+archon_path = "../Archon"
+budget_minutes = 30
+workflow = "adaptive_loop"
+

@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from archonlab.benchmark import (
+    BenchmarkRunService,
+    collect_project_snapshot,
+    load_benchmark_manifest,
+    score_project_snapshot,
+)
+
+
+def _write_benchmark_manifest(tmp_path: Path) -> Path:
+    project_dir = tmp_path / "DemoProject"
+    archon_root = tmp_path / "Archon"
+    project_dir.mkdir()
+    archon_root.mkdir()
+    (archon_root / "archon-loop.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    state_dir = project_dir / ".archon"
+    prompts_dir = state_dir / "prompts"
+    task_results_dir = state_dir / "task_results"
+    prompts_dir.mkdir(parents=True)
+    task_results_dir.mkdir()
+    (project_dir / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+    (state_dir / "CLAUDE.md").write_text("# demo\n", encoding="utf-8")
+    (prompts_dir / "plan.md").write_text("# plan\n", encoding="utf-8")
+    (prompts_dir / "prover-prover.md").write_text("# prover\n", encoding="utf-8")
+    (state_dir / "PROGRESS.md").write_text(
+        "# Project Progress\n\n"
+        "## Current Stage\n"
+        "prover\n\n"
+        "## Stages\n"
+        "- [x] init\n"
+        "- [ ] prover\n\n"
+        "## Current Objectives\n\n"
+        "1. **Core.lean** - fill theorem `foo`\n",
+        encoding="utf-8",
+    )
+
+    manifest_path = tmp_path / "benchmark.toml"
+    manifest_path.write_text(
+        "[benchmark]\n"
+        'name = "smoke"\n'
+        'description = "Minimal benchmark manifest for Phase 3."\n'
+        'artifact_root = "./artifacts/benchmarks/smoke"\n\n'
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        'path = "./DemoProject"\n'
+        'archon_path = "./Archon"\n'
+        "budget_minutes = 30\n"
+        'workflow = "adaptive_loop"\n',
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+def test_load_benchmark_manifest_parses_benchmark_and_projects(tmp_path: Path) -> None:
+    from archonlab.models import WorkflowMode
+
+    manifest_path = _write_benchmark_manifest(tmp_path)
+
+    manifest = load_benchmark_manifest(manifest_path)
+
+    assert manifest.benchmark.name == "smoke"
+    assert manifest.benchmark.description == "Minimal benchmark manifest for Phase 3."
+    assert manifest.benchmark.artifact_root == (
+        tmp_path / "artifacts" / "benchmarks" / "smoke"
+    ).resolve()
+    assert len(manifest.projects) == 1
+    project = manifest.projects[0]
+    assert project.id == "demo-project"
+    assert project.project_path == (tmp_path / "DemoProject").resolve()
+    assert project.archon_path == (tmp_path / "Archon").resolve()
+    assert project.budget_minutes == 30
+    assert project.workflow is WorkflowMode.ADAPTIVE_LOOP
+
+
+def test_collect_project_snapshot_and_score(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "DemoProject"
+    archon_root = tmp_path / "Archon"
+    project_dir.mkdir()
+    archon_root.mkdir()
+    (archon_root / "archon-loop.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    state_dir = project_dir / ".archon"
+    prompts_dir = state_dir / "prompts"
+    task_results_dir = state_dir / "task_results"
+    review_session_dir = state_dir / "proof-journal" / "sessions" / "session-1"
+    prompts_dir.mkdir(parents=True)
+    task_results_dir.mkdir()
+    review_session_dir.mkdir(parents=True)
+    (project_dir / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+    (state_dir / "CLAUDE.md").write_text("# demo\n", encoding="utf-8")
+    (prompts_dir / "plan.md").write_text("# plan\n", encoding="utf-8")
+    (prompts_dir / "prover-prover.md").write_text("# prover\n", encoding="utf-8")
+    (state_dir / "PROGRESS.md").write_text(
+        "# Project Progress\n\n"
+        "## Current Stage\n"
+        "prover\n\n"
+        "## Stages\n"
+        "- [x] init\n"
+        "- [ ] prover\n\n"
+        "## Current Objectives\n\n"
+        "1. **Core.lean** — fill theorem `foo`\n",
+        encoding="utf-8",
+    )
+    task_result = task_results_dir / "task-1.md"
+    task_result.write_text("# task result\n", encoding="utf-8")
+    (review_session_dir / "review.md").write_text("# review\n", encoding="utf-8")
+
+    snapshot = collect_project_snapshot(
+        project_path=project_dir,
+        archon_path=archon_root,
+    )
+    score = score_project_snapshot(snapshot)
+
+    assert snapshot.project_path == project_dir.resolve()
+    assert snapshot.archon_path == archon_root.resolve()
+    assert snapshot.progress.stage == "prover"
+    assert snapshot.progress.objectives == ["**Core.lean** - fill theorem `foo`"]
+    assert snapshot.task_results == [task_result.resolve()]
+    assert snapshot.review_sessions == [review_session_dir.resolve()]
+    assert score.stage == "prover"
+    assert score.objective_count == 1
+    assert score.task_result_count == 1
+    assert score.review_session_count == 1
+    assert score.score >= 1
+
+
+def test_benchmark_run_service_writes_manifest_copy_and_summary(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_benchmark_manifest(tmp_path)
+
+    service = BenchmarkRunService(manifest_path)
+    result = service.run()
+
+    assert result.artifact_dir.exists()
+    assert result.manifest_copy_path.exists()
+    assert result.summary_path.exists()
+    assert result.manifest_copy_path.read_text(encoding="utf-8") == manifest_path.read_text(
+        encoding="utf-8"
+    )
+
+    summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
+    assert summary["benchmark"]["name"] == "smoke"
+    assert summary["projects"][0]["id"] == "demo-project"
+    assert summary["projects"][0]["run_status"] == "completed"
+    assert summary["projects"][0]["snapshot"]["progress"]["stage"] == "prover"
+    assert summary["projects"][0]["score"]["task_result_count"] == 0

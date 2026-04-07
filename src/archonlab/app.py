@@ -1,0 +1,192 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Annotated
+
+import typer
+
+from .benchmark import BenchmarkRunService
+from .checks import gather_doctor_report
+from .config import init_config, load_config
+from .events import EventStore
+from .models import WorkflowMode
+from .services import RunService
+
+app = typer.Typer(no_args_is_help=True, help="archonlab external orchestrator control plane")
+project_app = typer.Typer(no_args_is_help=True)
+run_app = typer.Typer(no_args_is_help=True)
+benchmark_app = typer.Typer(no_args_is_help=True)
+app.add_typer(project_app, name="project")
+app.add_typer(run_app, name="run")
+app.add_typer(benchmark_app, name="benchmark")
+
+
+@app.command()
+def doctor(
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help="Optional archonlab.toml to enrich checks with project-specific paths.",
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable JSON.")
+    ] = False,
+) -> None:
+    project = load_config(config).project if config else None
+    report = gather_doctor_report(project)
+    if json_output:
+        typer.echo(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"Python 3.12: {report.python_version}")
+    typer.echo("Tools:")
+    for tool in report.tools:
+        marker = "OK" if tool.available else "MISSING"
+        version = f" ({tool.version})" if tool.version else ""
+        typer.echo(f"  - [{marker}] {tool.name}{version}")
+    if report.paths:
+        typer.echo("Paths:")
+        for status in report.paths:
+            marker = "OK" if status.ok else "FAIL"
+            typer.echo(f"  - [{marker}] {status.name}: {status.detail}")
+
+
+@project_app.command("init")
+def project_init(
+    project_path: Annotated[
+        Path,
+        typer.Option("--project-path", exists=False, help="Lean project path."),
+    ],
+    archon_path: Annotated[
+        Path,
+        typer.Option("--archon-path", exists=False, help="Archon checkout path."),
+    ],
+    config_path: Annotated[
+        Path,
+        typer.Option("--config-path", help="Output config file."),
+    ] = Path("archonlab.toml"),
+    artifact_root: Annotated[
+        Path,
+        typer.Option("--artifact-root", help="Artifact directory."),
+    ] = Path("artifacts"),
+    workflow: Annotated[
+        WorkflowMode,
+        typer.Option("--workflow", case_sensitive=False, help="Baseline workflow mode."),
+    ] = WorkflowMode.ADAPTIVE_LOOP,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run/--execute", help="Default run mode.")
+    ] = True,
+    force: Annotated[
+        bool, typer.Option("--force", help="Overwrite an existing config.")
+    ] = False,
+) -> None:
+    written = init_config(
+        config_path=config_path,
+        project_path=project_path.resolve(),
+        archon_path=archon_path.resolve(),
+        artifact_root=artifact_root,
+        workflow=workflow,
+        dry_run=dry_run,
+        force=force,
+    )
+    typer.echo(f"Wrote config: {written}")
+    typer.echo("Next steps:")
+    typer.echo(f"  1. archonlab doctor --config {written}")
+    typer.echo(f"  2. archonlab run start --config {written} --dry-run")
+
+
+@run_app.command("start")
+def run_start(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run/--execute", help="Use the dry-run baseline.")
+    ] = True,
+) -> None:
+    app_config = load_config(config)
+    service = RunService(app_config)
+    result = service.start(dry_run=dry_run)
+    typer.echo(f"Run: {result.run_id}")
+    typer.echo(f"Status: {result.status.value}")
+    typer.echo(f"Next action: {result.action.phase} ({result.action.reason})")
+    typer.echo(f"Artifacts: {result.artifact_dir}")
+    typer.echo(f"Prompt preview: {result.prompt_path}")
+
+
+@run_app.command("status")
+def run_status(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Config file."),
+    ] = Path("archonlab.toml"),
+    run_id: Annotated[
+        str | None, typer.Option("--run-id", help="Inspect a single run.")
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", min=1, max=100, help="Number of runs to show."),
+    ] = 10,
+) -> None:
+    app_config = load_config(config)
+    store = EventStore(app_config.run.artifact_root / "archonlab.db")
+    if run_id is not None:
+        events = store.get_run_events(run_id)
+        if not events:
+            raise typer.Exit(code=1)
+        for event in events:
+            typer.echo(
+                json.dumps(event.model_dump(mode="json"), ensure_ascii=False, indent=2)
+            )
+        return
+
+    runs = store.list_runs(limit=limit)
+    if not runs:
+        typer.echo("No runs recorded yet.")
+        return
+    for run in runs:
+        typer.echo(
+            f"{run.run_id} | {run.status.value} | {run.workflow.value} | "
+            f"stage={run.stage} | dry_run={run.dry_run}"
+        )
+
+
+@benchmark_app.command("run")
+def benchmark_run(
+    manifest: Annotated[
+        Path,
+        typer.Option("--manifest", exists=True, help="Benchmark manifest TOML."),
+    ],
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run/--execute",
+            help="Use the current dry-run execution path for each project.",
+        ),
+    ] = True,
+) -> None:
+    service = BenchmarkRunService(manifest)
+    result = service.run(dry_run=dry_run)
+    typer.echo(f"Benchmark: {result.benchmark.name}")
+    typer.echo(f"Run: {result.run_id}")
+    typer.echo(f"Status: {result.status.value}")
+    typer.echo(f"Artifacts: {result.artifact_dir}")
+    for project in result.projects:
+        typer.echo(
+            f"{project.id} | {project.run_status.value} | "
+            f"score={project.score.score} | "
+            f"sorry={project.snapshot.sorry_count} | "
+            f"reviews={len(project.snapshot.review_sessions)}"
+        )
+
+
+def main() -> None:
+    app()
+
+
+if __name__ == "__main__":
+    main()

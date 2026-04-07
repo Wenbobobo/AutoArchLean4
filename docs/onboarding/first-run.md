@@ -1,0 +1,62 @@
+# 第一次运行
+
+这份流程的目标是让你第一次就能看到完整闭环，而不是一上来就被复杂性淹没。
+
+## 你要先完成什么
+
+1. 安装环境
+2. 确认 Lean 工具链可用
+3. 确认 Archon 能初始化一个 Lean 项目
+4. 跑一次最小 smoke test
+5. 再启动 orchestrator
+
+## 推荐流程
+
+```bash
+# 1. 检查环境
+uv run archonlab doctor
+
+# 2. 初始化 Archon 项目
+./init.sh /path/to/lean-project
+
+# 3. 跑 Lean 侧诊断
+/lean4:doctor
+
+# 4. 初始化 ArchonLab 配置
+uv run archonlab project init --project-path /path/to/lean-project --archon-path /path/to/Archon
+
+# 5. 启动最小 dry-run
+uv run archonlab run start --config archonlab.toml --dry-run
+
+# 6. 跑一个 benchmark smoke test
+uv run archonlab benchmark run --manifest benchmarks/smoke.example.toml --dry-run
+
+# 7. 如果要直接走 Archon 固定 loop，再手动启动
+./archon-loop.sh /path/to/lean-project
+```
+
+## 你第一次应该观察什么
+
+- `PROGRESS.md` 有没有变化
+- `task_results/` 有没有产出
+- `proof-journal/` 有没有 session
+- Lean 文件里的 `sorry` 有没有减少
+- `artifacts/` 里有没有产生可回放的 run / benchmark 结果
+- 日志里是正常推进还是反复 stuck
+
+## 你第一次不用做什么
+
+- 不用理解所有 prompt
+- 不用一开始就改 workflow
+- 不用追求多 agent 并发
+- 不用先做大规模 benchmark
+
+## 判断是否“跑通”
+
+满足下面任意一条，通常说明流程已经开始工作：
+- `doctor` 通过
+- `archonlab run start --dry-run` 产出 `run-summary.json`
+- `archonlab benchmark run --dry-run` 产出 `summary.json`
+- `archon-loop.sh` 能启动并写日志
+- `task_results/` 出现新的结果文件
+- dashboard 能看到运行状态
