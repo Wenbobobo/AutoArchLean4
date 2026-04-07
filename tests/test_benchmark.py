@@ -35,6 +35,13 @@ def _write_benchmark_manifest(tmp_path: Path) -> Path:
     project_dir.mkdir()
     archon_root.mkdir()
     (archon_root / "archon-loop.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (project_dir / "Core.lean").write_text(
+        "theorem helper : True := by\n"
+        "  trivial\n\n"
+        "theorem foo : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
 
     state_dir = project_dir / ".archon"
     prompts_dir = state_dir / "prompts"
@@ -160,6 +167,8 @@ def test_benchmark_run_service_writes_manifest_copy_and_summary(
     assert result.artifact_dir.exists()
     assert result.manifest_copy_path.exists()
     assert result.summary_path.exists()
+    assert result.ledger_path is not None
+    assert result.ledger_path.exists()
     assert result.manifest_copy_path.read_text(encoding="utf-8") == manifest_path.read_text(
         encoding="utf-8"
     )
@@ -170,6 +179,26 @@ def test_benchmark_run_service_writes_manifest_copy_and_summary(
     assert summary["projects"][0]["run_status"] == "completed"
     assert summary["projects"][0]["snapshot"]["progress"]["stage"] == "prover"
     assert summary["projects"][0]["score"]["task_result_count"] == 0
+    assert summary["ledger_path"] == str(result.ledger_path)
+    assert summary["ledger_summary"]["total_projects"] == 1
+
+    ledger = json.loads(result.ledger_path.read_text(encoding="utf-8"))
+    assert ledger["benchmark_name"] == "smoke"
+    assert ledger["summary"]["total_projects"] == 1
+    assert ledger["outcomes"][0]["project_id"] == "demo-project"
+    outcomes = {
+        item["theorem_name"]: item for item in summary["projects"][0]["theorem_outcomes"]
+    }
+    assert outcomes["helper"]["outcome"] == "unchanged"
+    assert outcomes["helper"]["after_state"] == "proved"
+    assert outcomes["helper"]["failure_categories"] == []
+    assert outcomes["foo"]["outcome"] == "unchanged"
+    assert outcomes["foo"]["after_state"] == "contains_sorry"
+    taxonomy = {
+        item["category"]: item for item in summary["projects"][0]["failure_taxonomy"]
+    }
+    assert taxonomy["contains_sorry"]["count"] == 1
+    assert taxonomy["contains_sorry"]["samples"] == ["foo"]
 
 
 def test_benchmark_run_service_can_use_worktrees(tmp_path: Path) -> None:

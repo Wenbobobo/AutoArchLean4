@@ -21,6 +21,7 @@ from .control import ControlService
 from .dashboard import create_dashboard_app
 from .events import EventStore
 from .fleet import FleetController
+from .ledger import load_benchmark_ledger
 from .models import (
     ExecutorConfig,
     ExecutorKind,
@@ -618,6 +619,46 @@ def benchmark_run(
         )
         if project.worktree_path is not None:
             typer.echo(f"  worktree={project.worktree_path}")
+
+
+@benchmark_app.command("ledger")
+def benchmark_ledger(
+    summary: Annotated[
+        Path,
+        typer.Option("--summary", exists=True, help="Benchmark summary JSON."),
+    ],
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable JSON.")
+    ] = False,
+) -> None:
+    ledger = load_benchmark_ledger(summary)
+    if json_output:
+        typer.echo(json.dumps(ledger.model_dump(mode="json"), ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(f"Benchmark: {ledger.benchmark_name}")
+    typer.echo(f"Run: {ledger.benchmark_run_id}")
+    typer.echo(f"Projects: {ledger.summary.total_projects}")
+    typer.echo(f"Targeted theorems: {ledger.summary.targeted_projects}")
+    typer.echo(
+        "Outcomes: "
+        + ", ".join(
+            f"{name}={count}" for name, count in sorted(ledger.summary.outcome_counts.items())
+        )
+    )
+    if ledger.summary.failure_counts:
+        typer.echo(
+            "Failures: "
+            + ", ".join(
+                f"{name}={count}"
+                for name, count in sorted(ledger.summary.failure_counts.items())
+            )
+        )
+    for outcome in ledger.outcomes:
+        typer.echo(
+            f"{outcome.project_id} | theorem={outcome.theorem_name or '-'} | "
+            f"outcome={outcome.outcome.value} | failure={outcome.failure_kind.value}"
+        )
 
 
 @worktree_app.command("create")

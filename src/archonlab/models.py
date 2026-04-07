@@ -69,6 +69,23 @@ class BenchmarkRunStatus(StrEnum):
     FAILED = "failed"
 
 
+class BenchmarkLedgerOutcomeKind(StrEnum):
+    PROOF_PROGRESS = "proof_progress"
+    ARTIFACT_PROGRESS = "artifact_progress"
+    NO_PROGRESS = "no_progress"
+    DRY_RUN = "dry_run"
+    FAILED = "failed"
+    MISSING_TARGET = "missing_target"
+
+
+class BenchmarkLedgerFailureKind(StrEnum):
+    NONE = "none"
+    EXECUTOR_FAILED = "executor_failed"
+    RUN_ERROR = "run_error"
+    ARTIFACT_MISSING = "artifact_missing"
+    MISSING_TARGET_THEOREM = "missing_target_theorem"
+
+
 class ExecutionStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
@@ -670,6 +687,81 @@ class LeanAnalysisSnapshot(BaseModel):
     axiom_count: int = 0
 
 
+class TheoremState(StrEnum):
+    PROVED = "proved"
+    CONTAINS_SORRY = "contains_sorry"
+    USES_AXIOM = "uses_axiom"
+    MISSING = "missing"
+
+
+class TheoremOutcomeKind(StrEnum):
+    UNCHANGED = "unchanged"
+    IMPROVED = "improved"
+    REGRESSED = "regressed"
+    NEW = "new"
+    REMOVED = "removed"
+
+
+class FailureCategory(StrEnum):
+    RUN_ERROR = "run_error"
+    CONTAINS_SORRY = "contains_sorry"
+    USES_AXIOM = "uses_axiom"
+    REMOVED_DECLARATION = "removed_declaration"
+
+
+class TheoremOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    theorem_name: str
+    file_path: Path | None = None
+    declaration_kind: str | None = None
+    before_state: TheoremState
+    after_state: TheoremState
+    outcome: TheoremOutcomeKind
+    failure_categories: list[FailureCategory] = Field(default_factory=list)
+
+
+class FailureCategorySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category: FailureCategory
+    count: int
+    samples: list[str] = Field(default_factory=list)
+
+
+class ExperimentLedgerSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_projects: int
+    total_theorems: int
+    unchanged: int = 0
+    improved: int = 0
+    regressed: int = 0
+    new: int = 0
+    removed: int = 0
+    failure_taxonomy: list[FailureCategorySummary] = Field(default_factory=list)
+
+
+class ExperimentProjectLedger(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    run_id: str | None = None
+    run_status: RunStatus
+    theorem_outcomes: list[TheoremOutcome] = Field(default_factory=list)
+    failure_taxonomy: list[FailureCategorySummary] = Field(default_factory=list)
+
+
+class ExperimentLedger(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    benchmark_name: str
+    benchmark_run_id: str
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    summary: ExperimentLedgerSummary
+    outcomes: list[ExperimentProjectLedger] = Field(default_factory=list)
+
+
 class ProjectScore(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -711,6 +803,8 @@ class BenchmarkProjectResult(BaseModel):
     worktree_path: Path | None = None
     lease_path: Path | None = None
     error_message: str | None = None
+    theorem_outcomes: list[TheoremOutcome] = Field(default_factory=list)
+    failure_taxonomy: list[FailureCategorySummary] = Field(default_factory=list)
 
 
 class BenchmarkResult(BaseModel):
@@ -726,7 +820,59 @@ class BenchmarkResult(BaseModel):
     artifact_dir: Path
     manifest_copy_path: Path
     summary_path: Path
+    ledger_path: Path | None = None
+    ledger_summary: ExperimentLedgerSummary | None = None
     projects: list[BenchmarkProjectResult]
+
+
+class BenchmarkLedgerRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    run_id: str | None = None
+    theorem_name: str | None = None
+    file_path: Path | None = None
+    workflow: WorkflowMode
+    run_status: RunStatus
+    mode: str
+    action_phase: str | None = None
+    action_reason: str | None = None
+    outcome: BenchmarkLedgerOutcomeKind
+    failure_kind: BenchmarkLedgerFailureKind = BenchmarkLedgerFailureKind.NONE
+    error_message: str | None = None
+    score_after: float
+    score_delta: float
+    sorry_delta: int
+    task_results_delta: int
+    review_session_delta: int
+    executor: ExecutorKind | None = None
+    provider: str | None = None
+    provider_pool: str | None = None
+    provider_member: str | None = None
+    latency_ms: int | None = None
+    cost_estimate: float | None = None
+    artifact_dir: Path | None = None
+
+
+class BenchmarkLedgerSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_projects: int
+    targeted_projects: int
+    outcome_counts: dict[str, int] = Field(default_factory=dict)
+    failure_counts: dict[str, int] = Field(default_factory=dict)
+    total_estimated_cost: float = 0.0
+
+
+class BenchmarkLedger(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    benchmark_name: str
+    benchmark_run_id: str
+    dry_run: bool
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    summary: BenchmarkLedgerSummary
+    outcomes: list[BenchmarkLedgerRecord] = Field(default_factory=list)
 
 
 class TaskNode(BaseModel):

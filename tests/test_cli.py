@@ -265,6 +265,23 @@ def test_benchmark_run_creates_summary(
     summary_files = list((tmp_path / "artifacts" / "benchmarks" / "smoke").rglob("summary.json"))
     assert summary_files
 
+    ledger_result = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "ledger",
+            "--summary",
+            str(summary_files[0]),
+            "--json",
+        ],
+    )
+
+    assert ledger_result.exit_code == 0
+    ledger_payload = json.loads(ledger_result.output)
+    assert ledger_payload["benchmark_name"] == "smoke"
+    assert ledger_payload["summary"]["total_projects"] == 1
+    assert ledger_payload["outcomes"][0]["project_id"] == "demo"
+
 
 def test_worktree_create_and_remove_commands(tmp_path: Path) -> None:
     repo_path = tmp_path / "repo"
