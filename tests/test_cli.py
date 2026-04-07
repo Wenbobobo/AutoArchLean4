@@ -301,6 +301,66 @@ def test_workspace_loops_command_lists_recent_runs(
     assert payload["loops"][0]["cycles_completed"] == 2
 
 
+def test_workspace_stop_loop_command_requests_stop(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 10\n\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+    loop_id = "workspace-loop-stop-demo"
+    artifact_dir = artifact_root / "workspace-loops" / loop_id
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "control.json").write_text(
+        json.dumps({"stop_requested": False}, indent=2),
+        encoding="utf-8",
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    store.upsert_workspace_loop_run(
+        WorkspaceLoopResult(
+            loop_run_id=loop_id,
+            loop_id=loop_id,
+            workspace_id="demo-workspace",
+            artifact_dir=artifact_dir,
+            stop_reason="running",
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "stop-loop",
+            "--config",
+            str(config_path),
+            "--loop-run-id",
+            loop_id,
+            "--reason",
+            "operator_stop_requested",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert f"Stop requested: {loop_id}" in result.output
+    control_payload = json.loads((artifact_dir / "control.json").read_text(encoding="utf-8"))
+    assert control_payload["stop_requested"] is True
+    assert control_payload["reason"] == "operator_stop_requested"
+
+
 def test_workspace_run_project_command_executes_loop(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:

@@ -43,7 +43,7 @@ from .models import (
 )
 from .queue import QueueStore
 from .services import RunService
-from .workspace_loop import WorkspaceLoopController
+from .workspace_loop import WorkspaceLoopController, request_workspace_loop_stop
 from .worktree import WorktreeManager
 
 app = typer.Typer(no_args_is_help=True, help="archonlab external orchestrator control plane")
@@ -454,6 +454,39 @@ def workspace_loops(
             f"{loop_id} | project={loop.project_id or '-'} | stop={loop.stop_reason} | "
             f"cycles={loop.cycles_completed} | processed={loop.total_processed_jobs}"
         )
+
+
+@workspace_app.command("stop-loop")
+def workspace_stop_loop(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    loop_run_id: Annotated[
+        str,
+        typer.Option("--loop-run-id", help="Workspace loop run identifier."),
+    ] = "",
+    reason: Annotated[
+        str,
+        typer.Option("--reason", help="Operator reason recorded in the stop request."),
+    ] = "operator_stop_requested",
+) -> None:
+    workspace_config = load_workspace_config(config)
+    store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+    loop = store.get_workspace_loop_run(loop_run_id)
+    if loop is None:
+        raise typer.BadParameter(f"Unknown workspace loop run: {loop_run_id}")
+    if loop.finished_at is not None:
+        raise typer.BadParameter(f"Workspace loop is already finished: {loop_run_id}")
+    if loop.artifact_dir is None:
+        raise typer.BadParameter(f"Workspace loop has no artifact directory: {loop_run_id}")
+    state = request_workspace_loop_stop(
+        loop.artifact_dir,
+        reason=reason,
+        requested_by="workspace.stop-loop",
+    )
+    typer.echo(f"Stop requested: {loop_run_id}")
+    typer.echo(f"Reason: {state.reason or '-'}")
 
 
 @workspace_app.command("start-session")

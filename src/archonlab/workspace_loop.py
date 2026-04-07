@@ -11,7 +11,7 @@ from .config import load_workspace_config
 from .control import ControlService
 from .events import EventStore
 from .fleet import FleetController, WorkerLauncher
-from .models import WorkspaceLoopCycle, WorkspaceLoopResult
+from .models import WorkspaceLoopControlState, WorkspaceLoopCycle, WorkspaceLoopResult
 from .queue import QueueStore
 
 
@@ -87,6 +87,7 @@ class WorkspaceLoopController:
             self.config_path.read_text(encoding="utf-8"),
             encoding="utf-8",
         )
+        write_workspace_loop_control_state(artifact_dir, WorkspaceLoopControlState())
         cycles: list[WorkspaceLoopCycle] = []
         total_scheduled_jobs = 0
         total_processed_jobs = 0
@@ -121,6 +122,10 @@ class WorkspaceLoopController:
 
         try:
             for cycle_index in range(1, max_cycles + 1):
+                control_state = load_workspace_loop_control_state(artifact_dir)
+                if control_state.stop_requested:
+                    stop_reason = control_state.reason or "operator_stop_requested"
+                    break
                 cycle_started_at = datetime.now(UTC)
                 jobs = self.queue_store.enqueue_workspace_sessions(
                     self.config_path,
@@ -183,6 +188,11 @@ class WorkspaceLoopController:
                 result.total_failed_jobs = total_failed_jobs
                 result.total_workers_launched = total_workers_launched
                 self._persist_result(event_store, artifact_dir, result)
+
+                control_state = load_workspace_loop_control_state(artifact_dir)
+                if control_state.stop_requested:
+                    stop_reason = control_state.reason or "operator_stop_requested"
+                    break
 
                 made_progress = (
                     fleet_result is not None
@@ -253,3 +263,41 @@ class WorkspaceLoopController:
         if launcher_name == "SubprocessWorkerLauncher":
             return "subprocess"
         return launcher_name
+
+
+def load_workspace_loop_control_state(artifact_dir: Path) -> WorkspaceLoopControlState:
+    control_path = artifact_dir / "control.json"
+    if not control_path.exists():
+        return WorkspaceLoopControlState()
+    return WorkspaceLoopControlState.model_validate_json(
+        control_path.read_text(encoding="utf-8")
+    )
+
+
+def write_workspace_loop_control_state(
+    artifact_dir: Path,
+    state: WorkspaceLoopControlState,
+) -> WorkspaceLoopControlState:
+    control_path = artifact_dir / "control.json"
+    control_path.write_text(
+        state.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    return state
+
+
+def request_workspace_loop_stop(
+    artifact_dir: Path,
+    *,
+    reason: str = "operator_stop_requested",
+    requested_by: str | None = "cli",
+) -> WorkspaceLoopControlState:
+    state = load_workspace_loop_control_state(artifact_dir).model_copy(
+        update={
+            "stop_requested": True,
+            "reason": reason,
+            "requested_at": datetime.now(UTC),
+            "requested_by": requested_by,
+        }
+    )
+    return write_workspace_loop_control_state(artifact_dir, state)

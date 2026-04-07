@@ -234,6 +234,66 @@ def test_workspace_loop_controller_filters_projects_by_tags(
     assert sessions[0].project_id == "beta"
 
 
+def test_workspace_loop_controller_stops_after_operator_request(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+    monkeypatch,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        project_path=fake_archon_project,
+        archon_path=fake_archon_root,
+    )
+    loop_id = "workspace-loop-stop-test"
+
+    monkeypatch.setattr(
+        WorkspaceLoopController,
+        "_new_loop_id",
+        staticmethod(lambda: loop_id),
+    )
+
+    def fake_run(self, **kwargs) -> object:
+        del kwargs
+        control_path = artifact_root / "workspace-loops" / loop_id / "control.json"
+        control = json.loads(control_path.read_text(encoding="utf-8"))
+        control["stop_requested"] = True
+        control["reason"] = "operator_stop_requested"
+        control_path.write_text(json.dumps(control), encoding="utf-8")
+        return self.result_model(
+            cycles_completed=1,
+            stop_reason="queue_drained",
+            total_processed_jobs=1,
+            total_paused_jobs=0,
+            total_failed_jobs=0,
+            total_workers_launched=1,
+            cycles=[],
+            final_plan=self.queue_store.plan_fleet(),
+        )
+
+    monkeypatch.setattr("archonlab.workspace_loop.FleetController.run", fake_run)
+
+    controller = WorkspaceLoopController(config_path)
+    result = controller.run(
+        project_id="alpha",
+        max_cycles=4,
+        idle_cycles=4,
+        sleep_seconds=0.0,
+        fleet_max_cycles=1,
+        fleet_idle_cycles=1,
+        queue_poll_seconds=0.01,
+        queue_idle_timeout_seconds=0.01,
+    )
+
+    assert result.stop_reason == "operator_stop_requested"
+    assert result.cycles_completed == 1
+    stored = EventStore(artifact_root / "archonlab.db").get_workspace_loop_run(loop_id)
+    assert stored is not None
+    assert stored.stop_reason == "operator_stop_requested"
+
+
 def test_workspace_loop_controller_persists_summary_and_cycle_artifacts(
     tmp_path: Path,
     fake_archon_project: Path,

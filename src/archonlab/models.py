@@ -1417,6 +1417,15 @@ class WorkspaceLoopResult(BaseModel):
     cycles: list[WorkspaceLoopCycle] = Field(default_factory=list)
 
 
+class WorkspaceLoopControlState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stop_requested: bool = False
+    reason: str | None = None
+    requested_at: datetime | None = None
+    requested_by: str | None = None
+
+
 class ExecutionPhaseOverride(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
