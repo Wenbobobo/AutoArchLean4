@@ -86,6 +86,10 @@ def _parse_csv_strings(raw: str | None) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _exception_message(error: Exception) -> str:
+    return str(error.args[0]) if error.args else str(error)
+
+
 @app.command()
 def doctor(
     config: Annotated[
@@ -1754,46 +1758,79 @@ def queue_resume_session(
     if not session_id:
         raise typer.BadParameter("--session-id is required")
     workspace_config = load_workspace_config(config)
-    event_store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
-    session = event_store.get_session(session_id)
-    if session is None:
-        raise typer.BadParameter(f"Unknown project session: {session_id}")
-    if session.workspace_id != workspace_config.name:
-        raise typer.BadParameter(
-            f"Session {session_id} does not belong to workspace {workspace_config.name}"
+    queue_store = QueueStore(workspace_config.run.artifact_root / "archonlab.db")
+    try:
+        updated, job = queue_store.resume_session(
+            config,
+            session_id=session_id,
+            max_iterations=max_iterations,
+            priority=priority,
+            resume_reason=resume_reason,
+            note=note,
         )
-    if session.status in {SessionStatus.COMPLETED, SessionStatus.CANCELED}:
-        raise typer.BadParameter(f"Cannot resume terminal session: {session.status.value}")
-    resolved_max_iterations = max_iterations
-    if (
-        resolved_max_iterations is not None
-        and resolved_max_iterations < session.completed_iterations
-    ):
-        raise typer.BadParameter(
-            "The new --max-iterations must be >= the current completed iteration count."
-        )
-    if resolved_max_iterations is None and session.completed_iterations >= session.max_iterations:
-        raise typer.BadParameter(
-            "Session budget is exhausted; provide a larger --max-iterations to resume."
-        )
-    updated = event_store.update_session(
-        session_id,
-        status=SessionStatus.PENDING,
-        max_iterations=resolved_max_iterations,
-        clear_error_message=True,
-        clear_stop_reason=True,
-        resume_reason=resume_reason or "queue_resume_session",
-        note=note,
-    )
-    job = QueueStore(workspace_config.run.artifact_root / "archonlab.db").enqueue_session_quantum(
-        config,
-        session_id=updated.session_id,
-        priority=priority,
-    )
+    except (KeyError, ValueError) as err:
+        raise typer.BadParameter(_exception_message(err)) from err
     typer.echo(f"Session: {updated.session_id}")
     typer.echo(f"Status: {updated.status.value}")
     typer.echo(f"Max iterations: {updated.max_iterations}")
     typer.echo(f"Enqueued job: {job.id}")
+
+
+@queue_app.command("resume-workspace")
+def queue_resume_workspace(
+    config: Annotated[
+        Path,
+        typer.Option("--config", exists=True, help="Workspace config file."),
+    ] = Path("workspace.toml"),
+    project_id: Annotated[
+        str | None,
+        typer.Option("--project-id", help="Optional project filter."),
+    ] = None,
+    max_iterations: Annotated[
+        int | None,
+        typer.Option(
+            "--max-iterations",
+            min=1,
+            help="Optional new absolute session iteration cap before resuming.",
+        ),
+    ] = None,
+    priority: Annotated[
+        int,
+        typer.Option("--priority", help="Base queue priority for resumed session jobs."),
+    ] = 0,
+    resume_reason: Annotated[
+        str | None,
+        typer.Option("--resume-reason", help="Optional operator reason for resuming."),
+    ] = None,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", help="Optional updated session note."),
+    ] = None,
+) -> None:
+    workspace_config = load_workspace_config(config)
+    queue_store = QueueStore(workspace_config.run.artifact_root / "archonlab.db")
+    result = queue_store.resume_workspace_sessions(
+        config,
+        project_ids=[project_id] if project_id is not None else None,
+        max_iterations=max_iterations,
+        priority=priority,
+        resume_reason=resume_reason,
+        note=note,
+    )
+    typer.echo(f"Resumed sessions: {len(result.resumed)}")
+    for session, job in result.resumed:
+        typer.echo(
+            f"{session.session_id} | project={session.project_id} | "
+            f"status={session.status.value} | max_iterations={session.max_iterations} | "
+            f"job={job.id}"
+        )
+    if result.skipped:
+        typer.echo(f"Skipped sessions: {len(result.skipped)}")
+        for skipped in result.skipped:
+            typer.echo(
+                f"project={skipped.project_id} | session={skipped.session_id or '-'} | "
+                f"reason={skipped.reason}"
+            )
 
 
 def main() -> None:

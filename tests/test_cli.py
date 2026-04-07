@@ -996,6 +996,91 @@ def test_queue_resume_session_command_extends_budget_and_enqueues_quantum(
     assert jobs[0].session_id == session.session_id
 
 
+def test_queue_resume_workspace_command_resumes_workspace_sessions(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    config_path = tmp_path / "workspace.toml"
+    artifact_root = tmp_path / "artifacts"
+    config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 2\n\n"
+        "[[projects]]\n"
+        'id = "alpha"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[[projects]]\n"
+        'id = "beta"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n',
+        encoding="utf-8",
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    store.register_session(
+        ProjectSession(
+            session_id="session-alpha-1",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.PAUSED,
+            max_iterations=1,
+            completed_iterations=1,
+            last_stop_reason="max_iterations_reached",
+        )
+    )
+    store.register_session(
+        ProjectSession(
+            session_id="session-beta-1",
+            workspace_id="demo-workspace",
+            project_id="beta",
+            status=SessionStatus.FAILED,
+            max_iterations=2,
+            completed_iterations=1,
+            error_message="executor failed",
+            last_stop_reason="run_failed",
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "queue",
+            "resume-workspace",
+            "--config",
+            str(config_path),
+            "--max-iterations",
+            "4",
+            "--resume-reason",
+            "workspace_recover",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Resumed sessions: 2" in result.output
+    assert "project=alpha" in result.output
+    assert "project=beta" in result.output
+
+    alpha = store.get_session("session-alpha-1")
+    beta = store.get_session("session-beta-1")
+    assert alpha is not None
+    assert beta is not None
+    assert alpha.status is SessionStatus.PENDING
+    assert beta.status is SessionStatus.PENDING
+    assert alpha.max_iterations == 4
+    assert beta.max_iterations == 4
+    assert alpha.last_resume_reason == "workspace_recover"
+    assert beta.last_resume_reason == "workspace_recover"
+
+    jobs = QueueStore(artifact_root / "archonlab.db").list_jobs(limit=10)
+    assert len(jobs) == 2
+    assert {job.session_id for job in jobs} == {"session-alpha-1", "session-beta-1"}
+
+
 def test_queue_fleet_command_processes_jobs_with_auto_slot_workers(
     tmp_path: Path, fake_archon_project: Path, fake_archon_root: Path
 ) -> None:

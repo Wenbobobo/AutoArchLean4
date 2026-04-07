@@ -6,6 +6,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from math import ceil
 from pathlib import Path
@@ -61,6 +62,19 @@ class FleetProfileAggregate(TypedDict):
     stage_counts: dict[str, int]
     project_ids: list[str]
     focus_examples: list[str]
+
+
+@dataclass(frozen=True)
+class WorkspaceSessionResumeSkip:
+    project_id: str
+    reason: str
+    session_id: str | None = None
+
+
+@dataclass
+class WorkspaceSessionResumeResult:
+    resumed: list[tuple[ProjectSession, QueueJob]] = field(default_factory=list)
+    skipped: list[WorkspaceSessionResumeSkip] = field(default_factory=list)
 
 
 class QueueStore:
@@ -243,6 +257,134 @@ class QueueStore:
                 )
             )
         return jobs
+
+    def resume_session(
+        self,
+        workspace_config_path: Path,
+        *,
+        session_id: str,
+        max_iterations: int | None = None,
+        priority: int = 0,
+        resume_reason: str | None = None,
+        note: str | None = None,
+    ) -> tuple[ProjectSession, QueueJob]:
+        from .config import load_workspace_config
+
+        resolved_workspace_config_path = workspace_config_path.resolve()
+        workspace_config = load_workspace_config(resolved_workspace_config_path)
+        event_store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+        session = event_store.get_session(session_id)
+        if session is None:
+            raise KeyError(f"Unknown project session: {session_id}")
+        if session.workspace_id != workspace_config.name:
+            raise ValueError(
+                f"Session {session_id} does not belong to workspace {workspace_config.name}"
+            )
+        if session.status in {SessionStatus.COMPLETED, SessionStatus.CANCELED}:
+            raise ValueError(f"Cannot resume terminal session: {session.status.value}")
+
+        resolved_max_iterations = (
+            max_iterations if max_iterations is not None else session.max_iterations
+        )
+        if resolved_max_iterations < session.completed_iterations:
+            raise ValueError(
+                "The new --max-iterations must be >= the current completed iteration count."
+            )
+        active_job = self.get_active_session_job(session_id)
+        if (
+            active_job is None
+            and resolved_max_iterations <= session.completed_iterations
+            and session.status is not SessionStatus.RUNNING
+        ):
+            raise ValueError(
+                "Session budget is exhausted; provide a larger --max-iterations to resume."
+            )
+
+        updated = event_store.update_session(
+            session_id,
+            status=(
+                SessionStatus.RUNNING
+                if session.status is SessionStatus.RUNNING and active_job is not None
+                else SessionStatus.PENDING
+            ),
+            max_iterations=max_iterations,
+            clear_error_message=(
+                active_job is None or session.status is not SessionStatus.RUNNING
+            ),
+            clear_stop_reason=(
+                active_job is None or session.status is not SessionStatus.RUNNING
+            ),
+            resume_reason=resume_reason or "queue_resume_session",
+            note=note,
+        )
+        job = self.enqueue_session_quantum(
+            resolved_workspace_config_path,
+            session_id=updated.session_id,
+            priority=priority,
+        )
+        return updated, job
+
+    def resume_workspace_sessions(
+        self,
+        workspace_config_path: Path,
+        *,
+        project_ids: list[str] | None = None,
+        max_iterations: int | None = None,
+        priority: int = 0,
+        resume_reason: str | None = None,
+        note: str | None = None,
+    ) -> WorkspaceSessionResumeResult:
+        from .config import load_workspace_config
+
+        resolved_workspace_config_path = workspace_config_path.resolve()
+        workspace_config = load_workspace_config(resolved_workspace_config_path)
+        event_store = EventStore(workspace_config.run.artifact_root / "archonlab.db")
+        selected_project_ids = set(project_ids) if project_ids is not None else None
+        result = WorkspaceSessionResumeResult()
+        for project in workspace_config.projects:
+            if not project.enabled:
+                continue
+            if selected_project_ids is not None and project.id not in selected_project_ids:
+                continue
+            session = self._latest_workspace_session(
+                workspace_id=workspace_config.name,
+                project_id=project.id,
+                event_store=event_store,
+            )
+            if session is None:
+                result.skipped.append(
+                    WorkspaceSessionResumeSkip(project_id=project.id, reason="no_session")
+                )
+                continue
+            if session.status in {SessionStatus.COMPLETED, SessionStatus.CANCELED}:
+                result.skipped.append(
+                    WorkspaceSessionResumeSkip(
+                        project_id=project.id,
+                        session_id=session.session_id,
+                        reason=f"terminal:{session.status.value}",
+                    )
+                )
+                continue
+            try:
+                result.resumed.append(
+                    self.resume_session(
+                        resolved_workspace_config_path,
+                        session_id=session.session_id,
+                        max_iterations=max_iterations,
+                        priority=priority,
+                        resume_reason=resume_reason or "queue_resume_workspace",
+                        note=note,
+                    )
+                )
+            except ValueError as err:
+                result.skipped.append(
+                    WorkspaceSessionResumeSkip(
+                        project_id=project.id,
+                        session_id=session.session_id,
+                        reason=err.args[0] if err.args else str(err),
+                    )
+                )
+        return result
 
     def enqueue_session_quantum(
         self,
@@ -1782,6 +1924,20 @@ class QueueStore:
         )
         event_store.register_session(session)
         return session
+
+    def _latest_workspace_session(
+        self,
+        *,
+        workspace_id: str,
+        project_id: str,
+        event_store: EventStore,
+    ) -> ProjectSession | None:
+        existing = event_store.list_sessions(
+            workspace_id=workspace_id,
+            project_id=project_id,
+            limit=1,
+        )
+        return existing[0] if existing else None
 
     @staticmethod
     def _new_session_id(project_id: str) -> str:

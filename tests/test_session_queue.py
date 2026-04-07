@@ -9,6 +9,7 @@ from archonlab.control import ControlService
 from archonlab.events import EventStore
 from archonlab.models import (
     ExecutorKind,
+    ProjectSession,
     ProviderKind,
     QueueJobKind,
     QueueJobStatus,
@@ -262,3 +263,73 @@ def test_queue_store_reaps_stale_worker_and_recovers_running_session_claim(
     assert updated_job is not None
     assert updated_job.status is QueueJobStatus.QUEUED
     assert updated_job.worker_id is None
+
+
+def test_queue_store_resume_workspace_sessions_resumes_paused_and_failed_sessions(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    project_b = _clone_project(fake_archon_project, tmp_path / "DemoProjectB")
+    artifact_root = tmp_path / "artifacts"
+    workspace_path = _write_workspace_config(
+        tmp_path / "workspace.toml",
+        artifact_root=artifact_root,
+        archon_path=fake_archon_root,
+        projects=[
+            ("alpha", fake_archon_project),
+            ("beta", project_b),
+        ],
+    )
+    event_store = EventStore(artifact_root / "archonlab.db")
+    event_store.register_session(
+        ProjectSession(
+            session_id="session-alpha-1",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.PAUSED,
+            max_iterations=1,
+            completed_iterations=1,
+            last_stop_reason="max_iterations_reached",
+        )
+    )
+    event_store.register_session(
+        ProjectSession(
+            session_id="session-beta-1",
+            workspace_id="demo-workspace",
+            project_id="beta",
+            status=SessionStatus.FAILED,
+            max_iterations=2,
+            completed_iterations=1,
+            error_message="executor failed",
+            last_stop_reason="run_failed",
+        )
+    )
+    queue_store = QueueStore(artifact_root / "archonlab.db")
+
+    result = queue_store.resume_workspace_sessions(
+        workspace_path,
+        max_iterations=3,
+        resume_reason="workspace_batch_resume",
+    )
+
+    assert [session.project_id for session, _ in result.resumed] == ["alpha", "beta"]
+    assert not result.skipped
+
+    resumed_alpha = event_store.get_session("session-alpha-1")
+    resumed_beta = event_store.get_session("session-beta-1")
+    assert resumed_alpha is not None
+    assert resumed_beta is not None
+    assert resumed_alpha.status is SessionStatus.PENDING
+    assert resumed_beta.status is SessionStatus.PENDING
+    assert resumed_alpha.max_iterations == 3
+    assert resumed_beta.max_iterations == 3
+    assert resumed_alpha.last_resume_reason == "workspace_batch_resume"
+    assert resumed_beta.last_resume_reason == "workspace_batch_resume"
+    assert resumed_alpha.last_stop_reason is None
+    assert resumed_beta.last_stop_reason is None
+    assert resumed_beta.error_message is None
+
+    jobs = queue_store.list_jobs(limit=10)
+    assert len(jobs) == 2
+    assert {job.session_id for job in jobs} == {"session-alpha-1", "session-beta-1"}
