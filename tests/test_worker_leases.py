@@ -387,3 +387,56 @@ def test_queue_store_claim_next_job_respects_model_and_cost_capabilities(
     assert claimed.id == cheap_job.id
     assert claimed.required_models == ["gpt-5.4-mini"]
     assert queue_store.get_job(premium_job.id).status is QueueJobStatus.QUEUED
+
+
+def test_enqueue_benchmark_manifest_uses_previewed_resource_requirements(
+    tmp_path: Path,
+) -> None:
+    project_path = _make_project(tmp_path, "DemoProject")
+    archon_path = _make_archon(tmp_path)
+    (project_path / "Core.lean").write_text(
+        "theorem foo : True := by\n"
+        "  sorry\n"
+        "\n"
+        "theorem bar : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+    (project_path / "Support.lean").write_text(
+        "theorem helper : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+    (project_path / ".archon" / "proof-journal" / "sessions" / "session-1").mkdir(parents=True)
+    manifest_path = tmp_path / "previewed.toml"
+    manifest_path.write_text(
+        "[benchmark]\n"
+        'name = "previewed"\n'
+        'artifact_root = "./artifacts/previewed"\n\n'
+        "[provider]\n"
+        'model = "gpt-5.4-mini"\n'
+        'cost_tier = "cheap"\n'
+        'endpoint_class = "fast"\n'
+        "\n"
+        "[phase_provider.prover]\n"
+        'model = "gpt-5.4"\n'
+        'cost_tier = "premium"\n'
+        'endpoint_class = "lab"\n'
+        "\n"
+        "[[projects]]\n"
+        'id = "demo-project"\n'
+        f'path = "{project_path}"\n'
+        f'archon_path = "{archon_path}"\n'
+        'workflow = "adaptive_loop"\n',
+        encoding="utf-8",
+    )
+
+    queue_store = QueueStore(tmp_path / "queue.db")
+    jobs = queue_store.enqueue_benchmark_manifest(manifest_path, priority=3)
+
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job.required_models == ["gpt-5.4"]
+    assert job.required_cost_tiers == ["premium"]
+    assert job.required_endpoint_classes == ["lab"]
+    assert job.priority == 10

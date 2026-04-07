@@ -8,20 +8,34 @@ from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import TypedDict, cast
 
 from .benchmark import load_benchmark_manifest
-from .execution_policy import collect_required_execution_kinds
 from .models import (
+    ExecutionPolicy,
+    ExecutorConfig,
     ExecutorKind,
+    ProjectConfig,
+    ProviderConfig,
     ProviderKind,
     QueueBenchmarkPayload,
     QueueJob,
     QueueJobKind,
     QueueJobStatus,
     QueueWorkerLease,
+    RunConfig,
     WorkerStatus,
+    WorkflowMode,
 )
+
+
+class ProjectRequirements(TypedDict):
+    priority: int
+    required_executor_kinds: list[ExecutorKind]
+    required_provider_kinds: list[ProviderKind]
+    required_models: list[str]
+    required_cost_tiers: list[str]
+    required_endpoint_classes: list[str]
 
 
 class QueueStore:
@@ -150,20 +164,21 @@ class QueueStore:
         priority: int = 0,
     ) -> list[QueueJob]:
         manifest = load_benchmark_manifest(manifest_path)
-        (
-            required_executor_kinds,
-            required_provider_kinds,
-            required_models,
-            required_cost_tiers,
-            required_endpoint_classes,
-        ) = collect_required_execution_kinds(
-            executor=manifest.executor,
-            provider=manifest.provider,
-            execution_policy=manifest.execution_policy,
-        )
         batch_id = self._new_batch_id()
         jobs: list[QueueJob] = []
         for project in manifest.projects:
+            requireds = self._derive_project_requirements(
+                project_id=project.id,
+                project_path=project.project_path,
+                archon_path=project.archon_path,
+                workflow=project.workflow,
+                max_iterations=project.max_iterations,
+                artifact_root=manifest.benchmark.artifact_root,
+                executor=manifest.executor,
+                provider=manifest.provider,
+                execution_policy=manifest.execution_policy,
+                base_priority=priority,
+            )
             payload = QueueBenchmarkPayload(
                 benchmark_name=manifest.benchmark.name,
                 manifest_path=manifest_path.resolve(),
@@ -176,14 +191,14 @@ class QueueStore:
                 self.enqueue(
                     "benchmark_project",
                     payload.model_dump(mode="json"),
-                    priority=priority,
+                    priority=requireds["priority"],
                     project_id=project.id,
                     batch_id=batch_id,
-                    required_executor_kinds=required_executor_kinds,
-                    required_provider_kinds=required_provider_kinds,
-                    required_models=required_models,
-                    required_cost_tiers=required_cost_tiers,
-                    required_endpoint_classes=required_endpoint_classes,
+                    required_executor_kinds=requireds["required_executor_kinds"],
+                    required_provider_kinds=requireds["required_provider_kinds"],
+                    required_models=requireds["required_models"],
+                    required_cost_tiers=requireds["required_cost_tiers"],
+                    required_endpoint_classes=requireds["required_endpoint_classes"],
                 )
             )
         return jobs
@@ -912,6 +927,81 @@ class QueueStore:
         if isinstance(manifest_path, str):
             return Path(manifest_path).stem
         return "unknown"
+
+    @staticmethod
+    def _derive_priority(
+        base_priority: int,
+        *,
+        task_priority: int | None,
+        objective_relevant: bool | None,
+    ) -> int:
+        return base_priority + (task_priority or 0) + (5 if objective_relevant else 0)
+
+    def _derive_project_requirements(
+        self,
+        *,
+        project_id: str,
+        project_path: Path,
+        archon_path: Path,
+        workflow: WorkflowMode,
+        max_iterations: int,
+        artifact_root: Path,
+        executor: ExecutorConfig,
+        provider: ProviderConfig,
+        execution_policy: ExecutionPolicy,
+        base_priority: int,
+    ) -> ProjectRequirements:
+        from .models import AppConfig
+        from .services import RunService
+
+        service = RunService(
+            AppConfig(
+                project=ProjectConfig(
+                    name=project_id,
+                    project_path=project_path,
+                    archon_path=archon_path,
+                ),
+                run=RunConfig(
+                    workflow=workflow,
+                    max_iterations=max_iterations,
+                    artifact_root=artifact_root,
+                ),
+                executor=executor,
+                provider=provider,
+                execution_policy=execution_policy,
+            )
+        )
+        preview = service.preview()
+        if preview.resolved_executor is None or preview.resolved_provider is None:
+            return {
+                "priority": base_priority,
+                "required_executor_kinds": [],
+                "required_provider_kinds": [],
+                "required_models": [],
+                "required_cost_tiers": [],
+                "required_endpoint_classes": [],
+            }
+        resolved_provider = preview.resolved_provider
+        return {
+            "priority": self._derive_priority(
+                base_priority,
+                task_priority=preview.action.task_priority,
+                objective_relevant=preview.action.objective_relevant,
+            ),
+            "required_executor_kinds": [preview.resolved_executor.kind],
+            "required_provider_kinds": [resolved_provider.kind],
+            "required_models": [resolved_provider.model] if resolved_provider.model else [],
+            "required_cost_tiers": (
+                [resolved_provider.cost_tier]
+                if resolved_provider.cost_tier
+                else []
+            ),
+            "required_endpoint_classes": (
+                [resolved_provider.endpoint_class]
+                if resolved_provider.endpoint_class
+                else []
+            ),
+        }
 
     @staticmethod
     def _new_job_id() -> str:

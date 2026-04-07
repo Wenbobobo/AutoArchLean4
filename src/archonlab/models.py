@@ -256,6 +256,20 @@ class RunResult(BaseModel):
     execution: ExecutionResult | None = None
 
 
+class RunPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    progress: ProgressSnapshot
+    snapshot: ProjectSnapshot
+    control: ControlState
+    workflow_spec: WorkflowSpec | None = None
+    task_graph: TaskGraph
+    supervisor: SupervisorDecision
+    action: AdapterAction
+    resolved_executor: ExecutorConfig | None = None
+    resolved_provider: ProviderConfig | None = None
+
+
 class BenchmarkConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

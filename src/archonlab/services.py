@@ -14,6 +14,7 @@ from .models import (
     EventRecord,
     ExecutionRequest,
     ExecutionStatus,
+    RunPreview,
     RunResult,
     RunStatus,
     RunSummary,
@@ -36,8 +37,8 @@ class RunService:
         self.control = ControlService(config.run.artifact_root)
 
     def start(self, *, dry_run: bool | None = None) -> RunResult:
-        self.adapter.ensure_valid()
-        progress = self.adapter.read_progress()
+        preview = self.preview()
+        progress = preview.progress
         run_id = self._new_run_id()
         actual_dry_run = self.config.run.dry_run if dry_run is None else dry_run
 
@@ -76,19 +77,13 @@ class RunService:
             jsonl_path=events_jsonl,
         )
 
-        snapshot = collect_project_snapshot(
-            project_path=self.config.project.project_path,
-            archon_path=self.config.project.archon_path,
-        )
-        control_state = self.control.read(self.config.project)
+        snapshot = preview.snapshot
+        control_state = preview.control
         control_path.write_text(
             json.dumps(control_state.model_dump(mode="json"), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        task_graph = build_task_graph(
-            project_path=self.config.project.project_path,
-            archon_path=self.config.project.archon_path,
-        )
+        task_graph = preview.task_graph
         task_graph_path.write_text(
             json.dumps(task_graph.model_dump(mode="json"), ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -107,48 +102,8 @@ class RunService:
             jsonl_path=events_jsonl,
         )
 
-        workflow_spec = (
-            load_workflow_spec(self.config.run.workflow_spec)
-            if self.config.run.workflow_spec is not None
-            else None
-        )
-        recent_events = self.event_store.list_recent_project_events(
-            self.config.project.name,
-            limit=20,
-        )
-        provisional_supervisor = SupervisorDecision(
-            project_id=self.config.project.name,
-            action=SupervisorAction.CONTINUE,
-            reason=SupervisorReason.HEALTHY,
-            summary="Provisional supervisor state before historical evaluation.",
-        )
-        predicted_action = select_next_action(
-            adapter=self.adapter,
-            workflow=self.config.run.workflow,
-            snapshot=snapshot,
-            task_graph=task_graph,
-            supervisor=provisional_supervisor,
-            workflow_spec=workflow_spec,
-            control_state=control_state,
-        )
-        recent_events = [
-            *recent_events,
-            EventRecord(
-                run_id=run_id,
-                kind="workflow.next_action",
-                project_id=self.config.project.name,
-                payload={
-                    "phase": predicted_action.phase,
-                    "reason": predicted_action.reason,
-                },
-            ),
-        ]
-
-        supervisor = decide_supervisor_action(
-            snapshot=snapshot,
-            task_graph=task_graph,
-            recent_events=recent_events,
-        )
+        workflow_spec = preview.workflow_spec
+        supervisor = preview.supervisor
         supervisor_path.write_text(
             json.dumps(supervisor.model_dump(mode="json"), ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -168,15 +123,7 @@ class RunService:
             jsonl_path=events_jsonl,
         )
 
-        action = select_next_action(
-            adapter=self.adapter,
-            workflow=self.config.run.workflow,
-            snapshot=snapshot,
-            task_graph=task_graph,
-            supervisor=supervisor,
-            workflow_spec=workflow_spec,
-            control_state=control_state,
-        )
+        action = preview.action
         prompt_text = action.prompt_preview or ""
         prompt_path.write_text(prompt_text, encoding="utf-8")
 
@@ -247,11 +194,10 @@ class RunService:
 
         execution_result = None
         if not actual_dry_run and str(action.phase) != "stop":
-            resolved_executor, resolved_provider = resolve_app_phase_configs(
-                self.config,
-                phase=action.phase,
-                action=action,
-            )
+            resolved_executor = preview.resolved_executor
+            resolved_provider = preview.resolved_provider
+            if resolved_executor is None or resolved_provider is None:
+                raise RuntimeError("Missing resolved execution config for non-stop action.")
             executor = create_executor(
                 executor_config=resolved_executor,
                 provider_config=resolved_provider,
@@ -361,6 +307,88 @@ class RunService:
             task_graph_path=task_graph_path,
             supervisor_path=supervisor_path,
             execution=execution_result,
+        )
+
+    def preview(self) -> RunPreview:
+        self.adapter.ensure_valid()
+        progress = self.adapter.read_progress()
+        snapshot = collect_project_snapshot(
+            project_path=self.config.project.project_path,
+            archon_path=self.config.project.archon_path,
+        )
+        control_state = self.control.read(self.config.project)
+        task_graph = build_task_graph(
+            project_path=self.config.project.project_path,
+            archon_path=self.config.project.archon_path,
+        )
+        workflow_spec = (
+            load_workflow_spec(self.config.run.workflow_spec)
+            if self.config.run.workflow_spec is not None
+            else None
+        )
+        recent_events = self.event_store.list_recent_project_events(
+            self.config.project.name,
+            limit=20,
+        )
+        provisional_supervisor = SupervisorDecision(
+            project_id=self.config.project.name,
+            action=SupervisorAction.CONTINUE,
+            reason=SupervisorReason.HEALTHY,
+            summary="Provisional supervisor state before historical evaluation.",
+        )
+        predicted_action = select_next_action(
+            adapter=self.adapter,
+            workflow=self.config.run.workflow,
+            snapshot=snapshot,
+            task_graph=task_graph,
+            supervisor=provisional_supervisor,
+            workflow_spec=workflow_spec,
+            control_state=control_state,
+        )
+        recent_events = [
+            *recent_events,
+            EventRecord(
+                run_id="preview",
+                kind="workflow.next_action",
+                project_id=self.config.project.name,
+                payload={
+                    "phase": predicted_action.phase,
+                    "reason": predicted_action.reason,
+                },
+            ),
+        ]
+        supervisor = decide_supervisor_action(
+            snapshot=snapshot,
+            task_graph=task_graph,
+            recent_events=recent_events,
+        )
+        action = select_next_action(
+            adapter=self.adapter,
+            workflow=self.config.run.workflow,
+            snapshot=snapshot,
+            task_graph=task_graph,
+            supervisor=supervisor,
+            workflow_spec=workflow_spec,
+            control_state=control_state,
+        )
+        resolved_executor = None
+        resolved_provider = None
+        if str(action.phase) != "stop":
+            resolved_executor, resolved_provider = resolve_app_phase_configs(
+                self.config,
+                phase=action.phase,
+                action=action,
+            )
+        return RunPreview(
+            progress=progress,
+            snapshot=snapshot,
+            control=control_state,
+            workflow_spec=workflow_spec,
+            task_graph=task_graph,
+            supervisor=supervisor,
+            action=action,
+            resolved_executor=resolved_executor,
+            resolved_provider=resolved_provider,
         )
 
     @staticmethod

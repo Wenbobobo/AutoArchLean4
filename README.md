@@ -76,6 +76,7 @@ uv run archonlab worktree create --repo-path /path/to/repo --name phase4-run
 supervisor 也会读取同一项目的近期历史事件，识别重复无进展的 loop。
 benchmark 则已经支持在隔离 `git worktree` 中运行。
 queue/batch 层已经支持 benchmark 作业排队、slot-aware 并发处理、pause-aware 跳过和 job 级 artifacts。
+benchmark project 入队前现在会先做一次 `preview()`，按当前预测的 next action 派生 executor/provider 约束和 job priority。
 queue worker 现在会留下可查询的 lease / heartbeat / 当前 job telemetry。
 你现在还可以单独启动 `queue worker` 进程，让多个外部 worker 共享同一个 sqlite 队列。
 独立 worker 现在支持 `--auto-slot`，可以自动抢占当前空闲 slot，而不必人工分配编号。
