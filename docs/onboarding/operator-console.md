@@ -29,6 +29,76 @@ ArchonLab 现在有三层操作面：
 
 ## 2. 推荐操作顺序
 
+### 一套可直接复制的启动命令
+
+下面假设你已经在本机装好了 `uv`、Python 3.12、Lean 和 Archon。
+如果当前目录下还没有 `workspace.toml`，先生成它；
+不要直接运行 `workspace daemon run --config workspace.toml`，否则会报
+`Path 'workspace.toml' does not exist`。
+
+```bash
+cd /home/niracler/Gary/Math/archonlab
+
+export PROJECT_PATH=/absolute/path/to/your/lean-project
+export ARCHON_PATH=/absolute/path/to/your/Archon
+
+uv run archonlab workspace init \
+  --project-path "$PROJECT_PATH" \
+  --archon-path "$ARCHON_PATH" \
+  --config-path workspace.toml
+
+uv run archonlab workspace status --config workspace.toml
+```
+
+启动 dashboard。
+
+- 本机访问：`--host 127.0.0.1`
+- 远程访问：`--host 0.0.0.0`
+
+```bash
+cd /home/niracler/Gary/Math/archonlab
+uv run archonlab dashboard serve --config workspace.toml --host 0.0.0.0 --port 8000
+```
+
+新开一个终端，启动 daemon：
+
+```bash
+cd /home/niracler/Gary/Math/archonlab
+uv run archonlab workspace daemon run --config workspace.toml
+```
+
+可选：如果你想更快看到 queue / worker 变化，再开一个终端启动 fleet：
+
+```bash
+cd /home/niracler/Gary/Math/archonlab
+uv run archonlab queue fleet --config workspace.toml --workers 2
+```
+
+打开浏览器：
+
+```text
+http://127.0.0.1:8000
+```
+
+远程访问时改成：
+
+```text
+http://<your-host-or-tailscale-ip>:8000
+```
+
+### 默认会跑什么
+
+如果你只运行上面这套命令，系统默认跑的是 workspace 自治 session：
+
+- job kind: `session_quantum`
+- workflow: `adaptive_loop`
+- mode: `dry_run = true`
+- first likely phase: `plan`
+- first likely reason: `bootstrap_first_iteration`
+
+它不会自动开始 benchmark。
+只有你显式运行 `benchmark run` 或把 benchmark 入队，才会产生 `benchmark_project` 作业。
+
 ### 第一次接管一个 workspace
 
 1. 先检查环境和配置
