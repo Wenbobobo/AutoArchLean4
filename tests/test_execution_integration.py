@@ -626,14 +626,14 @@ def test_openai_execution_ingestion_advances_project_state_loop(
         assert "ingested-response" in task_result_path.read_text(encoding="utf-8")
 
         preview_after_second = service.preview()
-        assert preview_after_second.action.phase == "plan"
-        assert preview_after_second.action.reason == "unprocessed_task_results"
+        assert preview_after_second.action.phase == "review"
+        assert preview_after_second.action.reason == "pending_review"
 
         third = service.start(dry_run=False)
-        assert third.action.phase == "plan"
-        assert third.action.reason == "unprocessed_task_results"
+        assert third.action.phase == "review"
+        assert third.action.reason == "pending_review"
         assert third.ingestion is not None
-        assert third.ingestion.phase == "plan"
+        assert third.ingestion.phase == "review"
         assert third.ingestion.proof_journal_session_path is not None
         assert len(third.ingestion.archived_task_results) == 1
         assert not task_result_path.exists()
@@ -645,7 +645,7 @@ def test_openai_execution_ingestion_advances_project_state_loop(
         ingestion_payload = json.loads(
             (third.artifact_dir / "ingestion.json").read_text(encoding="utf-8")
         )
-        assert ingestion_payload["phase"] == "plan"
+        assert ingestion_payload["phase"] == "review"
         assert ingestion_payload["task_result_path"] is None
         assert ingestion_payload["proof_journal_session_path"] is not None
 

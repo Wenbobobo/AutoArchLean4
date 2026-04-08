@@ -39,8 +39,8 @@ def select_next_action(
         phase = ActionPhase.STOP
         reason = "project_complete"
     elif snapshot.task_results:
-        phase = ActionPhase.PLAN
-        reason = "unprocessed_task_results"
+        phase = ActionPhase.REVIEW
+        reason = "pending_review"
     elif supervisor.action is SupervisorAction.CONTINUE:
         if workflow is WorkflowMode.FIXED_LOOP:
             phase = ActionPhase.PLAN

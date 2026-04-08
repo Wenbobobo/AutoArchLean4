@@ -141,8 +141,8 @@ class ArchonAdapter:
             return AdapterAction(phase="stop", reason="project_complete", stage=progress.stage)
 
         if self.list_task_results():
-            phase = "plan"
-            reason = "unprocessed_task_results"
+            phase = "review"
+            reason = "pending_review"
         elif workflow is WorkflowMode.FIXED_LOOP:
             phase = "plan"
             reason = "fixed_loop_baseline"
@@ -224,7 +224,19 @@ class ArchonAdapter:
                 phase=normalized_phase,
                 task_result_path=task_result_path.resolve(),
             )
-        if normalized_phase in {"plan", "review"}:
+        if normalized_phase == "plan":
+            session_dir = self._write_proof_journal_session(
+                run_id=run_id,
+                phase=normalized_phase,
+                response_text=body,
+                task_id=task_id,
+                task_title=task_title,
+            )
+            return ExecutionIngestionResult(
+                phase=normalized_phase,
+                proof_journal_session_path=session_dir.resolve(),
+            )
+        if normalized_phase == "review":
             session_dir = self._write_proof_journal_session(
                 run_id=run_id,
                 phase=normalized_phase,

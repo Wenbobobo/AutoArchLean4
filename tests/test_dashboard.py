@@ -222,6 +222,14 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert 'id="workspace-enqueue-button"' in index_response.text
     assert 'id="workspace-resume-button"' in index_response.text
     assert 'id="workspace-tag-input"' in index_response.text
+    assert 'id="workspace-project-meta"' in index_response.text
+    assert 'id="workspace-project-roster"' in index_response.text
+    assert 'id="workspace-project-plan-button"' in index_response.text
+    assert 'id="workspace-project-enqueue-button"' in index_response.text
+    assert 'id="workspace-project-resume-button"' in index_response.text
+    assert "工作区入队" in index_response.text
+    assert "任务详情" in index_response.text
+    assert "高级实验与回放" in index_response.text
 
     runs_response = client.get("/api/runs")
     assert runs_response.status_code == 200

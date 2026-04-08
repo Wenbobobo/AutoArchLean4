@@ -132,7 +132,7 @@ def test_select_next_action_targets_blocked_theorem_for_prover(tmp_path: Path) -
     assert "theorem: foo" in (action.prompt_preview or "")
 
 
-def test_select_next_action_reroutes_to_plan_for_task_results(tmp_path: Path) -> None:
+def test_select_next_action_routes_to_review_for_task_results(tmp_path: Path) -> None:
     project_path, archon_path = _make_project(
         tmp_path,
         with_review_session=True,
@@ -152,8 +152,8 @@ def test_select_next_action_reroutes_to_plan_for_task_results(tmp_path: Path) ->
         supervisor=_healthy_supervisor(snapshot.project_id),
     )
 
-    assert action.phase == "plan"
-    assert action.reason == "unprocessed_task_results"
+    assert action.phase == "review"
+    assert action.reason == "pending_review"
 
 
 def test_select_next_action_respects_supervisor_reroute(tmp_path: Path) -> None:

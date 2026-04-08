@@ -1581,31 +1581,36 @@ def render_dashboard_html(
             <div class="status" id="control-status"></div>
             <div class="controls">
               <label>
-                Active Project
+                <span data-i18n-key="activeProjectLabel">当前项目</span>
                 <select id="project-selector">
                   {project_selector_options}
                 </select>
               </label>
-              <button id="pause-button">Pause Project</button>
-              <button class="secondary" id="resume-button">Resume Project</button>
+              <button id="pause-button" data-i18n-key="pauseButton">暂停项目</button>
+              <button class="secondary" id="resume-button" data-i18n-key="resumeButton">
+                恢复项目
+              </button>
               <textarea
                 id="hint-input"
-                placeholder="Write a hint for the next planning/proving cycle."
+                placeholder="给下一轮计划 / 证明写一条提示。"
+                data-i18n-placeholder="hintPlaceholder"
               ></textarea>
-              <button id="hint-button">Inject Hint</button>
+              <button id="hint-button" data-i18n-key="hintButton">注入提示</button>
             </div>
             <div class="workflow-box">
-              <h2>Workflow Override</h2>
+              <h2 data-i18n-key="workflowOverrideHeading">流程覆盖</h2>
               <label>
-                Mode Override
+                <span data-i18n-key="workflowModeLabel">模式覆盖</span>
                 <select id="workflow-mode-select">
-                  <option value="">Default Config</option>
-                  <option value="adaptive_loop">adaptive_loop</option>
-                  <option value="fixed_loop">fixed_loop</option>
+                  <option value="" id="workflow-mode-default-option">使用配置默认值</option>
+                  <option value="adaptive_loop" id="workflow-mode-adaptive-option">
+                    自适应循环
+                  </option>
+                  <option value="fixed_loop" id="workflow-mode-fixed-option">固定循环</option>
                 </select>
               </label>
               <label>
-                Workflow Spec Override
+                <span data-i18n-key="workflowSpecLabel">Workflow 规则文件覆盖</span>
                 <input
                   id="workflow-spec-input"
                   type="text"
@@ -1614,14 +1619,14 @@ def render_dashboard_html(
               </label>
               <label class="toggle">
                 <input id="clear-workflow-spec-checkbox" type="checkbox" />
-                Ignore configured workflow spec
+                <span data-i18n-key="clearWorkflowSpecLabel">忽略配置中的 workflow spec</span>
               </label>
               <div class="controls">
                 <button class="secondary" id="workflow-apply-button">
-                  Apply Workflow Override
+                  <span data-i18n-key="workflowApplyButton">应用流程覆盖</span>
                 </button>
                 <button class="secondary" id="workflow-reset-button">
-                  Reset Workflow Override
+                  <span data-i18n-key="workflowResetButton">重置流程覆盖</span>
                 </button>
               </div>
             </div>
@@ -1631,35 +1636,35 @@ def render_dashboard_html(
             <div class="section-head">
               <h2 id="heading-current-preview">当前预览</h2>
               <div class="meta" id="project-preview-meta">
-                Inspect the live supervisor/workflow prediction before launching the next run.
+                在真正启动下一轮之前，先看 supervisor / workflow 的即时预测。
               </div>
             </div>
             <div class="chip-row" id="project-preview-chips"></div>
             <div style="height: 12px"></div>
             <div class="preview-grid">
               <section class="preview-card">
-                <h3>Overview</h3>
+                <h3 data-i18n-key="previewOverviewCard">概览</h3>
                 <div class="fact-grid" id="project-preview-overview"></div>
               </section>
               <section class="preview-card">
-                <h3>Focus Task</h3>
+                <h3 data-i18n-key="previewFocusCard">焦点任务</h3>
                 <div class="fact-grid" id="project-preview-focus"></div>
               </section>
               <section class="preview-card">
-                <h3>Supervisor</h3>
+                <h3 data-i18n-key="previewSupervisorCard">Supervisor</h3>
                 <div class="fact-grid" id="project-preview-supervisor"></div>
               </section>
               <section class="preview-card">
-                <h3>Lean Analysis</h3>
+                <h3 data-i18n-key="previewAnalysisCard">Lean 分析</h3>
                 <div class="fact-grid" id="project-preview-analysis"></div>
               </section>
               <section class="preview-card">
-                <h3>Workflow Rules</h3>
+                <h3 data-i18n-key="previewRulesCard">Workflow 规则</h3>
                 <div class="rule-list" id="project-preview-rules"></div>
               </section>
             </div>
             <details class="drawer">
-              <summary>Task Graph And Raw Preview</summary>
+              <summary data-i18n-key="previewGraphDrawer">任务图与原始预览</summary>
               <div style="height: 10px"></div>
               <div class="rule-list" id="project-preview-graph"></div>
               <div style="height: 10px"></div>
@@ -1681,65 +1686,107 @@ def render_dashboard_html(
             <div>
               <h2 id="heading-workspace-overview">工作区总览</h2>
               <div class="meta" id="workspace-overview-meta">
-                Aggregate sessions, queue pressure, and worker health across the workspace.
+                聚合工作区中的会话、队列压力与 worker 健康度。
               </div>
-              <div class="meta">Tag filter: comma-separated AND match for enqueue/resume.</div>
+              <div class="meta" data-i18n-key="workspaceTagMeta">
+                标签过滤：逗号分隔，按 AND 匹配，用于入队 / 恢复。
+              </div>
             </div>
             <div class="compact-controls">
               <input
                 id="workspace-tag-input"
                 type="text"
                 placeholder="geometry,batch"
+                data-i18n-placeholder="workspaceTagPlaceholder"
                 aria-label="Workspace tag filter"
               />
-              <button class="secondary" id="workspace-enqueue-button">Enqueue Workspace</button>
-              <button class="secondary" id="workspace-resume-button">Resume Sessions</button>
+              <button
+                class="secondary"
+                id="workspace-enqueue-button"
+                data-i18n-key="workspaceEnqueueButton"
+              >
+                工作区入队
+              </button>
+              <button
+                class="secondary"
+                id="workspace-resume-button"
+                data-i18n-key="workspaceResumeButton"
+              >
+                恢复会话
+              </button>
             </div>
           </div>
           <div class="preview-grid">
             <section class="preview-card">
-              <h3>Overview</h3>
+              <h3 data-i18n-key="workspaceOverviewCard">概览</h3>
               <div class="fact-grid" id="workspace-overview-summary"></div>
             </section>
             <section class="preview-card">
-              <h3>Runtime Budget</h3>
+              <h3 data-i18n-key="workspaceRuntimeCard">运行预算</h3>
               <div class="fact-grid" id="workspace-runtime-summary"></div>
             </section>
             <section class="preview-card">
-              <h3>Daemon</h3>
+              <h3 data-i18n-key="workspaceDaemonCard">Daemon</h3>
               <div class="fact-grid" id="workspace-daemon-state"></div>
             </section>
             <section class="preview-card">
-              <h3>Sessions</h3>
+              <h3 data-i18n-key="workspaceSessionsCard">会话</h3>
               <div class="rule-list" id="workspace-session-table"></div>
             </section>
             <section class="preview-card">
-              <h3>Provider Health</h3>
+              <h3 data-i18n-key="workspaceProviderHealthCard">Provider 健康度</h3>
               <div class="rule-list" id="workspace-provider-health"></div>
             </section>
             <section class="preview-card">
-              <h3>Worker Pool</h3>
+              <h3 data-i18n-key="workspaceProjectRosterCard">项目调度</h3>
+              <div class="meta" id="workspace-project-meta">
+                选择项目后可直接切回 Plan、入队或恢复。
+              </div>
+              <div class="compact-controls">
+                <button
+                  class="secondary"
+                  id="workspace-project-plan-button"
+                  disabled
+                  data-i18n-key="workspaceProjectPlanButton"
+                >切到计划</button>
+                <button
+                  class="secondary"
+                  id="workspace-project-enqueue-button"
+                  disabled
+                  data-i18n-key="workspaceProjectEnqueueButton"
+                >为当前项目入队</button>
+                <button
+                  class="secondary"
+                  id="workspace-project-resume-button"
+                  disabled
+                  data-i18n-key="workspaceProjectResumeButton"
+                >恢复当前项目</button>
+              </div>
+              <div class="rule-list" id="workspace-project-roster"></div>
+            </section>
+            <section class="preview-card">
+              <h3 data-i18n-key="workspaceWorkerTelemetryCard">工作线程遥测</h3>
               <div class="rule-list" id="workspace-worker-pool"></div>
             </section>
           </div>
           <details class="drawer">
-            <summary>Loop History And Provider Runtime</summary>
+            <summary data-i18n-key="workspaceHistoryDrawer">循环历史与 Provider 运行态</summary>
             <div style="height: 10px"></div>
             <div class="preview-grid">
               <section class="preview-card">
-                <h3>Latest Loop</h3>
+                <h3 data-i18n-key="workspaceLatestLoopCard">最新循环</h3>
                 <div class="fact-grid" id="workspace-latest-loop"></div>
               </section>
               <section class="preview-card">
-                <h3>Loop History</h3>
+                <h3 data-i18n-key="workspaceLoopHistoryCard">循环历史</h3>
                 <div class="rule-list" id="workspace-loop-history"></div>
               </section>
               <section class="preview-card">
-                <h3>Fleet History</h3>
+                <h3 data-i18n-key="workspaceFleetHistoryCard">Fleet 历史</h3>
                 <div class="rule-list" id="workspace-fleet-history"></div>
               </section>
               <section class="preview-card">
-                <h3>Provider Runtime</h3>
+                <h3 data-i18n-key="workspaceProviderRuntimeCard">Provider 运行态</h3>
                 <div class="rule-list" id="workspace-provider-runtime"></div>
               </section>
             </div>
@@ -1750,24 +1797,30 @@ def render_dashboard_html(
           <aside class="panel">
             <h2 id="heading-queue-ops">队列操作</h2>
             <div class="controls">
-              <button class="secondary" id="queue-run-button">Run Pending Queue</button>
-              <button class="secondary" id="queue-fleet-button">Run Auto-Slot Fleet</button>
-              <button class="secondary" id="worker-sweep-button">Sweep Stale Workers</button>
+              <button class="secondary" id="queue-run-button" data-i18n-key="queueRunButton">
+                运行待处理队列
+              </button>
+              <button class="secondary" id="queue-fleet-button" data-i18n-key="queueFleetButton">
+                启动自动槽位 Fleet
+              </button>
+              <button class="secondary" id="worker-sweep-button" data-i18n-key="workerSweepButton">
+                清理失活 Worker
+              </button>
             </div>
             <div style="height: 12px"></div>
             <div class="summary-grid" id="queue-summary"></div>
             <div style="height: 16px"></div>
             <div class="section-head">
-              <h2>Fleet Plan</h2>
+              <h2 data-i18n-key="fleetPlanHeading">Fleet 计划</h2>
               <div class="meta" id="fleet-plan-meta">
-                Recommended dedicated worker pools for the active queue.
+                为当前活跃队列推荐专用 worker 配置。
               </div>
             </div>
             <div class="summary-grid" id="fleet-plan-summary"></div>
             <div style="height: 12px"></div>
             <div class="rule-list" id="fleet-plan-list"></div>
             <div style="height: 16px"></div>
-            <h2>Workers</h2>
+            <h2 data-i18n-key="workersHeading">Workers</h2>
             <div class="list" id="workers-list"></div>
           </aside>
 
@@ -1781,16 +1834,16 @@ def render_dashboard_html(
                 <div class="board" id="queue-board"></div>
               </section>
               <aside>
-                <h2>Job Detail</h2>
+                <h2 data-i18n-key="jobDetailHeading">任务详情</h2>
                 <div class="meta" id="queue-detail-meta">
-                  Select a queue card to inspect and operate on it.
+                  选择一张队列卡片后，可查看详情并执行操作。
                 </div>
                 <div class="compact-controls">
                   <button class="secondary" id="job-requeue-button" disabled>
-                    Requeue Selected Job
+                    <span data-i18n-key="jobRequeueButton">重新排队所选任务</span>
                   </button>
                   <button class="secondary" id="job-cancel-button" disabled>
-                    Cancel Selected Job
+                    <span data-i18n-key="jobCancelButton">取消所选任务</span>
                   </button>
                 </div>
                 <pre id="queue-detail-json">{{}}</pre>
@@ -1809,44 +1862,43 @@ def render_dashboard_html(
       >
         <div class="grid">
           <section class="panel">
-            <h2 id="heading-finish-runs">Recent Runs</h2>
+            <h2 id="heading-finish-runs">最近运行</h2>
             <div class="list" id="runs-list"></div>
             <div style="height: 16px"></div>
-            <h2 id="heading-finish-run-detail">Run Detail</h2>
-            <div class="meta" id="detail-meta">Select a run to inspect its summary and events.</div>
+            <h2 id="heading-finish-run-detail">运行详情</h2>
+            <div class="meta" id="detail-meta">选择一条运行后，可查看摘要与事件。</div>
             <div style="height: 10px"></div>
             <pre id="detail-json">{{}}</pre>
           </section>
 
           <section class="panel">
-            <h2 id="heading-finish-loops">Loop Outcomes</h2>
+            <h2 id="heading-finish-loops">循环结果</h2>
             <div class="preview-grid">
               <section class="preview-card">
-                <h3>Latest Run Loop</h3>
+                <h3 data-i18n-key="finishLatestLoopCard">最新 Run Loop</h3>
                 <div class="fact-grid" id="project-latest-run-loop"></div>
               </section>
               <section class="preview-card">
-                <h3>Run Loop History</h3>
+                <h3 data-i18n-key="finishLoopHistoryCard">Run Loop 历史</h3>
                 <div class="rule-list" id="project-run-loop-history"></div>
               </section>
             </div>
             <details class="drawer">
-              <summary id="heading-benchmark-lab">Advanced Experiment And Replay</summary>
+              <summary id="heading-benchmark-lab">高级实验与回放</summary>
               <div style="height: 12px"></div>
               <section class="panel" id="benchmark-lab-section" style="margin-top: 0;">
                 <div class="section-head">
                   <div>
-                    <div class="meta">
-                      Benchmark and replay remain available for regression analysis,
-                      but are no longer part of the default operator flow.
+                    <div class="meta" data-i18n-key="benchmarkMeta">
+                      Benchmark 与回放仍可用于回归分析，但不再属于默认操作路径。
                     </div>
                   </div>
                 </div>
                 <div class="preview-grid">
           <section class="preview-card">
-            <h3>Run Index</h3>
+            <h3 data-i18n-key="benchmarkRunsCard">运行索引</h3>
             <label>
-              Manifest Path
+              <span data-i18n-key="benchmarkManifestLabel">Manifest 路径</span>
               <input
                 id="benchmark-manifest-input"
                 type="text"
@@ -1854,7 +1906,7 @@ def render_dashboard_html(
               />
             </label>
             <label>
-              Artifact Root
+              <span data-i18n-key="benchmarkArtifactRootLabel">Artifact 根目录</span>
               <input
                 id="benchmark-artifact-root-input"
                 type="text"
@@ -1862,18 +1914,24 @@ def render_dashboard_html(
               />
             </label>
             <div class="compact-controls">
-              <button class="secondary" id="benchmark-runs-button">Load Runs</button>
+              <button
+                class="secondary"
+                id="benchmark-runs-button"
+                data-i18n-key="benchmarkRunsButton"
+              >
+                载入运行
+              </button>
             </div>
             <div class="rule-list" id="benchmark-runs-list"></div>
           </section>
           <section class="preview-card">
-            <h3>Run Detail</h3>
+            <h3 data-i18n-key="benchmarkRunDetailCard">运行详情</h3>
             <div class="rule-list" id="benchmark-run-detail"></div>
           </section>
           <section class="preview-card">
-            <h3>Ledger</h3>
+            <h3 data-i18n-key="benchmarkLedgerCard">账本</h3>
             <label>
-              Summary Path
+              <span data-i18n-key="benchmarkSummaryLabel">Summary 路径</span>
               <input
                 id="benchmark-summary-input"
                 type="text"
@@ -1881,7 +1939,7 @@ def render_dashboard_html(
               />
             </label>
             <label>
-              Ledger Path
+              <span data-i18n-key="benchmarkLedgerLabel">Ledger 路径</span>
               <input
                 id="benchmark-ledger-input"
                 type="text"
@@ -1889,14 +1947,20 @@ def render_dashboard_html(
               />
             </label>
             <div class="compact-controls">
-              <button class="secondary" id="benchmark-ledger-button">Load Ledger</button>
+              <button
+                class="secondary"
+                id="benchmark-ledger-button"
+                data-i18n-key="benchmarkLedgerButton"
+              >
+                载入账本
+              </button>
             </div>
             <div class="fact-grid" id="benchmark-ledger-summary"></div>
           </section>
           <section class="preview-card">
-            <h3>Compare</h3>
+            <h3 data-i18n-key="benchmarkCompareCard">比较</h3>
             <label>
-              Baseline Ledger
+              <span data-i18n-key="benchmarkBaselineLabel">Baseline Ledger</span>
               <input
                 id="benchmark-baseline-ledger-input"
                 type="text"
@@ -1904,7 +1968,7 @@ def render_dashboard_html(
               />
             </label>
             <label>
-              Candidate Ledger
+              <span data-i18n-key="benchmarkCandidateLabel">Candidate Ledger</span>
               <input
                 id="benchmark-candidate-ledger-input"
                 type="text"
@@ -1912,14 +1976,20 @@ def render_dashboard_html(
               />
             </label>
             <div class="compact-controls">
-              <button class="secondary" id="benchmark-compare-button">Compare</button>
+              <button
+                class="secondary"
+                id="benchmark-compare-button"
+                data-i18n-key="benchmarkCompareButton"
+              >
+                比较
+              </button>
             </div>
             <div class="rule-list" id="benchmark-compare-summary"></div>
           </section>
           <section class="preview-card">
-            <h3>Replay</h3>
+            <h3 data-i18n-key="benchmarkReplayCard">回放</h3>
             <label>
-              Ledger Path
+              <span data-i18n-key="benchmarkReplayLedgerLabel">Ledger 路径</span>
               <input
                 id="benchmark-replay-ledger-input"
                 type="text"
@@ -1927,15 +1997,21 @@ def render_dashboard_html(
               />
             </label>
             <label>
-              Project ID
+              <span data-i18n-key="benchmarkProjectLabel">项目 ID</span>
               <input id="benchmark-project-input" type="text" placeholder="demo" />
             </label>
             <label>
-              Theorem Name
+              <span data-i18n-key="benchmarkTheoremLabel">定理名</span>
               <input id="benchmark-theorem-input" type="text" placeholder="foo" />
             </label>
             <div class="compact-controls">
-              <button class="secondary" id="benchmark-replay-button">Replay</button>
+              <button
+                class="secondary"
+                id="benchmark-replay-button"
+                data-i18n-key="benchmarkReplayButton"
+              >
+                回放
+              </button>
             </div>
             <div class="rule-list" id="benchmark-replay-detail"></div>
           </section>
@@ -1955,11 +2031,11 @@ def render_dashboard_html(
           heroEyebrow: "控制台总览",
           heroSubtitle:
             "在同一界面里观察运行、检查结构化产物、暂停或恢复项目、注入提示，"
-            + "不需要再回到原始文件手工排查。这个 dashboard 直接运行在现有 "
-            + "control plane 之上，共享同一个 event store。",
+            + "不需要再回到原始文件手工排查。它直接运行在现有控制平面之上，"
+            + "共享同一套事件与调度状态。",
           missionControl: "值守总览",
           missionSummary:
-            "Plan 看当前计划与下一步，Loop 看自治循环健康度与队列压力，"
+            "Plan 看当前计划与下一步，Loop 看自治循环健康度、项目调度与队列压力，"
             + "Finish 看最近运行与高级回放。",
           planTab: "计划",
           loopTab: "循环",
@@ -1974,6 +2050,249 @@ def render_dashboard_html(
           finishRunDetail: "运行详情",
           finishLoops: "循环结果",
           toggleLabel: "English",
+          ui: {{
+            activeProjectLabel: "当前项目",
+            pauseButton: "暂停项目",
+            resumeButton: "恢复项目",
+            hintButton: "注入提示",
+            hintPlaceholder: "给下一轮计划 / 证明写一条提示。",
+            workflowOverrideHeading: "流程覆盖",
+            workflowModeLabel: "模式覆盖",
+            workflowSpecLabel: "Workflow 规则文件覆盖",
+            clearWorkflowSpecLabel: "忽略配置中的 workflow spec",
+            workflowApplyButton: "应用流程覆盖",
+            workflowResetButton: "重置流程覆盖",
+            previewOverviewCard: "概览",
+            previewFocusCard: "焦点任务",
+            previewSupervisorCard: "Supervisor",
+            previewAnalysisCard: "Lean 分析",
+            previewRulesCard: "Workflow 规则",
+            previewGraphDrawer: "任务图与原始预览",
+            workspaceTagMeta: "标签过滤：逗号分隔，按 AND 匹配，用于入队 / 恢复。",
+            workspaceTagPlaceholder: "geometry,batch",
+            workspaceEnqueueButton: "工作区入队",
+            workspaceResumeButton: "恢复会话",
+            workspaceOverviewCard: "概览",
+            workspaceRuntimeCard: "运行预算",
+            workspaceDaemonCard: "Daemon",
+            workspaceSessionsCard: "会话",
+            workspaceProviderHealthCard: "Provider 健康度",
+            workspaceProjectRosterCard: "项目调度",
+            workspaceProjectPlanButton: "切到计划",
+            workspaceProjectEnqueueButton: "为当前项目入队",
+            workspaceProjectResumeButton: "恢复当前项目",
+            workspaceWorkerTelemetryCard: "工作线程遥测",
+            workspaceHistoryDrawer: "循环历史与 Provider 运行态",
+            workspaceLatestLoopCard: "最新循环",
+            workspaceLoopHistoryCard: "循环历史",
+            workspaceFleetHistoryCard: "Fleet 历史",
+            workspaceProviderRuntimeCard: "Provider 运行态",
+            queueRunButton: "运行待处理队列",
+            queueFleetButton: "启动自动槽位 Fleet",
+            workerSweepButton: "清理失活 Worker",
+            fleetPlanHeading: "Fleet 计划",
+            workersHeading: "Workers",
+            jobDetailHeading: "任务详情",
+            jobRequeueButton: "重新排队所选任务",
+            jobCancelButton: "取消所选任务",
+            finishLatestLoopCard: "最新 Run Loop",
+            finishLoopHistoryCard: "Run Loop 历史",
+            benchmarkMeta: "Benchmark 与回放仍可用于回归分析，但不再属于默认操作路径。",
+            benchmarkRunsCard: "运行索引",
+            benchmarkManifestLabel: "Manifest 路径",
+            benchmarkArtifactRootLabel: "Artifact 根目录",
+            benchmarkRunsButton: "载入运行",
+            benchmarkRunDetailCard: "运行详情",
+            benchmarkLedgerCard: "账本",
+            benchmarkSummaryLabel: "Summary 路径",
+            benchmarkLedgerLabel: "Ledger 路径",
+            benchmarkLedgerButton: "载入账本",
+            benchmarkCompareCard: "比较",
+            benchmarkBaselineLabel: "Baseline Ledger",
+            benchmarkCandidateLabel: "Candidate Ledger",
+            benchmarkCompareButton: "比较",
+            benchmarkReplayCard: "回放",
+            benchmarkReplayLedgerLabel: "Ledger 路径",
+            benchmarkProjectLabel: "项目 ID",
+            benchmarkTheoremLabel: "定理名",
+            benchmarkReplayButton: "回放",
+          }},
+          facts: {{
+            action: "动作",
+            artifact: "产物",
+            available: "可用",
+            backend: "后端",
+            baseline: "基线",
+            benchmark: "基准",
+            blocked: "阻塞",
+            blockers: "阻塞项",
+            blocked_sessions: "阻塞会话",
+            budget: "预算",
+            candidate: "候选",
+            completed: "已完成",
+            cooldown: "冷却",
+            cost: "成本",
+            cycles: "循环",
+            declarations: "声明数",
+            degraded_pools: "降级池",
+            diagnostics: "诊断",
+            endpoint: "端点",
+            error: "错误",
+            executor: "执行器",
+            executor_calls: "执行调用",
+            executor_failures: "执行失败",
+            failure: "失败",
+            fallback: "回退",
+            file: "文件",
+            fleet: "Fleet",
+            id: "ID",
+            iterations: "迭代",
+            last: "最近",
+            last_loop: "最近循环",
+            ledger: "账本",
+            mode: "模式",
+            model: "模型",
+            note: "备注",
+            objective: "目标相关",
+            outcomes: "结果数",
+            pending: "待处理",
+            phase: "阶段",
+            priority: "优先级",
+            processed: "已处理",
+            project: "项目",
+            projects: "项目数",
+            proof_gaps: "证明空洞",
+            provider: "Provider",
+            queued_jobs: "排队任务",
+            quarantined: "隔离中",
+            reason: "原因",
+            remaining_iter: "剩余轮数",
+            retries: "重试",
+            retry_budget: "重试预算",
+            run: "运行",
+            running_jobs: "运行任务",
+            running_sessions: "运行会话",
+            runs: "运行数",
+            runtime_cost: "运行成本",
+            sessions: "会话数",
+            sources: "来源",
+            spec: "规则文件",
+            spec_name: "规则名",
+            stage: "阶段",
+            status: "状态",
+            stop: "停止原因",
+            stop_requested: "请求停止",
+            strategy: "策略",
+            summary: "摘要",
+            tags: "标签",
+            task_graph: "任务图",
+            task_id: "任务 ID",
+            theorem: "定理",
+            theorems: "定理数",
+            ticks: "心跳轮次",
+            title: "标题",
+            top_diag: "主要诊断",
+            top_gap: "主要空洞",
+            total: "总数",
+            workflow: "工作流",
+          }},
+          messages: {{
+            yes: "是",
+            no: "否",
+            dashboardLoadFailed: "控制台加载失败。",
+            noHintsYet: "还没有提示。",
+            noRunsRecorded: "暂无运行记录。",
+            noQueueJobs: "当前没有队列任务。",
+            noJobsInBucket: "当前没有任务。",
+            selectQueueCard: "选择一张队列卡片后，可查看详情并执行操作。",
+            noActiveQueueDemand: "当前没有活跃队列需求。",
+            fleetPlanUnavailable: "Fleet 计划暂不可用。",
+            currentPreviewUnavailable: "当前预览暂不可用。",
+            previewUnavailable: "预览暂不可用。",
+            noFocusedTask: "当前预测没有焦点任务。",
+            noSupervisorEvidence: "当前没有 supervisor 证据。",
+            workflowSpecWithoutRules: "已加载 workflow spec，但其中没有规则。",
+            workflowSpecInactive: "当前没有启用 workflow spec 覆盖。",
+            noBlockedNodes: "当前没有阻塞节点。",
+            noPendingNodes: "当前没有待处理节点。",
+            noProjectRunLoops: "当前还没有项目 Run Loop。",
+            noProjectRunLoopHistory: "当前还没有项目 Run Loop 历史。",
+            noBenchmarkRuns: "当前没有 Benchmark 运行记录。",
+            noBenchmarkRunSelected: "当前没有选中的 Benchmark 运行。",
+            noBenchmarkProjects: "当前没有 Benchmark 项目记录。",
+            noTheoremChanges: "当前没有定理级变更。",
+            noTheoremOutcomes: "当前没有匹配到定理结果。",
+            noFailureTaxonomy: "当前没有失败分类记录。",
+            noWorkerTelemetry: "当前还没有 Worker 遥测。",
+            noWorkspaceLoopHistory: "当前还没有工作区循环历史。",
+            noFleetHistory: "当前还没有 Fleet 历史。",
+            noWorkspaceDaemonState: "当前还没有工作区 daemon 状态。",
+            noWorkspaceSessions: "当前还没有工作区会话。",
+            noProviderRuntime: "当前还没有持久化的 Provider 运行态。",
+            noProviderPools: "当前没有配置 Provider 池。",
+            noWorkspaceProjects: "当前没有工作区项目。",
+            noWorkerPoolActivity: "当前还没有 Worker 池活动。",
+            workspaceOverviewUnavailable: "工作区总览暂不可用。",
+            projectPreviewMetaDefault:
+              "在真正启动下一轮之前，先看 supervisor / workflow 的即时预测。",
+            workspaceOverviewMetaDefault: "聚合工作区中的会话、队列压力与 worker 健康度。",
+            fleetPlanMetaDefault: "为当前活跃队列推荐专用 worker 配置。",
+            detailMetaDefault: "选择一条运行后，可查看摘要与事件。",
+            queueDetailMetaDefault: "选择一张队列卡片后，可查看详情并执行操作。",
+            workspaceProjectMetaDefault: "选择项目后可直接切回 Plan、入队或恢复。",
+            workspaceModeWorkspace: "工作区",
+            workspaceModeProject: "单项目",
+            disabled: "已禁用",
+            any: "任意",
+            latestHint: "最新提示",
+            totalJobs: "总任务",
+            queuedJobs: "待执行",
+            runningJobs: "运行中",
+            blockedJobs: "阻塞中",
+            events: "事件",
+          }},
+          tokens: {{
+            adaptive_loop: "自适应循环",
+            available: "可用",
+            blocked: "阻塞",
+            bootstrap_first_iteration: "首轮引导",
+            canceled: "已取消",
+            complete: "完成",
+            completed: "已完成",
+            continue: "继续",
+            control_paused: "手动暂停",
+            degraded: "降级",
+            dry_run: "Dry-run",
+            failed: "失败",
+            fixed_loop: "固定循环",
+            fixed_loop_baseline: "固定循环基线",
+            healthy: "健康",
+            investigate_infra: "排查基础设施",
+            no_actionable_tasks: "暂无可执行任务",
+            no_pending_results: "无待处理结果",
+            openai_compatible: "OpenAI 兼容",
+            paused: "已暂停",
+            pending: "待执行",
+            pending_review: "等待复核",
+            plan: "计划",
+            premium: "高级",
+            project: "单项目",
+            project_complete: "项目完成",
+            prover: "证明",
+            queued: "排队中",
+            regex: "正则分析",
+            request_hint: "请求提示",
+            reroute_plan: "转入计划",
+            review: "复核",
+            running: "运行中",
+            sorry_blocked: "仅 sorry 阻塞",
+            started: "已开始",
+            stop: "停止",
+            stopped: "已停止",
+            task_graph_focus: "按任务图聚焦",
+            unavailable: "不可用",
+            workspace: "工作区",
+          }},
         }},
         en: {{
           title: "ArchonLab Control Deck",
@@ -2000,12 +2319,154 @@ def render_dashboard_html(
           finishRunDetail: "Run Detail",
           finishLoops: "Loop Outcomes",
           toggleLabel: "中文",
+          ui: {{
+            activeProjectLabel: "Active Project",
+            pauseButton: "Pause Project",
+            resumeButton: "Resume Project",
+            hintButton: "Inject Hint",
+            hintPlaceholder: "Write a hint for the next planning / proving cycle.",
+            workflowOverrideHeading: "Workflow Override",
+            workflowModeLabel: "Mode Override",
+            workflowSpecLabel: "Workflow Spec Override",
+            clearWorkflowSpecLabel: "Ignore configured workflow spec",
+            workflowApplyButton: "Apply Workflow Override",
+            workflowResetButton: "Reset Workflow Override",
+            previewOverviewCard: "Overview",
+            previewFocusCard: "Focus Task",
+            previewSupervisorCard: "Supervisor",
+            previewAnalysisCard: "Lean Analysis",
+            previewRulesCard: "Workflow Rules",
+            previewGraphDrawer: "Task Graph And Raw Preview",
+            workspaceTagMeta: "Tag filter: comma-separated AND match for enqueue / resume.",
+            workspaceTagPlaceholder: "geometry,batch",
+            workspaceEnqueueButton: "Enqueue Workspace",
+            workspaceResumeButton: "Resume Sessions",
+            workspaceOverviewCard: "Overview",
+            workspaceRuntimeCard: "Runtime Budget",
+            workspaceDaemonCard: "Daemon",
+            workspaceSessionsCard: "Sessions",
+            workspaceProviderHealthCard: "Provider Health",
+            workspaceProjectRosterCard: "Project Roster",
+            workspaceProjectPlanButton: "Jump To Plan",
+            workspaceProjectEnqueueButton: "Enqueue Current Project",
+            workspaceProjectResumeButton: "Resume Current Project",
+            workspaceWorkerTelemetryCard: "Worker Telemetry",
+            workspaceHistoryDrawer: "Loop History And Provider Runtime",
+            workspaceLatestLoopCard: "Latest Loop",
+            workspaceLoopHistoryCard: "Loop History",
+            workspaceFleetHistoryCard: "Fleet History",
+            workspaceProviderRuntimeCard: "Provider Runtime",
+            queueRunButton: "Run Pending Queue",
+            queueFleetButton: "Run Auto-Slot Fleet",
+            workerSweepButton: "Sweep Stale Workers",
+            fleetPlanHeading: "Fleet Plan",
+            workersHeading: "Workers",
+            jobDetailHeading: "Job Detail",
+            jobRequeueButton: "Requeue Selected Job",
+            jobCancelButton: "Cancel Selected Job",
+            finishLatestLoopCard: "Latest Run Loop",
+            finishLoopHistoryCard: "Run Loop History",
+            benchmarkMeta:
+              "Benchmark and replay remain available for regression analysis, "
+              + "but are no longer part of the default operator flow.",
+            benchmarkRunsCard: "Run Index",
+            benchmarkManifestLabel: "Manifest Path",
+            benchmarkArtifactRootLabel: "Artifact Root",
+            benchmarkRunsButton: "Load Runs",
+            benchmarkRunDetailCard: "Run Detail",
+            benchmarkLedgerCard: "Ledger",
+            benchmarkSummaryLabel: "Summary Path",
+            benchmarkLedgerLabel: "Ledger Path",
+            benchmarkLedgerButton: "Load Ledger",
+            benchmarkCompareCard: "Compare",
+            benchmarkBaselineLabel: "Baseline Ledger",
+            benchmarkCandidateLabel: "Candidate Ledger",
+            benchmarkCompareButton: "Compare",
+            benchmarkReplayCard: "Replay",
+            benchmarkReplayLedgerLabel: "Ledger Path",
+            benchmarkProjectLabel: "Project ID",
+            benchmarkTheoremLabel: "Theorem Name",
+            benchmarkReplayButton: "Replay",
+          }},
+          facts: {{}},
+          messages: {{
+            yes: "yes",
+            no: "no",
+            dashboardLoadFailed: "Dashboard failed to load.",
+            noHintsYet: "No hints yet.",
+            noRunsRecorded: "No runs recorded yet.",
+            noQueueJobs: "No queue jobs.",
+            noJobsInBucket: "No jobs.",
+            selectQueueCard: "Select a queue card to inspect and operate on it.",
+            noActiveQueueDemand: "No active queue demand.",
+            fleetPlanUnavailable: "Fleet plan unavailable.",
+            currentPreviewUnavailable: "Current preview is unavailable.",
+            previewUnavailable: "Preview unavailable.",
+            noFocusedTask: "No focused task for the current prediction.",
+            noSupervisorEvidence: "No supervisor evidence.",
+            workflowSpecWithoutRules: "Workflow spec loaded, but no rules are defined.",
+            workflowSpecInactive: "No workflow spec override is active.",
+            noBlockedNodes: "No blocked nodes.",
+            noPendingNodes: "No pending nodes.",
+            noProjectRunLoops: "No project run loops yet.",
+            noProjectRunLoopHistory: "No project run loop history yet.",
+            noBenchmarkRuns: "No benchmark runs recorded.",
+            noBenchmarkRunSelected: "No benchmark run selected.",
+            noBenchmarkProjects: "No benchmark projects recorded.",
+            noTheoremChanges: "No theorem-level changes.",
+            noTheoremOutcomes: "No theorem outcomes matched.",
+            noFailureTaxonomy: "No failure taxonomy entries.",
+            noWorkerTelemetry: "No worker telemetry yet.",
+            noWorkspaceLoopHistory: "No workspace loop history yet.",
+            noFleetHistory: "No fleet history yet.",
+            noWorkspaceDaemonState: "No workspace daemon state yet.",
+            noWorkspaceSessions: "No workspace sessions yet.",
+            noProviderRuntime: "No persisted provider runtime telemetry yet.",
+            noProviderPools: "No provider pools configured.",
+            noWorkspaceProjects: "No workspace projects.",
+            noWorkerPoolActivity: "No worker pool activity yet.",
+            workspaceOverviewUnavailable: "Workspace overview unavailable.",
+            projectPreviewMetaDefault:
+              "Inspect the live supervisor / workflow prediction before launching the next run.",
+            workspaceOverviewMetaDefault:
+              "Aggregate sessions, queue pressure, and worker health across the workspace.",
+            fleetPlanMetaDefault: "Recommended dedicated worker pools for the active queue.",
+            detailMetaDefault: "Select a run to inspect its summary and events.",
+            queueDetailMetaDefault: "Select a queue card to inspect and operate on it.",
+            workspaceProjectMetaDefault:
+              "Select a project to jump back to Plan, enqueue it, or resume it.",
+            workspaceModeWorkspace: "workspace",
+            workspaceModeProject: "project",
+            disabled: "disabled",
+            any: "any",
+            latestHint: "Latest hint",
+            totalJobs: "Total jobs",
+            queuedJobs: "Queued",
+            runningJobs: "Running",
+            blockedJobs: "Blocked",
+            events: "events",
+          }},
+          tokens: {{
+            fixed_loop_baseline: "fixed loop baseline",
+            bootstrap_first_iteration: "bootstrap first iteration",
+            task_graph_focus: "task graph focus",
+            pending_review: "pending review",
+            project_complete: "project complete",
+            control_paused: "control paused",
+            no_actionable_tasks: "no actionable tasks",
+            no_pending_results: "no pending results",
+            sorry_blocked: "sorry blocked",
+          }},
         }},
       }};
       let currentLanguage = localStorage.getItem("archonlab.dashboard.lang") || "zh";
       const DASHBOARD_TAB_KEY = "archonlab.dashboard.tab";
       const knownTabs = new Set(["plan", "loop", "finish"]);
       let currentProjectId = defaultProjectId;
+      let lastDashboardState = null;
+      let selectedRunDetail = null;
+      let latestJobs = [];
+      let selectedQueueJobId = null;
       const languageToggleButton = document.getElementById("language-toggle-button");
       const heroEyebrow = document.getElementById("hero-eyebrow");
       const heroSubtitle = document.getElementById("hero-subtitle");
@@ -2026,6 +2487,9 @@ def render_dashboard_html(
       const headingFinishRunDetail = document.getElementById("heading-finish-run-detail");
       const headingFinishLoops = document.getElementById("heading-finish-loops");
       const projectSelector = document.getElementById("project-selector");
+      const workflowModeDefaultOption = document.getElementById("workflow-mode-default-option");
+      const workflowModeAdaptiveOption = document.getElementById("workflow-mode-adaptive-option");
+      const workflowModeFixedOption = document.getElementById("workflow-mode-fixed-option");
       const controlStatus = document.getElementById("control-status");
       const runsList = document.getElementById("runs-list");
       const detailMeta = document.getElementById("detail-meta");
@@ -2068,6 +2532,15 @@ def render_dashboard_html(
       const workspaceSessionTable = document.getElementById("workspace-session-table");
       const workspaceProviderRuntime = document.getElementById("workspace-provider-runtime");
       const workspaceProviderHealth = document.getElementById("workspace-provider-health");
+      const workspaceProjectMeta = document.getElementById("workspace-project-meta");
+      const workspaceProjectRoster = document.getElementById("workspace-project-roster");
+      const workspaceProjectPlanButton = document.getElementById("workspace-project-plan-button");
+      const workspaceProjectEnqueueButton = document.getElementById(
+        "workspace-project-enqueue-button",
+      );
+      const workspaceProjectResumeButton = document.getElementById(
+        "workspace-project-resume-button",
+      );
       const workspaceWorkerPool = document.getElementById("workspace-worker-pool");
       const workspaceTagInput = document.getElementById("workspace-tag-input");
       const workspaceEnqueueButton = document.getElementById("workspace-enqueue-button");
@@ -2094,8 +2567,102 @@ def render_dashboard_html(
       const benchmarkTheoremInput = document.getElementById("benchmark-theorem-input");
       const benchmarkReplayButton = document.getElementById("benchmark-replay-button");
       const benchmarkReplayDetail = document.getElementById("benchmark-replay-detail");
-      let latestJobs = [];
-      let selectedQueueJobId = null;
+      const dataI18nNodes = Array.from(document.querySelectorAll("[data-i18n-key]"));
+      const dataI18nPlaceholderNodes = Array.from(
+        document.querySelectorAll("[data-i18n-placeholder]"),
+      );
+
+      function copy() {{
+        return DASHBOARD_I18N[currentLanguage] || DASHBOARD_I18N.zh;
+      }}
+
+      function ui(key) {{
+        return copy().ui?.[key] ?? key;
+      }}
+
+      function message(key) {{
+        return copy().messages?.[key] ?? key;
+      }}
+
+      function factLabel(label) {{
+        return copy().facts?.[label] ?? label;
+      }}
+
+      function token(value) {{
+        if (value == null || value === "") {{
+          return "-";
+        }}
+        const normalized = String(value);
+        return copy().tokens?.[normalized]
+          ?? (currentLanguage === "en" ? normalized.split("_").join(" ") : normalized);
+      }}
+
+      function yesNo(value) {{
+        return value ? message("yes") : message("no");
+      }}
+
+      function joinTokens(values) {{
+        return values.length ? values.map((value) => token(value)).join(", ") : "-";
+      }}
+
+      function syncProjectSelector() {{
+        if (projectSelector.value !== currentProjectId) {{
+          projectSelector.value = currentProjectId;
+        }}
+      }}
+
+      function renderRunDetail(detail) {{
+        if (!detail) {{
+          detailMeta.textContent = message("detailMetaDefault");
+          detailJson.textContent = JSON.stringify({{}}, null, 2);
+          return;
+        }}
+        selectedRunDetail = detail;
+        detailMeta.textContent =
+          `${{detail.run.run_id}} · ${{detail.events.length}} ${{message("events")}}`;
+        detailJson.textContent = JSON.stringify(detail, null, 2);
+      }}
+
+      function rerenderFromState() {{
+        if (!lastDashboardState) {{
+          return;
+        }}
+        const {{
+          control,
+          runs,
+          jobs,
+          workers,
+          projectPreview,
+          projectRunLoops,
+          fleetPlan,
+          workspaceOverview,
+        }} = lastDashboardState;
+        renderControl(control);
+        renderRuns(runs);
+        renderQueue(jobs);
+        renderWorkers(workers);
+        if (fleetPlan?.error) {{
+          renderFleetPlanError(fleetPlan.error);
+        }} else {{
+          renderFleetPlan(fleetPlan);
+        }}
+        if (projectPreview?.error) {{
+          renderProjectPreviewError(projectPreview.error);
+        }} else {{
+          renderProjectPreview(projectPreview);
+        }}
+        if (projectRunLoops?.error) {{
+          renderProjectRunLoopsError(projectRunLoops.error);
+        }} else {{
+          renderProjectRunLoops(projectRunLoops);
+        }}
+        if (workspaceOverview?.error) {{
+          renderWorkspaceOverviewError(workspaceOverview.error);
+        }} else {{
+          renderWorkspaceOverview(workspaceOverview);
+        }}
+        renderRunDetail(selectedRunDetail);
+      }}
 
       function setActiveTab(tabName) {{
         const resolvedTab = knownTabs.has(tabName) ? tabName : "plan";
@@ -2114,26 +2681,53 @@ def render_dashboard_html(
       }}
 
       function applyLanguage() {{
-        const copy = DASHBOARD_I18N[currentLanguage] || DASHBOARD_I18N.zh;
+        const localized = copy();
         document.documentElement.lang = currentLanguage === "zh" ? "zh-CN" : "en";
-        document.title = copy.title;
-        heroEyebrow.textContent = copy.heroEyebrow;
-        heroSubtitle.textContent = copy.heroSubtitle;
-        headingMissionControl.textContent = copy.missionControl;
-        missionSummaryCopy.textContent = copy.missionSummary;
-        tabPlanButton.textContent = copy.planTab;
-        tabLoopButton.textContent = copy.loopTab;
-        tabFinishButton.textContent = copy.finishTab;
-        headingProjectControl.textContent = copy.projectControl;
-        headingQueueOps.textContent = copy.queueOps;
-        headingQueueBoard.textContent = copy.queueBoard;
-        headingWorkspaceOverview.textContent = copy.workspaceOverview;
-        headingCurrentPreview.textContent = copy.currentPreview;
-        headingBenchmarkLab.textContent = copy.benchmarkLab;
-        headingFinishRuns.textContent = copy.finishRuns;
-        headingFinishRunDetail.textContent = copy.finishRunDetail;
-        headingFinishLoops.textContent = copy.finishLoops;
-        languageToggleButton.textContent = copy.toggleLabel;
+        document.title = localized.title;
+        heroEyebrow.textContent = localized.heroEyebrow;
+        heroSubtitle.textContent = localized.heroSubtitle;
+        headingMissionControl.textContent = localized.missionControl;
+        missionSummaryCopy.textContent = localized.missionSummary;
+        tabPlanButton.textContent = localized.planTab;
+        tabLoopButton.textContent = localized.loopTab;
+        tabFinishButton.textContent = localized.finishTab;
+        headingProjectControl.textContent = localized.projectControl;
+        headingQueueOps.textContent = localized.queueOps;
+        headingQueueBoard.textContent = localized.queueBoard;
+        headingWorkspaceOverview.textContent = localized.workspaceOverview;
+        headingCurrentPreview.textContent = localized.currentPreview;
+        headingBenchmarkLab.textContent = localized.benchmarkLab;
+        headingFinishRuns.textContent = localized.finishRuns;
+        headingFinishRunDetail.textContent = localized.finishRunDetail;
+        headingFinishLoops.textContent = localized.finishLoops;
+        workflowModeDefaultOption.textContent = currentLanguage === "zh"
+          ? "使用配置默认值"
+          : "Default Config";
+        workflowModeAdaptiveOption.textContent = token("adaptive_loop");
+        workflowModeFixedOption.textContent = token("fixed_loop");
+        for (const node of dataI18nNodes) {{
+          const key = node.dataset.i18nKey;
+          if (!key) {{
+            continue;
+          }}
+          node.textContent = ui(key);
+        }}
+        for (const node of dataI18nPlaceholderNodes) {{
+          const key = node.dataset.i18nPlaceholder;
+          if (!key) {{
+            continue;
+          }}
+          node.placeholder = ui(key);
+        }}
+        languageToggleButton.textContent = localized.toggleLabel;
+        if (!lastDashboardState) {{
+          projectPreviewMeta.textContent = message("projectPreviewMetaDefault");
+          workspaceOverviewMeta.textContent = message("workspaceOverviewMetaDefault");
+          fleetPlanMeta.textContent = message("fleetPlanMetaDefault");
+          queueDetailMeta.textContent = message("queueDetailMetaDefault");
+          workspaceProjectMeta.textContent = message("workspaceProjectMetaDefault");
+          renderRunDetail(selectedRunDetail);
+        }}
       }}
 
       async function fetchJson(url, options) {{
@@ -2147,19 +2741,28 @@ def render_dashboard_html(
 
       function renderControl(state) {{
         const hints = state.hints || [];
-        const latestHint = hints.length ? hints[hints.length - 1].text : "No hints yet.";
-        const workflowMode = state.workflow_override || "default";
+        const latestHint = hints.length ? hints[hints.length - 1].text : message("noHintsYet");
+        const workflowMode = state.workflow_override || "-";
         const workflowSpec = state.workflow_spec_override || "-";
-        const clearSpec = state.clear_workflow_spec ? "yes" : "no";
+        const clearSpec = state.clear_workflow_spec;
         controlStatus.innerHTML = `
-          <div class="pill">Paused: <strong>${{state.paused ? "yes" : "no"}}</strong></div>
-          <div class="pill">Hints: <strong>${{hints.length}}</strong></div>
-          <div class="pill">Reason: <strong>${{state.pause_reason || "none"}}</strong></div>
-          <div class="pill">Workflow: <strong>${{workflowMode}}</strong></div>
           <div class="pill">
-            Spec: <strong>${{clearSpec === "yes" ? "disabled" : workflowSpec}}</strong>
+            ${{factLabel("status")}}: <strong>${{yesNo(state.paused)}}</strong>
           </div>
-          <div class="meta">Latest hint: ${{latestHint}}</div>
+          <div class="pill">
+            ${{currentLanguage === "zh" ? "提示" : "Hints"}}: <strong>${{hints.length}}</strong>
+          </div>
+          <div class="pill">
+            ${{factLabel("reason")}}: <strong>${{token(state.pause_reason)}}</strong>
+          </div>
+          <div class="pill">
+            ${{factLabel("workflow")}}: <strong>${{token(workflowMode)}}</strong>
+          </div>
+          <div class="pill">
+            ${{factLabel("spec")}}:
+            <strong>${{clearSpec ? message("disabled") : workflowSpec}}</strong>
+          </div>
+          <div class="meta">${{message("latestHint")}}: ${{latestHint}}</div>
         `;
         workflowModeSelect.value = state.workflow_override || "";
         workflowSpecInput.value = state.workflow_spec_override || "";
@@ -2168,7 +2771,7 @@ def render_dashboard_html(
 
       function renderRuns(runs) {{
         if (!runs.length) {{
-          runsList.innerHTML = '<div class="meta">No runs recorded yet.</div>';
+          runsList.innerHTML = `<div class="meta">${{message("noRunsRecorded")}}</div>`;
           return;
         }}
         runsList.innerHTML = "";
@@ -2177,12 +2780,14 @@ def render_dashboard_html(
           item.className = "run";
           item.innerHTML = `
             <strong>${{run.run_id}}</strong>
-            <div class="meta">${{run.status}} · ${{run.workflow}} · stage=${{run.stage}}</div>
+            <div class="meta">
+              ${{token(run.status)}} · ${{token(run.workflow)}}
+              · ${{factLabel("stage")}}=${{token(run.stage)}}
+            </div>
           `;
           item.addEventListener("click", async () => {{
             const detail = await fetchJson(`/api/runs/${{run.run_id}}`);
-            detailMeta.textContent = `${{detail.run.run_id}} · ${{detail.events.length}} events`;
-            detailJson.textContent = JSON.stringify(detail, null, 2);
+            renderRunDetail(detail);
           }});
           runsList.appendChild(item);
         }}
@@ -2190,11 +2795,11 @@ def render_dashboard_html(
 
       function queueBuckets() {{
         return [
-          {{ key: "queued", label: "Queued", statuses: ["queued", "pending"] }},
-          {{ key: "running", label: "Running", statuses: ["running"] }},
-          {{ key: "paused", label: "Paused", statuses: ["paused"] }},
-          {{ key: "failed", label: "Failed", statuses: ["failed"] }},
-          {{ key: "done", label: "Done", statuses: ["completed", "canceled"] }},
+          {{ key: "queued", label: token("queued"), statuses: ["queued", "pending"] }},
+          {{ key: "running", label: token("running"), statuses: ["running"] }},
+          {{ key: "paused", label: token("paused"), statuses: ["paused"] }},
+          {{ key: "failed", label: token("failed"), statuses: ["failed"] }},
+          {{ key: "done", label: token("completed"), statuses: ["completed", "canceled"] }},
         ];
       }}
 
@@ -2221,8 +2826,8 @@ def render_dashboard_html(
           reason,
           priority,
           workerId,
-          executors: (job.required_executor_kinds || []).join(",") || "-",
-          providers: (job.required_provider_kinds || []).join(",") || "-",
+          executors: joinTokens(job.required_executor_kinds || []),
+          providers: joinTokens(job.required_provider_kinds || []),
           models: (job.required_models || []).join(",") || "-",
           costTiers: (job.required_cost_tiers || []).join(",") || "-",
           endpointClasses: (job.required_endpoint_classes || []).join(",") || "-",
@@ -2232,13 +2837,17 @@ def render_dashboard_html(
       function renderQueueSummary(jobs) {{
         const counts = queueCountsByStatus(jobs);
         queueSummary.innerHTML = `
-          <div class="pill">Total jobs: <strong>${{jobs.length}}</strong></div>
+          <div class="pill">${{message("totalJobs")}}: <strong>${{jobs.length}}</strong></div>
           <div class="pill">
-            Queued: <strong>${{(counts.queued || 0) + (counts.pending || 0)}}</strong>
+            ${{message("queuedJobs")}}:
+            <strong>${{(counts.queued || 0) + (counts.pending || 0)}}</strong>
           </div>
-          <div class="pill">Running: <strong>${{counts.running || 0}}</strong></div>
           <div class="pill">
-            Blocked: <strong>${{(counts.paused || 0) + (counts.failed || 0)}}</strong>
+            ${{message("runningJobs")}}: <strong>${{counts.running || 0}}</strong>
+          </div>
+          <div class="pill">
+            ${{message("blockedJobs")}}:
+            <strong>${{(counts.paused || 0) + (counts.failed || 0)}}</strong>
           </div>
         `;
         const bucketCounts = queueBuckets().map((bucket) => {{
@@ -2250,7 +2859,7 @@ def render_dashboard_html(
 
       function renderQueueBoard(jobs) {{
         if (!jobs.length) {{
-          queueBoard.innerHTML = '<div class="meta">No queue jobs.</div>';
+          queueBoard.innerHTML = `<div class="meta">${{message("noQueueJobs")}}</div>`;
           return;
         }}
         queueBoard.innerHTML = "";
@@ -2267,7 +2876,7 @@ def render_dashboard_html(
           `;
           const stack = column.querySelector(".stack");
           if (!cards.length) {{
-            stack.innerHTML = '<div class="meta">No jobs.</div>';
+            stack.innerHTML = `<div class="meta">${{message("noJobsInBucket")}}</div>`;
           }} else {{
             for (const job of cards) {{
               const summary = summarizeQueueJob(job);
@@ -2277,7 +2886,7 @@ def render_dashboard_html(
                 <strong>${{job.project_id}}</strong>
                 <div class="meta">${{job.job_id}}</div>
                 <div class="meta">
-                  ${{summary.phase}} · ${{summary.stage}} · p=${{summary.priority}}
+                  ${{token(summary.phase)}} · ${{token(summary.stage)}} · p=${{summary.priority}}
                 </div>
                 <div class="meta">${{summary.focus}}</div>
                 <div class="meta">worker=${{summary.workerId}}</div>
@@ -2294,7 +2903,7 @@ def render_dashboard_html(
 
       function renderQueueDetail(job) {{
         if (!job) {{
-          queueDetailMeta.textContent = "Select a queue card to inspect and operate on it.";
+          queueDetailMeta.textContent = message("queueDetailMetaDefault");
           queueDetailJson.textContent = JSON.stringify({{}}, null, 2);
           jobRequeueButton.disabled = true;
           jobCancelButton.disabled = true;
@@ -2302,7 +2911,8 @@ def render_dashboard_html(
         }}
         const summary = summarizeQueueJob(job);
         queueDetailMeta.textContent =
-          `${{job.job_id}} · ${{job.status}} · phase=${{summary.phase}} · focus=${{summary.focus}}`;
+          `${{job.job_id}} · ${{token(job.status)}} · `
+          + `${{factLabel("phase")}}=${{token(summary.phase)}} · ${{summary.focus}}`;
         queueDetailJson.textContent = JSON.stringify(job, null, 2);
         jobRequeueButton.disabled = ["queued", "pending", "running"].includes(job.status);
         jobCancelButton.disabled = ["completed", "canceled"].includes(job.status);
@@ -2330,39 +2940,45 @@ def render_dashboard_html(
       function renderFleetPlan(plan) {{
         const profiles = plan.profiles || [];
         fleetPlanMeta.textContent =
-          `Target ${{plan.target_jobs_per_worker}} jobs/worker · ${{plan.total_profiles}} profiles`;
+          `target=${{plan.target_jobs_per_worker}} jobs/worker · ${{plan.total_profiles}} profiles`;
         fleetPlanSummary.innerHTML = `
-          <div class="pill">Active jobs: <strong>${{plan.active_jobs || 0}}</strong></div>
-          <div class="pill">Active workers: <strong>${{plan.active_workers || 0}}</strong></div>
-          <div class="pill">Dedicated: <strong>${{plan.dedicated_workers || 0}}</strong></div>
-          <div class="pill">Generic: <strong>${{plan.generic_workers || 0}}</strong></div>
           <div class="pill">
-            Recommended: <strong>${{plan.recommended_total_workers || 0}}</strong>
+            ${{factLabel("queued_jobs")}}: <strong>${{plan.active_jobs || 0}}</strong>
           </div>
           <div class="pill">
-            Add: <strong>${{plan.recommended_additional_workers || 0}}</strong>
+            ${{factLabel("active_workers")}}: <strong>${{plan.active_workers || 0}}</strong>
+          </div>
+          <div class="pill">dedicated: <strong>${{plan.dedicated_workers || 0}}</strong></div>
+          <div class="pill">generic: <strong>${{plan.generic_workers || 0}}</strong></div>
+          <div class="pill">
+            recommended: <strong>${{plan.recommended_total_workers || 0}}</strong>
+          </div>
+          <div class="pill">
+            add: <strong>${{plan.recommended_additional_workers || 0}}</strong>
           </div>
         `;
         if (!profiles.length) {{
-          fleetPlanList.innerHTML = '<div class="meta">No active queue demand.</div>';
+          fleetPlanList.innerHTML = `<div class="meta">${{message("noActiveQueueDemand")}}</div>`;
           return;
         }}
         fleetPlanList.innerHTML = profiles.map((profile) => {{
-          const dominantPhase = profile.dominant_phase || "-";
-          const executors = (profile.required_executor_kinds || []).join(",") || "any";
-          const providers = (profile.required_provider_kinds || []).join(",") || "any";
-          const models = (profile.required_models || []).join(",") || "any";
-          const costTiers = (profile.required_cost_tiers || []).join(",") || "any";
-          const endpoints = (profile.required_endpoint_classes || []).join(",") || "any";
+          const dominantPhase = token(profile.dominant_phase);
+          const executors = joinTokens(profile.required_executor_kinds || [])
+            || message("any");
+          const providers = joinTokens(profile.required_provider_kinds || [])
+            || message("any");
+          const models = (profile.required_models || []).join(",") || message("any");
+          const costTiers = (profile.required_cost_tiers || []).join(",") || message("any");
+          const endpoints = (profile.required_endpoint_classes || []).join(",") || message("any");
           const phases = Object.entries(profile.phase_counts || {{}})
-            .map(([phase, count]) => `${{phase}}:${{count}}`)
+            .map(([phase, count]) => `${{token(phase)}}:${{count}}`)
             .join(" · ") || "-";
           const stages = Object.entries(profile.stage_counts || {{}})
-            .map(([stage, count]) => `${{stage}}:${{count}}`)
+            .map(([stage, count]) => `${{token(stage)}}:${{count}}`)
             .join(" · ") || "-";
           const projects = (profile.project_ids || []).join(", ") || "-";
           const focus = (profile.focus_examples || []).join(", ") || "-";
-          const providerCapacityStatus = profile.provider_capacity_status || "unknown";
+          const providerCapacityStatus = token(profile.provider_capacity_status || "unknown");
           const availableProviderMembers = profile.available_provider_members ?? "-";
           return `
             <div class="rule">
@@ -2392,11 +3008,11 @@ def render_dashboard_html(
         }}).join("");
       }}
 
-      function renderFleetPlanError(message) {{
-        fleetPlanMeta.textContent = "Fleet plan unavailable.";
+      function renderFleetPlanError(errorMessage) {{
+        fleetPlanMeta.textContent = message("fleetPlanUnavailable");
         fleetPlanSummary.innerHTML =
           '<div class="pill">error <strong>fleet_plan_failed</strong></div>';
-        fleetPlanList.innerHTML = `<div class="meta">${{message}}</div>`;
+        fleetPlanList.innerHTML = `<div class="meta">${{errorMessage}}</div>`;
       }}
 
       function renderProjectPreview(payload) {{
@@ -2418,18 +3034,18 @@ def render_dashboard_html(
         const blockedTitles = blockedNodes.map((node) => node.title || node.id).join(", ");
         const pendingTitles = pendingNodes.map((node) => node.title || node.id).join(", ");
         const chips = [
-          ["workflow", payload.workflow || "-"],
-          ["configured", payload.configured_workflow || "-"],
-          ["phase", action.phase || "-"],
-          ["reason", action.reason || "-"],
-          ["stage", action.stage || preview.progress?.stage || "-"],
-          ["supervisor", `${{supervisor.action || "-"}}/${{supervisor.reason || "-"}}`],
-          ["executor", executor.kind || "-"],
+          ["workflow", token(payload.workflow)],
+          ["configured", token(payload.configured_workflow)],
+          ["phase", token(action.phase)],
+          ["reason", token(action.reason)],
+          ["stage", token(action.stage || preview.progress?.stage)],
+          ["supervisor", `${{token(supervisor.action)}}/${{token(supervisor.reason)}}`],
+          ["executor", token(executor.kind)],
           ["model", provider.model || "-"],
           ["cost_tier", provider.cost_tier || "-"],
           [
             "task_graph",
-            `${{graph.total_nodes || 0}} nodes / ${{graph.blocked_nodes || 0}} blocked`,
+            `${{graph.total_nodes || 0}} / ${{graph.blocked_nodes || 0}} blocked`,
           ],
         ];
         if (workflowSpec) {{
@@ -2442,19 +3058,21 @@ def render_dashboard_html(
           chips.push(["spec_path", payload.workflow_spec_path]);
         }}
         projectPreviewMeta.textContent =
-          `${{payload.project_id}} · ${{action.phase || "-"}} · ${{action.reason || "-"}}`;
+          `${{payload.project_id}} · ${{token(action.phase)}} · ${{token(action.reason)}}`;
         projectPreviewChips.innerHTML = chips
-          .map(([label, value]) => `<div class="chip">${{label}} <strong>${{value}}</strong></div>`)
+          .map(([label, value]) => (
+            `<div class="chip">${{factLabel(label)}} <strong>${{value}}</strong></div>`
+          ))
           .join("");
         projectPreviewOverview.innerHTML = renderFacts([
-          ["phase", action.phase || "-"],
-          ["reason", action.reason || "-"],
-          ["stage", action.stage || "-"],
-          ["workflow", payload.workflow || "-"],
+          ["phase", token(action.phase)],
+          ["reason", token(action.reason)],
+          ["stage", token(action.stage)],
+          ["workflow", token(payload.workflow)],
           ["spec", payload.workflow_spec_path || "-"],
           ["spec_name", workflowSpec?.name || "-"],
-          ["executor", executor.kind || "-"],
-          ["provider", provider.kind || "-"],
+          ["executor", token(executor.kind)],
+          ["provider", token(provider.kind)],
           ["model", provider.model || "-"],
           ["endpoint", provider.endpoint_class || "-"],
           [
@@ -2468,18 +3086,18 @@ def render_dashboard_html(
               ["title", focusTask.title || "-"],
               ["theorem", focusTask.theorem_name || "-"],
               ["file", focusTask.file_path || "-"],
-              ["status", focusTask.task_status || "-"],
+              ["status", token(focusTask.task_status)],
               ["priority", `${{focusTask.task_priority ?? "-"}}`],
-              ["objective", focusTask.objective_relevant ? "yes" : "no"],
-              ["sources", (focusTask.task_sources || []).join(", ") || "-"],
+              ["objective", yesNo(focusTask.objective_relevant)],
+              ["sources", joinTokens(focusTask.task_sources || [])],
               ["blockers", (focusTask.task_blockers || []).join(", ") || "-"],
             ])
-          : '<div class="meta">No focused task for the current prediction.</div>';
+          : `<div class="meta">${{message("noFocusedTask")}}</div>`;
         const evidenceEntries = Object.entries(evidence);
         projectPreviewSupervisor.innerHTML = [
           renderFacts([
-            ["action", supervisor.action || "-"],
-            ["reason", supervisor.reason || "-"],
+            ["action", token(supervisor.action)],
+            ["reason", token(supervisor.reason)],
             ["summary", supervisor.summary || "-"],
           ]),
           evidenceEntries.length
@@ -2493,11 +3111,11 @@ def render_dashboard_html(
                   `,
                 )
                 .join("")
-            : '<div class="meta">No supervisor evidence.</div>',
+            : `<div class="meta">${{message("noSupervisorEvidence")}}</div>`,
         ].join("");
         projectPreviewAnalysis.innerHTML = renderFacts([
-          ["backend", analysis.backend || "-"],
-          ["fallback", analysis.fallback_used ? "yes" : "no"],
+          ["backend", token(analysis.backend)],
+          ["fallback", yesNo(analysis.fallback_used)],
           ["theorems", `${{analysis.theorem_count || 0}}`],
           ["declarations", `${{analysis.declaration_count || 0}}`],
           ["proof_gaps", `${{analysis.proof_gap_count || 0}}`],
@@ -2518,15 +3136,17 @@ def render_dashboard_html(
               ...workflowRules.map((rule) => `
                 <div class="rule">
                   <strong>${{rule.name}}</strong>
-                  <div class="meta">phase=${{rule.phase}} · reason=${{rule.reason}}</div>
+                  <div class="meta">
+                    phase=${{token(rule.phase)}} · reason=${{token(rule.reason)}}
+                  </div>
                   <div class="meta">${{(rule.conditions || []).join(" · ") || "always"}}</div>
                 </div>
               `),
             ].join("")
           : (
               workflowSpec
-                ? '<div class="meta">Workflow spec loaded, but no rules are defined.</div>'
-                : '<div class="meta">No workflow spec override is active.</div>'
+                ? `<div class="meta">${{message("workflowSpecWithoutRules")}}</div>`
+                : `<div class="meta">${{message("workflowSpecInactive")}}</div>`
             );
         projectPreviewGraph.innerHTML = [
           renderFacts([
@@ -2538,34 +3158,35 @@ def render_dashboard_html(
           blockedNodes.length
             ? `
                 <div class="rule">
-                  <strong>Blocked Nodes</strong>
+                  <strong>${{currentLanguage === "zh" ? "阻塞节点" : "Blocked Nodes"}}</strong>
                   <div class="meta">${{blockedTitles}}</div>
                 </div>
               `
-            : '<div class="meta">No blocked nodes.</div>',
+            : `<div class="meta">${{message("noBlockedNodes")}}</div>`,
           pendingNodes.length
             ? `
                 <div class="rule">
-                  <strong>Pending Nodes</strong>
+                  <strong>${{currentLanguage === "zh" ? "待处理节点" : "Pending Nodes"}}</strong>
                   <div class="meta">${{pendingTitles}}</div>
                 </div>
               `
-            : '<div class="meta">No pending nodes.</div>',
+            : `<div class="meta">${{message("noPendingNodes")}}</div>`,
         ].join("");
         projectPreviewJson.textContent = JSON.stringify(payload, null, 2);
       }}
 
-      function renderProjectPreviewError(message) {{
-        projectPreviewMeta.textContent = "Current preview is unavailable.";
+      function renderProjectPreviewError(errorMessage) {{
+        projectPreviewMeta.textContent = message("currentPreviewUnavailable");
         projectPreviewChips.innerHTML =
           '<div class="chip">error <strong>preview_failed</strong></div>';
-        projectPreviewOverview.innerHTML = '<div class="meta">Preview unavailable.</div>';
-        projectPreviewFocus.innerHTML = '<div class="meta">Preview unavailable.</div>';
-        projectPreviewSupervisor.innerHTML = '<div class="meta">Preview unavailable.</div>';
-        projectPreviewAnalysis.innerHTML = '<div class="meta">Preview unavailable.</div>';
-        projectPreviewRules.innerHTML = '<div class="meta">Preview unavailable.</div>';
-        projectPreviewGraph.innerHTML = '<div class="meta">Preview unavailable.</div>';
-        projectPreviewJson.textContent = message;
+        const previewUnavailable = `<div class="meta">${{message("previewUnavailable")}}</div>`;
+        projectPreviewOverview.innerHTML = previewUnavailable;
+        projectPreviewFocus.innerHTML = previewUnavailable;
+        projectPreviewSupervisor.innerHTML = previewUnavailable;
+        projectPreviewAnalysis.innerHTML = previewUnavailable;
+        projectPreviewRules.innerHTML = previewUnavailable;
+        projectPreviewGraph.innerHTML = previewUnavailable;
+        projectPreviewJson.textContent = errorMessage;
       }}
 
       function renderProjectRunLoops(payload) {{
@@ -2574,8 +3195,8 @@ def render_dashboard_html(
         projectLatestRunLoop.innerHTML = latestLoop
           ? renderFacts([
               ["id", latestLoop.loop_run_id || "-"],
-              ["stop", latestLoop.stop_reason || "-"],
-              ["status", latestLoop.status || "-"],
+              ["stop", token(latestLoop.stop_reason)],
+              ["status", token(latestLoop.status)],
               [
                 "iterations",
                 `${{latestLoop.completed_iterations || 0}} / ${{latestLoop.max_iterations || 0}}`,
@@ -2583,13 +3204,13 @@ def render_dashboard_html(
               ["runs", `${{(latestLoop.run_ids || []).length}}`],
               ["note", latestLoop.note || "-"],
             ])
-          : '<div class="meta">No project run loops yet.</div>';
+          : `<div class="meta">${{message("noProjectRunLoops")}}</div>`;
         projectRunLoopHistory.innerHTML = loops.length
           ? loops.slice(0, 8).map((loop) => `
               <div class="rule">
                 <strong>${{loop.loop_run_id || "-"}}</strong>
                 <div class="meta">
-                  stop=${{loop.stop_reason || "-"}} · status=${{loop.status || "-"}}
+                  stop=${{token(loop.stop_reason)}} · status=${{token(loop.status)}}
                 </div>
                 <div class="meta">
                   iterations=${{loop.completed_iterations || 0}}/${{loop.max_iterations || 0}}
@@ -2598,12 +3219,13 @@ def render_dashboard_html(
                 <div class="meta">note=${{loop.note || "-"}}</div>
               </div>
             `).join("")
-          : '<div class="meta">No project run loop history yet.</div>';
+          : `<div class="meta">${{message("noProjectRunLoopHistory")}}</div>`;
       }}
 
-      function renderProjectRunLoopsError(message) {{
-        projectLatestRunLoop.innerHTML = '<div class="meta">Project run loops unavailable.</div>';
-        projectRunLoopHistory.innerHTML = `<div class="meta">${{message}}</div>`;
+      function renderProjectRunLoopsError(errorMessage) {{
+        projectLatestRunLoop.innerHTML =
+          `<div class="meta">${{message("previewUnavailable")}}</div>`;
+        projectRunLoopHistory.innerHTML = `<div class="meta">${{errorMessage}}</div>`;
       }}
 
       function benchmarkSourcePayload() {{
@@ -2634,8 +3256,9 @@ def render_dashboard_html(
 
       function renderBenchmarkRuns(runs) {{
         if (!runs.length) {{
-          benchmarkRunsList.innerHTML = '<div class="meta">No benchmark runs recorded.</div>';
-          benchmarkRunDetail.innerHTML = '<div class="meta">No benchmark run selected.</div>';
+          benchmarkRunsList.innerHTML = `<div class="meta">${{message("noBenchmarkRuns")}}</div>`;
+          benchmarkRunDetail.innerHTML =
+            `<div class="meta">${{message("noBenchmarkRunSelected")}}</div>`;
           return;
         }}
         benchmarkRunsList.innerHTML = "";
@@ -2645,7 +3268,7 @@ def render_dashboard_html(
           item.innerHTML = `
             <strong>${{run.run_id}}</strong>
             <div class="meta">
-              ${{run.benchmark?.name || "-"}} · ${{run.status || "-"}}
+              ${{run.benchmark?.name || "-"}} · ${{token(run.status)}}
             </div>
             <div class="meta">${{run.started_at || "-"}}</div>
           `;
@@ -2666,7 +3289,7 @@ def render_dashboard_html(
           renderFacts([
             ["benchmark", payload.benchmark?.name || "-"],
             ["run", payload.run_id || "-"],
-            ["status", payload.status || "-"],
+            ["status", token(payload.status)],
             ["projects", `${{projects.length}}`],
             ["summary", payload.summary_path || "-"],
             ["ledger", payload.ledger_path || "-"],
@@ -2676,12 +3299,12 @@ def render_dashboard_html(
                 <div class="rule">
                   <strong>${{project.id}}</strong>
                   <div class="meta">
-                    ${{project.run_status || "-"}} · workflow=${{project.workflow || "-"}}
+                    ${{token(project.run_status)}} · workflow=${{token(project.workflow)}}
                   </div>
                   <div class="meta">${{project.artifact_dir || "-"}}</div>
                 </div>
               `).join("")
-            : '<div class="meta">No benchmark projects recorded.</div>',
+            : `<div class="meta">${{message("noBenchmarkProjects")}}</div>`,
         ].join("");
       }}
 
@@ -2723,7 +3346,7 @@ def render_dashboard_html(
                   <div class="meta">${{change.file_path || "-"}}</div>
                 </div>
               `).join("")
-            : '<div class="meta">No theorem-level changes.</div>',
+            : `<div class="meta">${{message("noTheoremChanges")}}</div>`,
         ].join("");
       }}
 
@@ -2750,11 +3373,11 @@ def render_dashboard_html(
                   <div class="meta">${{outcome.file_path || "-"}}</div>
                 </div>
               `).join("")
-            : '<div class="meta">No theorem outcomes matched.</div>',
+            : `<div class="meta">${{message("noTheoremOutcomes")}}</div>`,
           taxonomy.length
             ? `
                 <div class="rule">
-                  <strong>Failure Taxonomy</strong>
+                  <strong>${{currentLanguage === "zh" ? "失败分类" : "Failure Taxonomy"}}</strong>
                   <div class="meta">
                     ${{
                       taxonomy
@@ -2764,7 +3387,7 @@ def render_dashboard_html(
                   </div>
                 </div>
               `
-            : '<div class="meta">No failure taxonomy entries.</div>',
+            : `<div class="meta">${{message("noFailureTaxonomy")}}</div>`,
         ].join("");
       }}
 
@@ -2775,7 +3398,7 @@ def render_dashboard_html(
       function renderFacts(entries) {{
         return entries.map(([label, value]) => `
           <div class="fact">
-            <span>${{label}}</span>
+            <span>${{factLabel(label)}}</span>
             <strong>${{value}}</strong>
           </div>
         `).join("");
@@ -2792,7 +3415,7 @@ def render_dashboard_html(
         if (!reason) {{
           return "-";
         }}
-        return String(reason).split("_").join(" ");
+        return token(reason);
       }}
 
       function formatBlockReasonCounts(counts) {{
@@ -2828,7 +3451,7 @@ def render_dashboard_html(
 
       function renderWorkers(workers) {{
         if (!workers.length) {{
-          workersList.innerHTML = '<div class="meta">No worker telemetry yet.</div>';
+          workersList.innerHTML = `<div class="meta">${{message("noWorkerTelemetry")}}</div>`;
           return;
         }}
         workersList.innerHTML = "";
@@ -2839,16 +3462,18 @@ def render_dashboard_html(
           const heartbeatAge = worker.heartbeat_age_seconds == null
             ? "-"
             : `${{worker.heartbeat_age_seconds.toFixed(1)}}s`;
-          const stale = worker.stale ? " · stale" : "";
-          const executors = (worker.executor_kinds || []).join(",") || "-";
+          const stale = worker.stale ? ` · ${{token("blocked")}}` : "";
+          const executors = joinTokens(worker.executor_kinds || []);
           const models = (worker.models || []).join(",") || "-";
           const costTiers = (worker.cost_tiers || []).join(",") || "-";
           item.innerHTML = `
             <strong>${{worker.worker_id}}</strong>
-            <div class="meta">slot=${{worker.slot_index}} · ${{worker.status}}${{stale}}</div>
+            <div class="meta">
+              slot=${{worker.slot_index}} · ${{token(worker.status)}}${{stale}}
+            </div>
             <div class="meta">current=${{currentJob}}</div>
-            <div class="meta">processed=${{worker.processed_jobs}}</div>
-            <div class="meta">failed=${{worker.failed_jobs}}</div>
+            <div class="meta">${{factLabel("processed")}}=${{worker.processed_jobs}}</div>
+            <div class="meta">${{factLabel("failure")}}=${{worker.failed_jobs}}</div>
             <div class="meta">executors=${{executors}}</div>
             <div class="meta">models=${{models}} · cost_tiers=${{costTiers}}</div>
             <div class="meta">heartbeat_age=${{heartbeatAge}}</div>
@@ -2875,14 +3500,31 @@ def render_dashboard_html(
           return accumulator;
         }}, {{ success: 0, failure: 0, retries: 0, cost: 0 }});
         const degradedPools = providerHealth.filter((pool) => pool.status !== "healthy").length;
+        const selectedProjectId = projects.some(
+          (project) => project.project_id === currentProjectId,
+        )
+          ? currentProjectId
+          : (payload.default_project_id || projects[0]?.project_id || defaultProjectId);
+        currentProjectId = selectedProjectId;
+        syncProjectSelector();
+        const selectedProject = projects.find((project) => project.project_id === currentProjectId)
+          || null;
         workspaceOverviewMeta.textContent =
-          `${{payload.workspace}} · ${{payload.project_count}} projects · ` +
-          `${{payload.session_count}} sessions`;
+          `${{payload.workspace}} · ${{payload.project_count}} ${{factLabel("projects")}} · ` +
+          `${{payload.session_count}} ${{factLabel("sessions")}}`;
         const workspaceMode = payload.mode === "workspace";
         workspaceEnqueueButton.disabled = !workspaceMode;
         workspaceResumeButton.disabled = !workspaceMode;
+        workspaceProjectPlanButton.disabled = selectedProject == null;
+        workspaceProjectEnqueueButton.disabled = !workspaceMode || selectedProject == null;
+        workspaceProjectResumeButton.disabled = !workspaceMode || selectedProject == null;
         workspaceOverviewSummary.innerHTML = renderFacts([
-          ["mode", payload.mode || "-"],
+          [
+            "mode",
+            payload.mode === "workspace"
+              ? message("workspaceModeWorkspace")
+              : message("workspaceModeProject"),
+          ],
           ["projects", `${{payload.project_count || 0}}`],
           ["sessions", `${{payload.session_count || 0}}`],
           ["running_sessions", `${{payload.running_sessions || 0}}`],
@@ -2911,24 +3553,24 @@ def render_dashboard_html(
         workspaceLatestLoop.innerHTML = latestLoop
           ? renderFacts([
               ["id", latestLoop.loop_id || latestLoop.loop_run_id || "-"],
-              ["stop", latestLoop.stop_reason || "-"],
+              ["stop", token(latestLoop.stop_reason)],
               ["cycles", `${{latestLoop.cycles_completed || 0}}`],
               ["processed", `${{latestLoop.total_processed_jobs || 0}}`],
               [
                 "fleet",
                 latestFleet
-                  ? `${{latestFleet.fleet_run_id || "-"}} · ${{latestFleet.stop_reason || "-"}}`
+                  ? `${{latestFleet.fleet_run_id || "-"}} · ${{token(latestFleet.stop_reason)}}`
                   : "-",
               ],
             ])
-          : '<div class="meta">No workspace loop history yet.</div>';
+          : `<div class="meta">${{message("noWorkspaceLoopHistory")}}</div>`;
         const loopHistory = payload.loop_history || [];
         workspaceLoopHistory.innerHTML = loopHistory.length
           ? loopHistory.slice(0, 8).map((loop) => `
               <div class="rule">
                 <strong>${{loop.loop_id || loop.loop_run_id || "-"}}</strong>
                 <div class="meta">
-                  project=${{loop.project_id || "-"}} · stop=${{loop.stop_reason || "-"}}
+                  project=${{loop.project_id || "-"}} · stop=${{token(loop.stop_reason)}}
                 </div>
                 <div class="meta">
                   cycles=${{loop.cycles_completed || 0}}
@@ -2936,14 +3578,14 @@ def render_dashboard_html(
                 </div>
               </div>
             `).join("")
-          : '<div class="meta">No workspace loop history yet.</div>';
+          : `<div class="meta">${{message("noWorkspaceLoopHistory")}}</div>`;
         const fleetHistory = payload.fleet_history || [];
         workspaceFleetHistory.innerHTML = fleetHistory.length
           ? fleetHistory.slice(0, 8).map((run) => `
               <div class="rule">
                 <strong>${{run.fleet_run_id || "-"}}</strong>
                 <div class="meta">
-                  launcher=${{run.launcher || "-"}} · stop=${{run.stop_reason || "-"}}
+                  launcher=${{run.launcher || "-"}} · stop=${{token(run.stop_reason)}}
                 </div>
                 <div class="meta">
                   cycles=${{run.cycles_completed || 0}}
@@ -2952,19 +3594,19 @@ def render_dashboard_html(
                 </div>
               </div>
             `).join("")
-          : '<div class="meta">No fleet history yet.</div>';
+          : `<div class="meta">${{message("noFleetHistory")}}</div>`;
         workspaceDaemonState.innerHTML = daemon
           ? renderFacts([
-              ["status", daemon.status || "-"],
+              ["status", token(daemon.status)],
               ["ticks", `${{daemon.tick_count || 0}}`],
               ["last_loop", daemon.last_loop_run_id || "-"],
               [
                 "reason",
-                daemon.exit_reason || daemon.request_reason || "-",
+                token(daemon.exit_reason || daemon.request_reason),
               ],
-              ["stop_requested", daemon.stop_requested ? "yes" : "no"],
+              ["stop_requested", yesNo(daemon.stop_requested)],
             ])
-          : '<div class="meta">No workspace daemon state yet.</div>';
+          : `<div class="meta">${{message("noWorkspaceDaemonState")}}</div>`;
         workspaceSessionTable.innerHTML = sessions.length
           ? sessions.slice(0, 8).map((session) => {{
               const failures =
@@ -2972,7 +3614,7 @@ def render_dashboard_html(
                 `${{session.max_consecutive_failures || 0}}`;
               return `
                 <div class="rule">
-                  <strong>${{session.project_id}} · ${{session.status}}</strong>
+                  <strong>${{session.project_id}} · ${{token(session.status)}}</strong>
                   <div class="meta">${{session.session_id}}</div>
                   <div class="meta">
                     iter=${{session.completed_iterations}}/${{session.max_iterations}}
@@ -2989,13 +3631,13 @@ def render_dashboard_html(
                   </div>
                   <div class="meta">tags=${{(session.tags || []).join(",") || "-"}}</div>
                   <div class="meta">
-                    stop=${{session.last_stop_reason || "-"}}
-                    · resume=${{session.last_resume_reason || "-"}}
+                    stop=${{token(session.last_stop_reason)}}
+                    · resume=${{token(session.last_resume_reason)}}
                   </div>
                 </div>
               `;
             }}).join("")
-          : '<div class="meta">No workspace sessions yet.</div>';
+          : `<div class="meta">${{message("noWorkspaceSessions")}}</div>`;
         workspaceProviderRuntime.innerHTML = providerRuntime.length
           ? providerRuntime.slice(0, 6).map((pool) => {{
               const members = (pool.members || []).slice(0, 3).map((member) => {{
@@ -3007,7 +3649,7 @@ def render_dashboard_html(
               }}).join(" · ");
               return `
                 <div class="rule">
-                  <strong>${{pool.pool_name}} · health=${{pool.last_health_status || "-"}}</strong>
+                  <strong>${{pool.pool_name}} · health=${{token(pool.last_health_status)}}</strong>
                   <div class="meta">
                     success=${{pool.success_count}} · failed=${{pool.failure_count}}
                     · retries=${{pool.total_retry_count}}
@@ -3020,16 +3662,16 @@ def render_dashboard_html(
                 </div>
               `;
             }}).join("")
-          : '<div class="meta">No persisted provider runtime telemetry yet.</div>';
+          : `<div class="meta">${{message("noProviderRuntime")}}</div>`;
         workspaceProviderHealth.innerHTML = providerHealth.length
           ? providerHealth.slice(0, 6).map((pool) => {{
               const members = (pool.members || []).map((member) => {{
                 const failures = Number(member.consecutive_failures || 0);
-                return `${{member.member_name}}:${{member.status}}(f=${{failures}})`;
+                return `${{member.member_name}}:${{token(member.status)}}(f=${{failures}})`;
               }}).join(" · ");
               return `
                 <div class="rule">
-                  <strong>${{pool.pool_name}} · ${{pool.status}}</strong>
+                  <strong>${{pool.pool_name}} · ${{token(pool.status)}}</strong>
                   <div class="meta">
                     available=${{pool.available_members}}/${{pool.total_members}}
                     · quarantined=${{pool.quarantined_members}}
@@ -3039,60 +3681,81 @@ def render_dashboard_html(
                 </div>
               `;
             }}).join("")
-          : '<div class="meta">No provider pools configured.</div>';
-        workspaceWorkerPool.innerHTML = [
-          projects.length
-            ? projects.slice(0, 8).map((project) => `
-                <div class="rule">
-                  <strong>${{project.project_id}}</strong>
-                  <div class="meta">
-                    workflow=${{project.workflow}} · dry_run=${{project.dry_run}}
-                  </div>
-                  <div class="meta">
-                    sessions=${{project.session_count}} · running=${{project.running_sessions}}
-                    · queued_jobs=${{project.queued_jobs}}
-                    · blocked=${{project.blocked_sessions || 0}}
-                  </div>
-                  <div class="meta">
-                    blocked_detail=${{formatBlockReasonCounts(project.blocked_session_counts)}}
-                  </div>
-                  <div class="meta">tags=${{(project.tags || []).join(",") || "-"}}</div>
+          : `<div class="meta">${{message("noProviderPools")}}</div>`;
+        workspaceProjectMeta.textContent = selectedProject
+          ? (
+              `${{selectedProject.project_id}} · `
+              + `sessions=${{selectedProject.session_count}} · `
+              + `queued=${{selectedProject.queued_jobs}}`
+            )
+          : message("workspaceProjectMetaDefault");
+        workspaceProjectRoster.innerHTML = projects.length
+          ? projects.slice(0, 8).map((project) => `
+              <button
+                type="button"
+                class="${{project.project_id === currentProjectId ? "card active" : "card"}}"
+                data-project-roster-id="${{project.project_id}}"
+              >
+                <strong>${{project.project_id}}</strong>
+                <div class="meta">
+                  workflow=${{token(project.workflow)}} · dry_run=${{yesNo(project.dry_run)}}
                 </div>
-              `).join("")
-            : '<div class="meta">No workspace projects.</div>',
-          workers.length
-            ? `
-                <div class="rule">
-                  <strong>Workers</strong>
-                  <div class="meta">
-                    ${{
-                      workers
-                        .map((worker) => `${{worker.worker_id}}:${{worker.status}}`)
-                        .join(" · ")
-                    }}
-                  </div>
+                <div class="meta">
+                  sessions=${{project.session_count}} · running=${{project.running_sessions}}
+                  · queued=${{project.queued_jobs}} · blocked=${{project.blocked_sessions || 0}}
                 </div>
-              `
-            : '<div class="meta">No worker pool activity yet.</div>',
-        ].join("");
+                <div class="meta">
+                  blocked_detail=${{formatBlockReasonCounts(project.blocked_session_counts)}}
+                </div>
+                <div class="meta">tags=${{(project.tags || []).join(",") || "-"}}</div>
+              </button>
+            `).join("")
+          : `<div class="meta">${{message("noWorkspaceProjects")}}</div>`;
+        for (const item of workspaceProjectRoster.querySelectorAll("[data-project-roster-id]")) {{
+          item.addEventListener("click", async () => {{
+            currentProjectId = item.dataset.projectRosterId || defaultProjectId;
+            syncProjectSelector();
+            await refresh();
+          }});
+        }}
+        workspaceWorkerPool.innerHTML = workers.length
+          ? workers.slice(0, 8).map((worker) => `
+              <div class="rule">
+                <strong>${{worker.worker_id}}</strong>
+                <div class="meta">
+                  slot=${{worker.slot_index}} · ${{token(worker.status)}}
+                </div>
+                <div class="meta">
+                  job=${{worker.current_job_id || "-"}} · processed=${{worker.processed_jobs}}
+                </div>
+              </div>
+            `).join("")
+          : `<div class="meta">${{message("noWorkerPoolActivity")}}</div>`;
       }}
 
-      function renderWorkspaceOverviewError(message) {{
-        workspaceOverviewMeta.textContent = "Workspace overview unavailable.";
+      function renderWorkspaceOverviewError(errorMessage) {{
+        workspaceOverviewMeta.textContent = message("workspaceOverviewUnavailable");
         workspaceEnqueueButton.disabled = true;
         workspaceResumeButton.disabled = true;
+        workspaceProjectPlanButton.disabled = true;
+        workspaceProjectEnqueueButton.disabled = true;
+        workspaceProjectResumeButton.disabled = true;
         workspaceOverviewSummary.innerHTML =
-          '<div class="meta">Workspace overview unavailable.</div>';
+          `<div class="meta">${{message("workspaceOverviewUnavailable")}}</div>`;
         workspaceRuntimeSummary.innerHTML =
-          '<div class="meta">Workspace overview unavailable.</div>';
+          `<div class="meta">${{message("workspaceOverviewUnavailable")}}</div>`;
         workspaceDaemonState.innerHTML =
-          '<div class="meta">Workspace overview unavailable.</div>';
-        workspaceSessionTable.innerHTML = `<div class="meta">${{message}}</div>`;
+          `<div class="meta">${{message("workspaceOverviewUnavailable")}}</div>`;
+        workspaceSessionTable.innerHTML = `<div class="meta">${{errorMessage}}</div>`;
         workspaceProviderRuntime.innerHTML =
-          '<div class="meta">Workspace overview unavailable.</div>';
+          `<div class="meta">${{message("workspaceOverviewUnavailable")}}</div>`;
         workspaceProviderHealth.innerHTML =
-          '<div class="meta">Workspace overview unavailable.</div>';
-        workspaceWorkerPool.innerHTML = '<div class="meta">Workspace overview unavailable.</div>';
+          `<div class="meta">${{message("workspaceOverviewUnavailable")}}</div>`;
+        workspaceProjectMeta.textContent = message("workspaceOverviewUnavailable");
+        workspaceProjectRoster.innerHTML =
+          `<div class="meta">${{message("workspaceOverviewUnavailable")}}</div>`;
+        workspaceWorkerPool.innerHTML =
+          `<div class="meta">${{message("workspaceOverviewUnavailable")}}</div>`;
       }}
 
       async function refresh() {{
@@ -3124,34 +3787,22 @@ def render_dashboard_html(
           fleetPlanPromise,
           workspaceOverviewPromise,
         ]);
-        renderControl(control);
-        renderRuns(runs);
-        renderQueue(jobs);
-        renderWorkers(workers);
-        if (fleetPlan.error) {{
-          renderFleetPlanError(fleetPlan.error);
-        }} else {{
-          renderFleetPlan(fleetPlan);
-        }}
-        if (projectPreview.error) {{
-          renderProjectPreviewError(projectPreview.error);
-        }} else {{
-          renderProjectPreview(projectPreview);
-        }}
-        if (projectRunLoops.error) {{
-          renderProjectRunLoopsError(projectRunLoops.error);
-        }} else {{
-          renderProjectRunLoops(projectRunLoops);
-        }}
-        if (workspaceOverview.error) {{
-          renderWorkspaceOverviewError(workspaceOverview.error);
-        }} else {{
-          renderWorkspaceOverview(workspaceOverview);
-        }}
+        lastDashboardState = {{
+          control,
+          runs,
+          jobs,
+          workers,
+          projectPreview,
+          projectRunLoops,
+          fleetPlan,
+          workspaceOverview,
+        }};
+        rerenderFromState();
       }}
 
       projectSelector.addEventListener("change", async () => {{
         currentProjectId = projectSelector.value || defaultProjectId;
+        syncProjectSelector();
         await refresh();
       }});
 
@@ -3287,6 +3938,47 @@ def render_dashboard_html(
         await refresh();
       }});
 
+      workspaceProjectPlanButton.addEventListener("click", async () => {{
+        if (!currentProjectId) {{
+          return;
+        }}
+        syncProjectSelector();
+        setActiveTab("plan");
+        await refresh();
+      }});
+
+      workspaceProjectEnqueueButton.addEventListener("click", async () => {{
+        if (!currentProjectId) {{
+          return;
+        }}
+        await fetchJson(`/api/workspace/enqueue`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{
+            project_id: currentProjectId,
+            note: "dashboard_enqueue_project",
+            tags: parseWorkspaceTags(),
+          }}),
+        }});
+        await refresh();
+      }});
+
+      workspaceProjectResumeButton.addEventListener("click", async () => {{
+        if (!currentProjectId) {{
+          return;
+        }}
+        await fetchJson(`/api/workspace/resume`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{
+            project_id: currentProjectId,
+            resume_reason: "dashboard_resume_project",
+            tags: parseWorkspaceTags(),
+          }}),
+        }});
+        await refresh();
+      }});
+
       benchmarkRunsButton.addEventListener("click", async () => {{
         try {{
           const payload = await fetchJson(`/api/benchmark/runs`, {{
@@ -3362,6 +4054,7 @@ def render_dashboard_html(
         currentLanguage = currentLanguage === "zh" ? "en" : "zh";
         localStorage.setItem("archonlab.dashboard.lang", currentLanguage);
         applyLanguage();
+        rerenderFromState();
       }});
 
       for (const button of tabButtons) {{
@@ -3373,7 +4066,7 @@ def render_dashboard_html(
       applyLanguage();
       setActiveTab(localStorage.getItem(DASHBOARD_TAB_KEY) || "plan");
       refresh().catch((error) => {{
-        detailMeta.textContent = "Dashboard failed to load.";
+        detailMeta.textContent = message("dashboardLoadFailed");
         detailJson.textContent = error.message;
       }});
     </script>
