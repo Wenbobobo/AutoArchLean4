@@ -195,6 +195,7 @@ def test_benchmark_run_service_writes_manifest_copy_and_summary(
     assert summary["projects"][0]["id"] == "demo-project"
     assert summary["projects"][0]["run_status"] == "completed"
     assert summary["projects"][0]["snapshot"]["progress"]["stage"] == "prover"
+    assert summary["projects"][0]["snapshot"]["theorem_state_counts"]["contains_sorry"] == 1
     assert summary["projects"][0]["score"]["task_result_count"] == 0
     assert summary["ledger_path"] == str(result.ledger_path)
     assert summary["ledger_summary"]["total_projects"] == 1

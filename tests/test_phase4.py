@@ -9,6 +9,7 @@ from archonlab.models import (
     ProjectSnapshot,
     SupervisorAction,
     SupervisorReason,
+    TaskGraph,
     TaskSource,
     TaskStatus,
 )
@@ -191,6 +192,35 @@ def test_supervisor_policy_distinguishes_healthy_and_stuck_runs(tmp_path: Path) 
     assert blocked_decision.action is SupervisorAction.INVESTIGATE_INFRA
     assert blocked_decision.reason is SupervisorReason.HIGH_BLOCKED_RATIO
     assert blocked_decision.summary
+
+
+def test_supervisor_policy_uses_theorem_state_density_to_request_hints() -> None:
+    from archonlab.supervisor import decide_supervisor_action
+
+    decision = decide_supervisor_action(
+        snapshot=ProjectSnapshot(
+            project_id="demo",
+            project_path=Path("/tmp/demo"),
+            archon_path=Path("/tmp/archon"),
+            progress=ProgressSnapshot(stage="prover"),
+            lean_file_count=2,
+            theorem_count=4,
+            sorry_count=4,
+            axiom_count=0,
+            theorem_state_counts={
+                "proved": 1,
+                "contains_sorry": 3,
+                "uses_axiom": 0,
+                "missing": 0,
+            },
+        ),
+        task_graph=TaskGraph(project_id="demo"),
+    )
+
+    assert decision.action is SupervisorAction.REQUEST_HINT
+    assert decision.reason is SupervisorReason.HIGH_SORRY_LOAD
+    assert decision.evidence["contains_sorry_theorem_count"] == 3
+    assert decision.evidence["theorem_state_counts"]["contains_sorry"] == 3
 
 
 def test_supervisor_policy_treats_axiom_blocked_ratio_as_infra_issue(tmp_path: Path) -> None:

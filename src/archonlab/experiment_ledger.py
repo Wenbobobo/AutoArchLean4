@@ -18,107 +18,25 @@ from .models import (
     FailureCategory,
     FailureCategorySummary,
     LeanAnalysisSnapshot,
-    LeanDeclaration,
     TheoremOutcome,
     TheoremOutcomeKind,
     TheoremState,
 )
-
-
-def _theorem_state(declaration: LeanDeclaration | None) -> TheoremState:
-    if declaration is None:
-        return TheoremState.MISSING
-    if declaration.uses_axiom:
-        return TheoremState.USES_AXIOM
-    if declaration.blocked_by_sorry:
-        return TheoremState.CONTAINS_SORRY
-    return TheoremState.PROVED
-
-
-def _theorem_severity(state: TheoremState) -> int:
-    return {
-        TheoremState.PROVED: 0,
-        TheoremState.CONTAINS_SORRY: 1,
-        TheoremState.USES_AXIOM: 2,
-        TheoremState.MISSING: 3,
-    }[state]
-
-
-def _outcome_kind(
-    before: LeanDeclaration | None,
-    after: LeanDeclaration | None,
-) -> TheoremOutcomeKind:
-    if before is None:
-        return TheoremOutcomeKind.NEW
-    if after is None:
-        return TheoremOutcomeKind.REMOVED
-    before_state = _theorem_state(before)
-    after_state = _theorem_state(after)
-    if before_state is after_state:
-        return TheoremOutcomeKind.UNCHANGED
-    if _theorem_severity(after_state) < _theorem_severity(before_state):
-        return TheoremOutcomeKind.IMPROVED
-    return TheoremOutcomeKind.REGRESSED
-
-
-def _failure_categories(
-    *,
-    after: LeanDeclaration | None,
-    after_state: TheoremState,
-) -> list[FailureCategory]:
-    if after is None or after_state is TheoremState.MISSING:
-        return [FailureCategory.REMOVED_DECLARATION]
-    if after_state is TheoremState.CONTAINS_SORRY:
-        return [FailureCategory.CONTAINS_SORRY]
-    if after_state is TheoremState.USES_AXIOM:
-        return [FailureCategory.USES_AXIOM]
-    return []
+from .theorem_state import (
+    build_theorem_outcomes_from_records,
+    build_theorem_state_records,
+    theorem_state_severity,
+)
 
 
 def build_theorem_outcome_ledger(
     before: LeanAnalysisSnapshot,
     after: LeanAnalysisSnapshot,
 ) -> list[TheoremOutcome]:
-    before_by_name = {declaration.name: declaration for declaration in before.declarations}
-    after_by_name = {declaration.name: declaration for declaration in after.declarations}
-    theorem_names = sorted(set(before_by_name) | set(after_by_name))
-
-    outcomes: list[TheoremOutcome] = []
-    for theorem_name in theorem_names:
-        before_declaration = before_by_name.get(theorem_name)
-        after_declaration = after_by_name.get(theorem_name)
-        after_state = _theorem_state(after_declaration)
-        outcomes.append(
-            TheoremOutcome(
-                theorem_name=theorem_name,
-                file_path=(
-                    after_declaration.file_path
-                    if after_declaration is not None
-                    else (
-                        before_declaration.file_path
-                        if before_declaration is not None
-                        else None
-                    )
-                ),
-                declaration_kind=(
-                    after_declaration.declaration_kind
-                    if after_declaration is not None
-                    else (
-                        before_declaration.declaration_kind
-                        if before_declaration is not None
-                        else None
-                    )
-                ),
-                before_state=_theorem_state(before_declaration),
-                after_state=after_state,
-                outcome=_outcome_kind(before_declaration, after_declaration),
-                failure_categories=_failure_categories(
-                    after=after_declaration,
-                    after_state=after_state,
-                ),
-            )
-        )
-    return outcomes
+    return build_theorem_outcomes_from_records(
+        build_theorem_state_records(before),
+        build_theorem_state_records(after),
+    )
 
 
 def build_failure_taxonomy(
@@ -181,7 +99,7 @@ def _comparison_change_kind(
         return TheoremOutcomeKind.REMOVED
     if baseline_state is candidate_state:
         return TheoremOutcomeKind.UNCHANGED
-    if _theorem_severity(candidate_state) < _theorem_severity(baseline_state):
+    if theorem_state_severity(candidate_state) < theorem_state_severity(baseline_state):
         return TheoremOutcomeKind.IMPROVED
     return TheoremOutcomeKind.REGRESSED
 

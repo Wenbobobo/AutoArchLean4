@@ -11,6 +11,12 @@ from .models import (
     ProjectSnapshot,
     SnapshotDelta,
 )
+from .theorem_state import (
+    build_theorem_outcomes_from_records,
+    build_theorem_state_records,
+    count_theorem_outcomes,
+    count_theorem_states,
+)
 
 
 def collect_project_snapshot(
@@ -38,6 +44,7 @@ def collect_project_snapshot(
         archon_path=resolved_archon_path,
         analyzer=analyzer,
     )
+    theorem_states = build_theorem_state_records(resolved_analysis)
 
     return ProjectSnapshot(
         project_id=project.name,
@@ -51,6 +58,8 @@ def collect_project_snapshot(
         analysis_fallback_reason=resolved_analysis.fallback_reason,
         proof_gap_count=len(resolved_analysis.proof_gaps),
         diagnostic_count=len(resolved_analysis.diagnostics),
+        theorem_states=theorem_states,
+        theorem_state_counts=count_theorem_states(theorem_states),
         lean_file_count=resolved_analysis.lean_file_count,
         theorem_count=resolved_analysis.theorem_count,
         sorry_count=resolved_analysis.sorry_count,
@@ -97,11 +106,21 @@ def diff_snapshots(before: ProjectSnapshot, after: ProjectSnapshot) -> SnapshotD
     after_score = score_project_snapshot(after)
     before_checklist_done = sum(1 for item in before.progress.checklist if item.done)
     after_checklist_done = sum(1 for item in after.progress.checklist if item.done)
+    theorem_outcomes = build_theorem_outcomes_from_records(
+        before.theorem_states,
+        after.theorem_states,
+    )
+    theorem_counts = count_theorem_outcomes(theorem_outcomes)
     return SnapshotDelta(
         sorry_delta=after.sorry_count - before.sorry_count,
         axiom_delta=after.axiom_count - before.axiom_count,
         review_session_delta=len(after.review_sessions) - len(before.review_sessions),
         task_results_delta=len(after.task_results) - len(before.task_results),
         checklist_done_delta=after_checklist_done - before_checklist_done,
+        theorem_improved_count=theorem_counts["improved"],
+        theorem_regressed_count=theorem_counts["regressed"],
+        theorem_new_count=theorem_counts["new"],
+        theorem_removed_count=theorem_counts["removed"],
+        theorem_unchanged_count=theorem_counts["unchanged"],
         score_delta=round(after_score.score - before_score.score, 2),
     )

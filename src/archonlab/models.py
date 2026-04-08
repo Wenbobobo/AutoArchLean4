@@ -728,6 +728,8 @@ class ProjectSnapshot(BaseModel):
     analysis_fallback_reason: str | None = None
     proof_gap_count: int = 0
     diagnostic_count: int = 0
+    theorem_states: list[TheoremStateRecord] = Field(default_factory=list)
+    theorem_state_counts: dict[str, int] = Field(default_factory=dict)
     lean_file_count: int
     theorem_count: int
     sorry_count: int
@@ -788,6 +790,15 @@ class TheoremState(StrEnum):
     CONTAINS_SORRY = "contains_sorry"
     USES_AXIOM = "uses_axiom"
     MISSING = "missing"
+
+
+class TheoremStateRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    theorem_name: str
+    file_path: Path | None = None
+    declaration_kind: str | None = None
+    state: TheoremState
 
 
 class TheoremOutcomeKind(StrEnum):
@@ -928,6 +939,11 @@ class SnapshotDelta(BaseModel):
     review_session_delta: int
     task_results_delta: int
     checklist_done_delta: int
+    theorem_improved_count: int = 0
+    theorem_regressed_count: int = 0
+    theorem_new_count: int = 0
+    theorem_removed_count: int = 0
+    theorem_unchanged_count: int = 0
     score_delta: float
 
 

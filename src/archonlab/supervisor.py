@@ -11,6 +11,7 @@ from .models import (
     SupervisorReason,
     TaskGraph,
     TaskStatus,
+    TheoremState,
 )
 
 
@@ -25,6 +26,11 @@ def decide_supervisor_action(
     repeated_next_actions = _max_repeated_next_actions(recent_events)
     proof_gap_count = max(snapshot.proof_gap_count, snapshot.sorry_count + snapshot.axiom_count)
     diagnostic_count = snapshot.diagnostic_count
+    theorem_state_counts = {
+        state.value: snapshot.theorem_state_counts.get(state.value, 0)
+        for state in TheoremState
+    }
+    contains_sorry_theorem_count = theorem_state_counts[TheoremState.CONTAINS_SORRY.value]
 
     if pending_task_results > 0:
         return SupervisorDecision(
@@ -47,6 +53,7 @@ def decide_supervisor_action(
             evidence={
                 "analysis_backend": snapshot.analysis_backend,
                 "analysis_fallback_reason": snapshot.analysis_fallback_reason or "unknown",
+                "theorem_state_counts": theorem_state_counts,
             },
         )
 
@@ -78,6 +85,25 @@ def decide_supervisor_action(
                 "diagnostic_count": diagnostic_count,
                 "sorry_count": snapshot.sorry_count,
                 "axiom_count": snapshot.axiom_count,
+                "theorem_state_counts": theorem_state_counts,
+            },
+        )
+
+    if contains_sorry_theorem_count >= 3 and contains_sorry_theorem_count * 2 >= max(
+        1, snapshot.theorem_count
+    ):
+        return SupervisorDecision(
+            project_id=snapshot.project_id,
+            action=SupervisorAction.REQUEST_HINT,
+            reason=SupervisorReason.HIGH_SORRY_LOAD,
+            summary=(
+                "A large share of declarations are still blocked by sorry, so targeted "
+                "hints should be requested before more autonomous retries."
+            ),
+            evidence={
+                "contains_sorry_theorem_count": contains_sorry_theorem_count,
+                "theorem_count": snapshot.theorem_count,
+                "theorem_state_counts": theorem_state_counts,
             },
         )
 
@@ -90,7 +116,10 @@ def decide_supervisor_action(
                 "Proof debt is still high enough that curated hints may unlock "
                 "progress faster."
             ),
-            evidence={"sorry_count": snapshot.sorry_count},
+            evidence={
+                "sorry_count": snapshot.sorry_count,
+                "theorem_state_counts": theorem_state_counts,
+            },
         )
 
     return SupervisorDecision(
@@ -103,6 +132,7 @@ def decide_supervisor_action(
             "blocked_count": blocked_count,
             "task_count": len(task_graph.nodes),
             "review_sessions": len(snapshot.review_sessions),
+            "theorem_state_counts": theorem_state_counts,
         },
     )
 

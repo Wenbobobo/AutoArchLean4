@@ -188,6 +188,8 @@ def test_collect_project_snapshot_falls_back_when_analyzer_fails(
     assert snapshot.analysis_fallback_reason == "sidecar unavailable"
     assert snapshot.proof_gap_count == 1
     assert snapshot.diagnostic_count == 0
+    assert snapshot.theorem_state_counts["contains_sorry"] == 1
+    assert snapshot.theorem_states[0].theorem_name == "foo"
 
 
 def test_collect_lean_analysis_marks_fallback_metadata_when_analyzer_fails(
