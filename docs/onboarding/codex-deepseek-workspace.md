@@ -14,10 +14,9 @@
 先确认两件事：
 
 1. `codex` CLI 已安装并完成登录
-2. 当前 shell 已提供下面两个环境变量
+2. 当前 shell 已提供 `DEEPSEEK_API_KEY`
 
 ```bash
-export OPENAI_API_KEY="<your-openai-key>"
 export DEEPSEEK_API_KEY="<your-deepseek-key>"
 ```
 
@@ -27,7 +26,7 @@ export DEEPSEEK_API_KEY="<your-deepseek-key>"
 cd /home/niracler/Gary/Math/archonlab
 uv run python - <<'PY'
 import os
-for key in ["OPENAI_API_KEY", "DEEPSEEK_API_KEY"]:
+for key in ["DEEPSEEK_API_KEY"]:
     print(f"{key}={'set' if os.getenv(key) else 'unset'}")
 PY
 ```
@@ -36,9 +35,13 @@ PY
 
 `workspace.toml` 当前的 phase 路由是：
 
-- `plan -> openai_compatible -> https://api.deepseek.com/chat/completions -> deepseek-chat`
-- `prover -> codex_exec -> gpt-5.2-codex`
-- `review -> codex_exec -> gpt-5.2-codex`
+- `plan -> openai_compatible -> https://api.deepseek.com/chat/completions -> deepseek-reasoner`
+- `prover -> codex_exec -> gpt-5.4`
+- `review -> codex_exec -> gpt-5.4`
+
+`codex_exec` 还会额外带上：
+
+- `-c model_reasoning_effort="xhigh"`
 
 这要求 `openai_compatible` 执行器支持两种 payload：
 
@@ -67,7 +70,6 @@ uv run archonlab dashboard serve --config workspace.toml --host 0.0.0.0 --port 8
 
 ```bash
 cd /home/niracler/Gary/Math/archonlab
-export OPENAI_API_KEY="<your-openai-key>"
 export DEEPSEEK_API_KEY="<your-deepseek-key>"
 uv run archonlab workspace daemon run --config workspace.toml
 ```
@@ -76,7 +78,6 @@ uv run archonlab workspace daemon run --config workspace.toml
 
 ```bash
 cd /home/niracler/Gary/Math/archonlab
-export OPENAI_API_KEY="<your-openai-key>"
 export DEEPSEEK_API_KEY="<your-deepseek-key>"
 uv run archonlab queue fleet --config workspace.toml --workers 2
 ```
@@ -100,7 +101,6 @@ uv run archonlab queue provider-health --config workspace.toml --json
 
 ```bash
 cd /home/niracler/Gary/Math/archonlab
-export OPENAI_API_KEY="<your-openai-key>"
 export DEEPSEEK_API_KEY="<your-deepseek-key>"
 uv run archonlab benchmark run \
   --manifest benchmarks/fate-m-codex-deepseek.example.toml \
@@ -120,11 +120,12 @@ uv run archonlab benchmark runs --manifest benchmarks/fate-m-codex-deepseek.exam
 当前建议：
 
 - 把 `DeepSeek` 限制在 `plan`
+- 把 `Codex` 固定在 `gpt-5.4 + xhigh`
 - 不要让 `Codex` 和 `DeepSeek` 在同一个 phase 里做自动 failover
 - 先拿 `FATE-M` 做真实基线，再决定是否上 `FATE-H`
 
 原因是：
 
-- `plan` 更适合便宜模型给方向和检索线索
+- `plan` 更适合 `deepseek-reasoner` 做方向和检索线索
 - `prover/review` 更需要 worktree 操作和 Lean 验证闭环
 - `FATE-M` 更适合作为代数专项的第一层，而不是最终 open-problem 目标

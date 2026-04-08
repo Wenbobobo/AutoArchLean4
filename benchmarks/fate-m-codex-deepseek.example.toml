@@ -9,15 +9,16 @@ kind = "codex_exec"
 command = "codex"
 auto_approve = true
 timeout_seconds = 900
+extra_args = ["-c", "model_reasoning_effort=\"xhigh\""]
 
 [provider]
 kind = "openai_compatible"
 pool = "research"
 member_name = "codex-main"
-model = "gpt-5.2-codex"
+model = "gpt-5.4"
 cost_tier = "premium"
 endpoint_class = "codex-exec"
-api_key_env = "OPENAI_API_KEY"
+api_key_env = "DEEPSEEK_API_KEY"
 endpoint_path = "/v1/responses"
 
 [provider_pool.research]
@@ -27,15 +28,15 @@ quarantine_seconds = 300
 
 [[provider_pool.research.members]]
 name = "codex-main"
-model = "gpt-5.2-codex"
+model = "gpt-5.4"
 cost_tier = "premium"
 endpoint_class = "codex-exec"
 
 [[provider_pool.research.members]]
 name = "deepseek-plan"
-model = "deepseek-chat"
-cost_tier = "cheap"
-endpoint_class = "deepseek-chat"
+model = "deepseek-reasoner"
+cost_tier = "reasoning"
+endpoint_class = "deepseek-reasoner"
 base_url = "https://api.deepseek.com"
 api_key_env = "DEEPSEEK_API_KEY"
 endpoint_path = "/chat/completions"
@@ -46,9 +47,9 @@ kind = "openai_compatible"
 [phase_provider.plan]
 pool = "research"
 member_name = "deepseek-plan"
-model = "deepseek-chat"
-cost_tier = "cheap"
-endpoint_class = "deepseek-chat"
+model = "deepseek-reasoner"
+cost_tier = "reasoning"
+endpoint_class = "deepseek-reasoner"
 base_url = "https://api.deepseek.com"
 api_key_env = "DEEPSEEK_API_KEY"
 endpoint_path = "/chat/completions"
@@ -59,7 +60,7 @@ kind = "codex_exec"
 [phase_provider.prover]
 pool = "research"
 member_name = "codex-main"
-model = "gpt-5.2-codex"
+model = "gpt-5.4"
 cost_tier = "premium"
 endpoint_class = "codex-exec"
 
@@ -69,7 +70,7 @@ kind = "codex_exec"
 [phase_provider.review]
 pool = "research"
 member_name = "codex-main"
-model = "gpt-5.2-codex"
+model = "gpt-5.4"
 cost_tier = "premium"
 endpoint_class = "codex-exec"
 

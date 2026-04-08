@@ -185,6 +185,7 @@ kind = "codex_exec" # dry_run | codex_exec | openai_compatible
 command = "codex"
 auto_approve = true
 timeout_seconds = 600
+extra_args = ["-c", "model_reasoning_effort=\"xhigh\""]
 
 [provider]
 model = "gpt-5.4-mini"
@@ -197,6 +198,8 @@ endpoint_path = "/v1/responses"
 
 如果你想走 OpenAI-compatible HTTP，通常把 `kind = "openai_compatible"` 并填好 `[provider]` 即可。
 如果你想让本地 agent 真正接管工作树，优先用 `codex_exec`。
+如果你想固定 Codex 的推理强度，可以通过 `extra_args` 传
+`-c model_reasoning_effort="xhigh"`。
 如果你要接 DeepSeek 这类 OpenAI-compatible `chat/completions` 端点，把
 `endpoint_path = "/chat/completions"` 即可。
 
