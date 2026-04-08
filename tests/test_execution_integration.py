@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from archonlab.app import app
 from archonlab.config import load_config, load_workspace_config
+from archonlab.events import EventStore
 from archonlab.execution_policy import (
     collect_required_execution_capabilities,
     collect_required_execution_kinds,
@@ -559,6 +560,102 @@ def test_run_service_execute_uses_configured_executor(
     )
     assert execution_payload["executor"] == "dry_run"
     assert execution_payload["status"] == "completed"
+
+
+def test_openai_execution_ingestion_advances_project_state_loop(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    class OutputHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            encoded = json.dumps({"output_text": "ingested-response"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OutputHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        config_path = tmp_path / "archonlab.toml"
+        artifact_root = tmp_path / "artifacts"
+        config_path.write_text(
+            "[project]\n"
+            'name = "demo"\n'
+            f'project_path = "{fake_archon_project}"\n'
+            f'archon_path = "{fake_archon_root}"\n\n'
+            "[run]\n"
+            'workflow = "adaptive_loop"\n'
+            f'artifact_root = "{artifact_root}"\n'
+            "dry_run = false\n\n"
+            "[executor]\n"
+            'kind = "openai_compatible"\n'
+            "\n"
+            "[provider]\n"
+            'model = "gpt-5.4-mini"\n'
+            f'base_url = "http://127.0.0.1:{server.server_port}/v1"\n',
+            encoding="utf-8",
+        )
+
+        service = RunService(load_config(config_path))
+
+        first = service.start(dry_run=False)
+        assert first.action.phase == "plan"
+        assert first.action.reason == "bootstrap_first_iteration"
+        assert first.ingestion is not None
+        assert first.ingestion.phase == "plan"
+        assert first.ingestion.proof_journal_session_path is not None
+        assert (
+            first.ingestion.proof_journal_session_path / "plan.md"
+        ).read_text(encoding="utf-8").startswith("# Plan Output")
+        assert service.preview().action.phase == "prover"
+
+        second = service.start(dry_run=False)
+        assert second.action.phase == "prover"
+        assert second.action.reason == "task_graph_focus"
+        assert second.ingestion is not None
+        assert second.ingestion.phase == "prover"
+        assert second.ingestion.task_result_path is not None
+        task_result_path = second.ingestion.task_result_path
+        assert "ingested-response" in task_result_path.read_text(encoding="utf-8")
+
+        preview_after_second = service.preview()
+        assert preview_after_second.action.phase == "plan"
+        assert preview_after_second.action.reason == "unprocessed_task_results"
+
+        third = service.start(dry_run=False)
+        assert third.action.phase == "plan"
+        assert third.action.reason == "unprocessed_task_results"
+        assert third.ingestion is not None
+        assert third.ingestion.phase == "plan"
+        assert third.ingestion.proof_journal_session_path is not None
+        assert len(third.ingestion.archived_task_results) == 1
+        assert not task_result_path.exists()
+        archived_path = third.ingestion.archived_task_results[0]
+        assert archived_path.exists()
+        assert archived_path.parent.name == "task-results"
+        assert service.preview().action.phase == "prover"
+
+        ingestion_payload = json.loads(
+            (third.artifact_dir / "ingestion.json").read_text(encoding="utf-8")
+        )
+        assert ingestion_payload["phase"] == "plan"
+        assert ingestion_payload["task_result_path"] is None
+        assert ingestion_payload["proof_journal_session_path"] is not None
+
+        event_store = EventStore(artifact_root / "archonlab.db")
+        third_run_events = event_store.get_run_events(third.run_id)
+        assert "execution.ingested" in [event.kind for event in third_run_events]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_collect_required_execution_kinds_includes_phase_and_task_overrides(

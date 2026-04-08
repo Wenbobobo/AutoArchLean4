@@ -13,12 +13,16 @@ from .executors import create_executor
 from .lean_analyzer import build_lean_analyzer, collect_lean_analysis
 from .models import (
     ActionPhase,
+    AdapterAction,
     AppConfig,
     ControlState,
     EventRecord,
     ExecutionCapability,
+    ExecutionIngestionResult,
     ExecutionRequest,
+    ExecutionResult,
     ExecutionStatus,
+    ExecutorKind,
     ProjectSession,
     RunLoopResult,
     RunPreview,
@@ -28,9 +32,6 @@ from .models import (
     SessionIteration,
     SessionQuantumResult,
     SessionStatus,
-    SupervisorAction,
-    SupervisorDecision,
-    SupervisorReason,
     WorkflowMode,
 )
 from .planner import select_next_action
@@ -244,6 +245,7 @@ class RunService:
         )
 
         execution_result = None
+        ingestion_result = None
         if not actual_dry_run and str(action.phase) != "stop":
             resolved_executor = preview.resolved_executor
             resolved_provider = preview.resolved_provider
@@ -354,6 +356,13 @@ class RunService:
                 raise RuntimeError(
                     execution_result.error_message or "Executor failed without an error message."
                 )
+            ingestion_result = self._maybe_ingest_execution_output(
+                run_id=run_id,
+                run_dir=run_dir,
+                action=action,
+                execution_result=execution_result,
+                jsonl_path=events_jsonl,
+            )
 
         self.event_store.append(
             EventRecord(
@@ -381,6 +390,7 @@ class RunService:
             task_graph_path=task_graph_path,
             supervisor_path=supervisor_path,
             execution=execution_result,
+            ingestion=ingestion_result,
         )
 
     def run_loop(
@@ -726,33 +736,6 @@ class RunService:
             self.config.project.name,
             limit=20,
         )
-        provisional_supervisor = SupervisorDecision(
-            project_id=self.config.project.name,
-            action=SupervisorAction.CONTINUE,
-            reason=SupervisorReason.HEALTHY,
-            summary="Provisional supervisor state before historical evaluation.",
-        )
-        predicted_action = select_next_action(
-            adapter=self.adapter,
-            workflow=workflow,
-            snapshot=snapshot,
-            task_graph=task_graph,
-            supervisor=provisional_supervisor,
-            workflow_spec=workflow_spec,
-            control_state=control_state,
-        )
-        recent_events = [
-            *recent_events,
-            EventRecord(
-                run_id="preview",
-                kind="workflow.next_action",
-                project_id=self.config.project.name,
-                payload={
-                    "phase": predicted_action.phase,
-                    "reason": predicted_action.reason,
-                },
-            ),
-        ]
         supervisor = decide_supervisor_action(
             snapshot=snapshot,
             task_graph=task_graph,
@@ -849,6 +832,56 @@ class RunService:
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _maybe_ingest_execution_output(
+        self,
+        *,
+        run_id: str,
+        run_dir: Path,
+        action: AdapterAction,
+        execution_result: ExecutionResult,
+        jsonl_path: Path,
+    ) -> ExecutionIngestionResult | None:
+        if execution_result.executor is not ExecutorKind.OPENAI_COMPATIBLE:
+            return None
+        ingestion = self.adapter.ingest_execution_output(
+            run_id=run_id,
+            phase=str(action.phase),
+            response_text=execution_result.text,
+            task_id=action.task_id,
+            task_title=action.task_title,
+        )
+        if ingestion is None:
+            return None
+        ingestion_path = run_dir / "ingestion.json"
+        self._write_json(ingestion_path, ingestion.model_dump(mode="json"))
+        self.event_store.append(
+            EventRecord(
+                run_id=run_id,
+                kind="execution.ingested",
+                project_id=self.config.project.name,
+                task_id=action.task_id,
+                payload={
+                    "phase": ingestion.phase,
+                    "task_result_path": (
+                        str(ingestion.task_result_path)
+                        if ingestion.task_result_path is not None
+                        else None
+                    ),
+                    "proof_journal_session_path": (
+                        str(ingestion.proof_journal_session_path)
+                        if ingestion.proof_journal_session_path is not None
+                        else None
+                    ),
+                    "archived_task_results": [
+                        str(path) for path in ingestion.archived_task_results
+                    ],
+                    "ingestion_path": str(ingestion_path),
+                },
+            ),
+            jsonl_path=jsonl_path,
+        )
+        return ingestion
 
     def _persist_run_loop_result(self, result: RunLoopResult) -> None:
         if result.artifact_dir is None:

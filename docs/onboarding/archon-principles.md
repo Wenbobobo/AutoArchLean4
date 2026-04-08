@@ -27,13 +27,15 @@ Archon 是 Lean 项目级的自动化编排器，不是单个证明器。
 ## ArchonLab 为什么还要再包一层
 
 Archon 本身已经能跑，但它更像“后端引擎”。
-ArchonLab 要做的是：
+ArchonLab 是压在它之上的 control plane，要做的是：
 - 把多个项目和 benchmark 管起来
 - 统一调度策略
 - 统一评分和回放
 - 统一监督与人工介入
 
+你在 dashboard、workspace loop、queue/fleet、experiment ledger 里看到的东西，
+都属于 ArchonLab 这一层，而不是 Archon runtime 本身。
+
 ## 你可以先记住的一句话
 
 Archon 负责“怎么证明”，ArchonLab 负责“证明什么、先证明哪个、证明到什么程度、失败后怎么办”。
-

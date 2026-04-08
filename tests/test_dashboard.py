@@ -202,6 +202,12 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert "控制台总览" in index_response.text
     assert 'id="project-selector"' in index_response.text
     assert 'value="DemoProject"' in index_response.text
+    assert 'id="tab-plan-button"' in index_response.text
+    assert 'id="tab-loop-button"' in index_response.text
+    assert 'id="tab-finish-button"' in index_response.text
+    assert 'id="tab-plan-panel"' in index_response.text
+    assert 'id="tab-loop-panel"' in index_response.text
+    assert 'id="tab-finish-panel"' in index_response.text
     assert 'id="project-preview-overview"' in index_response.text
     assert 'id="project-preview-analysis"' in index_response.text
     assert 'id="project-latest-run-loop"' in index_response.text
@@ -720,10 +726,16 @@ def test_dashboard_workspace_overview_and_project_switching(
     assert 'id="project-selector"' in index_response.text
     assert 'value="alpha"' in index_response.text
     assert 'value="beta"' in index_response.text
-    assert 'id="mission-control-guide"' in index_response.text
-    assert "Mission Control Guide" in index_response.text
-    assert 'href="#workspace-operations-section"' in index_response.text
-    assert 'href="#benchmark-lab-section"' in index_response.text
+    assert 'id="heading-mission-control"' in index_response.text
+    assert 'id="mission-summary-copy"' in index_response.text
+    assert 'id="tab-plan-button"' in index_response.text
+    assert 'id="tab-loop-button"' in index_response.text
+    assert 'id="tab-finish-button"' in index_response.text
+    assert 'data-tab-panel="plan"' in index_response.text
+    assert 'data-tab-panel="loop"' in index_response.text
+    assert 'data-tab-panel="finish"' in index_response.text
+    assert 'id="workspace-operations-section"' in index_response.text
+    assert 'id="benchmark-lab-section"' in index_response.text
     assert 'id="workspace-overview-summary"' in index_response.text
     assert 'id="workspace-session-table"' in index_response.text
     assert 'id="workspace-runtime-summary"' in index_response.text

@@ -70,6 +70,12 @@ cd /home/niracler/Gary/Math/archonlab
 uv run archonlab dashboard serve --config workspace.toml --host 0.0.0.0 --port 8000
 ```
 
+打开 dashboard 后，按这三个标签看：
+
+- `Plan`：确认当前项目下一步是 `plan` 还是 `prover`，以及 preview 里到底选了哪个 model/provider
+- `Loop`：看 provider health、worker pool、queue pressure、fleet 是否正常
+- `Finish`：看最近 run outcome；只有要做对比或回放时，再打开高级 experiment / replay
+
 新开一个终端，启动 daemon：
 
 ```bash

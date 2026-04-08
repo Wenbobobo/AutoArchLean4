@@ -55,7 +55,7 @@ uv run archonlab workspace init \
 uv run archonlab workspace status --config workspace.toml
 ```
 
-启动 dashboard。
+启动 Mission Console（dashboard）。
 如果只想本机访问，用 `127.0.0.1`；
 如果要给局域网 / Tailscale / 反向代理访问，用 `0.0.0.0`。
 
@@ -163,17 +163,15 @@ benchmark 则已经支持在隔离 `git worktree` 中运行。
 queue/batch 层已经支持 benchmark 作业排队、slot-aware 并发处理、pause-aware 跳过和 job 级 artifacts。
 benchmark project 入队前现在会先做一次 `preview()`，按当前预测的 next action 派生 executor/provider 约束和 job priority。
 queue job 现在还会持久化一份精简的 preview 摘要，dashboard/API 能直接解释当前 phase、reason、focus task 和 priority 组成。
-dashboard 里的 queue 现在是状态分栏的 board，并支持查看 job detail、直接 cancel、直接 requeue。
 control plane 现在也支持运行时 workflow override，可临时切 `adaptive_loop / fixed_loop` 或替换 workflow spec。
-project preview 面板现在也会结构化展示 focus task、supervisor evidence、workflow rules 和 task graph 摘要，而不只是原始 JSON。
 queue worker 现在会留下可查询的 lease / heartbeat / 当前 job telemetry。
 你现在还可以单独启动 `queue worker` 进程，让多个外部 worker 共享同一个 sqlite 队列。
 独立 worker 现在支持 `--auto-slot`，可以自动抢占当前空闲 slot，而不必人工分配编号。
 stale worker 现在也可以被显式 sweep，并把遗留的运行中 job 重新入队。
-workspace/dashboard 现在也内置了更完整的 operator surface：
-- workspace overview 会显示 blocked session reason、failure budget、cooldown remaining
-- benchmark lab 可以直接浏览已持久化的 benchmark run，而不必手填路径
-- dashboard 首页内置 `Mission Control Guide`，方便第一次接管 workspace 时快速定位操作顺序
+ArchonLab 现在把 operator surface 收口到 Mission Console：
+- `Plan`：项目控制、workflow override、current preview、focus task、supervisor evidence
+- `Loop`：workspace overview、session/worker/provider/fleet 健康、queue board
+- `Finish`：recent runs、loop outcomes，以及高级 experiment / replay 抽屉
 
 ## 执行器配置
 

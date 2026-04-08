@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
-from .models import AdapterAction, ChecklistItem, ProgressSnapshot, ProjectConfig, WorkflowMode
+from .models import (
+    AdapterAction,
+    ChecklistItem,
+    ExecutionIngestionResult,
+    ProgressSnapshot,
+    ProjectConfig,
+    WorkflowMode,
+)
 
 
 def bootstrap_archon_project_state(project_path: Path) -> Path:
@@ -189,3 +197,135 @@ class ArchonAdapter:
                 f"{self.state_dir / 'USER_HINTS.md'} when present.\n"
             )
         return "No prompt is required because the project is complete.\n"
+
+    def ingest_execution_output(
+        self,
+        *,
+        run_id: str,
+        phase: str,
+        response_text: str,
+        task_id: str | None = None,
+        task_title: str | None = None,
+    ) -> ExecutionIngestionResult | None:
+        body = response_text.strip()
+        if not body:
+            return None
+        self.ensure_valid()
+        normalized_phase = phase.strip().lower()
+        if normalized_phase == "prover":
+            task_result_path = self._write_task_result(
+                run_id=run_id,
+                phase=normalized_phase,
+                response_text=body,
+                task_id=task_id,
+                task_title=task_title,
+            )
+            return ExecutionIngestionResult(
+                phase=normalized_phase,
+                task_result_path=task_result_path.resolve(),
+            )
+        if normalized_phase in {"plan", "review"}:
+            session_dir = self._write_proof_journal_session(
+                run_id=run_id,
+                phase=normalized_phase,
+                response_text=body,
+                task_id=task_id,
+                task_title=task_title,
+            )
+            archived_task_results = self._archive_task_results(session_dir)
+            return ExecutionIngestionResult(
+                phase=normalized_phase,
+                proof_journal_session_path=session_dir.resolve(),
+                archived_task_results=[path.resolve() for path in archived_task_results],
+            )
+        return None
+
+    def _write_task_result(
+        self,
+        *,
+        run_id: str,
+        phase: str,
+        response_text: str,
+        task_id: str | None,
+        task_title: str | None,
+    ) -> Path:
+        task_results_dir = self.state_dir / "task_results"
+        task_results_dir.mkdir(parents=True, exist_ok=True)
+        path = task_results_dir / f"{run_id}.md"
+        path.write_text(
+            self._format_markdown_output(
+                title="Task Result",
+                run_id=run_id,
+                phase=phase,
+                response_text=response_text,
+                task_id=task_id,
+                task_title=task_title,
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def _write_proof_journal_session(
+        self,
+        *,
+        run_id: str,
+        phase: str,
+        response_text: str,
+        task_id: str | None,
+        task_title: str | None,
+    ) -> Path:
+        session_dir = self.state_dir / "proof-journal" / "sessions" / run_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / f"{phase}.md").write_text(
+            self._format_markdown_output(
+                title=f"{phase.title()} Output",
+                run_id=run_id,
+                phase=phase,
+                response_text=response_text,
+                task_id=task_id,
+                task_title=task_title,
+            ),
+            encoding="utf-8",
+        )
+        return session_dir
+
+    def _archive_task_results(self, session_dir: Path) -> list[Path]:
+        task_results_dir = self.state_dir / "task_results"
+        if not task_results_dir.exists():
+            return []
+        pending = sorted(task_results_dir.glob("*.md"))
+        if not pending:
+            return []
+        archive_dir = session_dir / "task-results"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archived_paths: list[Path] = []
+        for path in pending:
+            archived_path = archive_dir / path.name
+            path.replace(archived_path)
+            archived_paths.append(archived_path)
+        return archived_paths
+
+    @staticmethod
+    def _format_markdown_output(
+        *,
+        title: str,
+        run_id: str,
+        phase: str,
+        response_text: str,
+        task_id: str | None,
+        task_title: str | None,
+    ) -> str:
+        generated_at = datetime.now(UTC).isoformat()
+        lines = [
+            f"# {title}",
+            "",
+            f"- run_id: {run_id}",
+            f"- phase: {phase}",
+            f"- generated_at: {generated_at}",
+        ]
+        if task_id is not None:
+            lines.append(f"- task_id: {task_id}")
+        if task_title is not None:
+            lines.append(f"- task_title: {task_title}")
+        lines.extend(["", response_text, ""])
+        return "\n".join(lines)

@@ -545,6 +545,15 @@ class ExecutionResult(BaseModel):
         return str(self.metadata.get("provider", self.executor.value))
 
 
+class ExecutionIngestionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phase: str
+    task_result_path: Path | None = None
+    proof_journal_session_path: Path | None = None
+    archived_task_results: list[Path] = Field(default_factory=list)
+
+
 class AdapterAction(BaseModel):
     phase: str | ActionPhase
     reason: str
@@ -597,6 +606,7 @@ class RunResult(BaseModel):
     task_graph_path: Path | None = None
     supervisor_path: Path | None = None
     execution: ExecutionResult | None = None
+    ingestion: ExecutionIngestionResult | None = None
 
 
 class RunLoopResult(BaseModel):

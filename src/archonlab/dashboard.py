@@ -1324,6 +1324,67 @@ def render_dashboard_html(
         font-size: 12px;
         color: var(--muted);
       }}
+      .tone-running {{
+        border-color: rgba(39, 113, 181, 0.22);
+        background: rgba(216, 233, 247, 0.9);
+        color: #1f4f7b;
+      }}
+      .tone-good {{
+        border-color: rgba(43, 112, 74, 0.22);
+        background: rgba(220, 239, 226, 0.9);
+        color: #214f34;
+      }}
+      .tone-warn {{
+        border-color: rgba(181, 123, 39, 0.24);
+        background: rgba(248, 233, 204, 0.92);
+        color: #7d5618;
+      }}
+      .tone-bad {{
+        border-color: rgba(154, 61, 43, 0.24);
+        background: rgba(248, 225, 220, 0.92);
+        color: #7a2f21;
+      }}
+      .tone-neutral {{
+        border-color: var(--line);
+        background: rgba(255,255,255,0.72);
+        color: var(--muted);
+      }}
+      .mission-brief {{
+        display: grid;
+        gap: 14px;
+        margin-top: 20px;
+      }}
+      .mission-card {{
+        padding: 18px 20px;
+        border-radius: 24px;
+        border: 1px solid rgba(31, 40, 51, 0.08);
+        background: rgba(255,255,255,0.64);
+        box-shadow: 0 16px 32px rgba(31, 40, 51, 0.08);
+      }}
+      .mission-card h2 {{
+        margin: 0 0 8px 0;
+      }}
+      .tab-row {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }}
+      .tab-button {{
+        min-width: 110px;
+        justify-content: center;
+      }}
+      .tab-button.active {{
+        background: linear-gradient(135deg, #c4472d, #8f2f1f);
+        color: white;
+      }}
+      .tab-panel {{
+        display: none;
+        gap: 18px;
+        margin-top: 18px;
+      }}
+      .tab-panel.active {{
+        display: grid;
+      }}
       .board {{
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1472,286 +1533,316 @@ def render_dashboard_html(
         </div>
       </section>
 
-      <section class="playbook" id="mission-control-guide">
-        <article class="playbook-card">
-          <h2 id="heading-mission-control">值守总指南</h2>
-          <p>
-            第一次进入时先看 workspace 的 blocked sessions、provider health、daemon 状态，
-            再决定是 enqueue/resume、调整 workflow，还是转去 benchmark 回放。
-          </p>
-          <div class="guide-links">
-            <a class="guide-link" href="#workspace-operations-section">Workspace</a>
-            <a class="guide-link" href="#queue-operations-section">Queue</a>
-            <a class="guide-link" href="#project-preview-section">Preview</a>
-            <a class="guide-link" href="#benchmark-lab-section">Benchmark Lab</a>
+      <section class="mission-brief">
+        <article class="mission-card">
+          <h2 id="heading-mission-control">值守总览</h2>
+          <div class="meta" id="mission-summary-copy">
+            Plan 看下一步为什么这样做，Loop 看自治循环是否健康，Finish 看最近产出与结果回放。
           </div>
-        </article>
-        <article class="playbook-card">
-          <h2 id="heading-bring-up-workspace">启动工作区</h2>
-          <ol>
-            <li>先用 doctor 和 workspace status 检查 Lean、provider、配置文件。</li>
-            <li>需要持续自治时优先跑 workspace daemon，而不是手工反复触发。</li>
-            <li>打开 Workspace Overview，确认 blocked reason、budget、daemon ticks。</li>
-          </ol>
-          <div class="command-strip">uv run archonlab doctor
-uv run archonlab workspace status --config workspace.toml
-uv run archonlab workspace daemon run --config workspace.toml</div>
-        </article>
-        <article class="playbook-card">
-          <h2 id="heading-operate-loop">操作自治循环</h2>
-          <ol>
-            <li>Queue Board 看 backlog、worker health、job reason 和 capability 匹配。</li>
-            <li>Project Preview 看下一个 focus theorem、workflow rule 和 supervisor reason。</li>
-            <li>遇到 blocked session，先看 cooldown / failure budget / control pause。</li>
-          </ol>
-          <div class="command-strip">uv run archonlab workspace enqueue --config workspace.toml
-uv run archonlab workspace resume --config workspace.toml
-uv run archonlab queue session-status --config workspace.toml</div>
-        </article>
-        <article class="playbook-card">
-          <h2 id="heading-benchmark-replay">基准与回放</h2>
-          <ol>
-            <li>Run Index 先选一轮 benchmark，再自动填入 ledger / summary。</li>
-            <li>Compare 优先看 theorem-level improved / regressed，而不是只看总分。</li>
-            <li>Replay 用来回放单 theorem 的上下文、artifact 和失败模式。</li>
-          </ol>
-          <div class="command-strip">uv run archonlab benchmark runs
---manifest benchmarks/smoke.example.toml
-uv run archonlab benchmark run-detail
---manifest benchmarks/smoke.example.toml --run-id &lt;id&gt;</div>
+          <div class="tab-row" id="mission-tab-row" role="tablist" aria-label="Dashboard sections">
+            <button
+              class="tab-button active"
+              id="tab-plan-button"
+              type="button"
+              data-tab-target="plan"
+              aria-controls="tab-plan-panel"
+              aria-pressed="true"
+            >计划</button>
+            <button
+              class="tab-button secondary"
+              id="tab-loop-button"
+              type="button"
+              data-tab-target="loop"
+              aria-controls="tab-loop-panel"
+              aria-pressed="false"
+            >循环</button>
+            <button
+              class="tab-button secondary"
+              id="tab-finish-button"
+              type="button"
+              data-tab-target="finish"
+              aria-controls="tab-finish-panel"
+              aria-pressed="false"
+            >完成</button>
+          </div>
         </article>
       </section>
 
-      <div class="grid" id="queue-operations-section">
-        <aside class="panel">
-          <h2 id="heading-project-control">项目控制</h2>
-          <div class="status" id="control-status"></div>
-          <div class="controls">
-            <label>
-              Active Project
-              <select id="project-selector">
-                {project_selector_options}
-              </select>
-            </label>
-            <button id="pause-button">Pause Project</button>
-            <button class="secondary" id="resume-button">Resume Project</button>
-            <textarea
-              id="hint-input"
-              placeholder="Write a hint for the next planning/proving cycle."
-            ></textarea>
-            <button id="hint-button">Inject Hint</button>
-          </div>
-          <div class="workflow-box">
-            <h2>Workflow Override</h2>
-            <label>
-              Mode Override
-              <select id="workflow-mode-select">
-                <option value="">Default Config</option>
-                <option value="adaptive_loop">adaptive_loop</option>
-                <option value="fixed_loop">fixed_loop</option>
-              </select>
-            </label>
-            <label>
-              Workflow Spec Override
-              <input
-                id="workflow-spec-input"
-                type="text"
-                placeholder="./workflows/review-on-stuck.example.toml"
-              />
-            </label>
-            <label class="toggle">
-              <input id="clear-workflow-spec-checkbox" type="checkbox" />
-              Ignore configured workflow spec
-            </label>
+      <section
+        class="tab-panel active"
+        id="tab-plan-panel"
+        data-tab-panel="plan"
+        role="tabpanel"
+        aria-hidden="false"
+      >
+        <div class="grid">
+          <aside class="panel">
+            <h2 id="heading-project-control">项目控制</h2>
+            <div class="status" id="control-status"></div>
             <div class="controls">
-              <button class="secondary" id="workflow-apply-button">Apply Workflow Override</button>
-              <button class="secondary" id="workflow-reset-button">Reset Workflow Override</button>
+              <label>
+                Active Project
+                <select id="project-selector">
+                  {project_selector_options}
+                </select>
+              </label>
+              <button id="pause-button">Pause Project</button>
+              <button class="secondary" id="resume-button">Resume Project</button>
+              <textarea
+                id="hint-input"
+                placeholder="Write a hint for the next planning/proving cycle."
+              ></textarea>
+              <button id="hint-button">Inject Hint</button>
             </div>
-          </div>
-        </aside>
-
-        <section class="panel">
-          <h2>Runs</h2>
-          <div class="list" id="runs-list"></div>
-          <div style="height: 16px"></div>
-          <h2>Run Detail</h2>
-          <div class="meta" id="detail-meta">Select a run to inspect its summary and events.</div>
-          <div style="height: 10px"></div>
-          <pre id="detail-json">{{}}</pre>
-        </section>
-
-        <aside class="panel">
-          <h2 id="heading-queue-ops">队列操作</h2>
-          <div class="controls">
-            <button class="secondary" id="queue-run-button">Run Pending Queue</button>
-            <button class="secondary" id="queue-fleet-button">Run Auto-Slot Fleet</button>
-            <button class="secondary" id="worker-sweep-button">Sweep Stale Workers</button>
-          </div>
-          <div style="height: 12px"></div>
-          <div class="summary-grid" id="queue-summary"></div>
-          <div style="height: 16px"></div>
-          <div class="section-head">
-            <h2>Fleet Plan</h2>
-            <div class="meta" id="fleet-plan-meta">
-              Recommended dedicated worker pools for the active queue.
+            <div class="workflow-box">
+              <h2>Workflow Override</h2>
+              <label>
+                Mode Override
+                <select id="workflow-mode-select">
+                  <option value="">Default Config</option>
+                  <option value="adaptive_loop">adaptive_loop</option>
+                  <option value="fixed_loop">fixed_loop</option>
+                </select>
+              </label>
+              <label>
+                Workflow Spec Override
+                <input
+                  id="workflow-spec-input"
+                  type="text"
+                  placeholder="./workflows/review-on-stuck.example.toml"
+                />
+              </label>
+              <label class="toggle">
+                <input id="clear-workflow-spec-checkbox" type="checkbox" />
+                Ignore configured workflow spec
+              </label>
+              <div class="controls">
+                <button class="secondary" id="workflow-apply-button">
+                  Apply Workflow Override
+                </button>
+                <button class="secondary" id="workflow-reset-button">
+                  Reset Workflow Override
+                </button>
+              </div>
             </div>
-          </div>
-          <div class="summary-grid" id="fleet-plan-summary"></div>
-          <div style="height: 12px"></div>
-          <div class="rule-list" id="fleet-plan-list"></div>
-          <div style="height: 16px"></div>
-          <h2>Workers</h2>
-          <div class="list" id="workers-list"></div>
-        </aside>
-      </div>
+          </aside>
 
-      <div class="board-grid">
-        <section class="panel">
-          <div class="section-head">
-            <h2 id="heading-queue-board">队列看板</h2>
-            <div class="chip-row" id="queue-counts"></div>
-          </div>
-          <div class="board" id="queue-board"></div>
-        </section>
-
-        <aside class="panel">
-          <h2>Job Detail</h2>
-          <div class="meta" id="queue-detail-meta">
-            Select a queue card to inspect and operate on it.
-          </div>
-          <div class="compact-controls">
-            <button class="secondary" id="job-requeue-button" disabled>Requeue Selected Job</button>
-            <button class="secondary" id="job-cancel-button" disabled>Cancel Selected Job</button>
-          </div>
-          <pre id="queue-detail-json">{{}}</pre>
-        </aside>
-      </div>
-
-      <section class="panel" id="workspace-operations-section" style="margin-top: 18px;">
-        <div class="section-head">
-          <div>
-            <h2 id="heading-workspace-overview">工作区总览</h2>
-            <div class="meta" id="workspace-overview-meta">
-              Aggregate sessions, queue pressure, and worker health across the workspace.
+          <section class="panel" id="project-preview-section">
+            <div class="section-head">
+              <h2 id="heading-current-preview">当前预览</h2>
+              <div class="meta" id="project-preview-meta">
+                Inspect the live supervisor/workflow prediction before launching the next run.
+              </div>
             </div>
-            <div class="meta">Tag filter: comma-separated AND match for enqueue/resume.</div>
-          </div>
-          <div class="compact-controls">
-            <input
-              id="workspace-tag-input"
-              type="text"
-              placeholder="geometry,batch"
-              aria-label="Workspace tag filter"
-            />
-            <button class="secondary" id="workspace-enqueue-button">Enqueue Workspace</button>
-            <button class="secondary" id="workspace-resume-button">Resume Sessions</button>
-          </div>
-        </div>
-        <div class="preview-grid">
-          <section class="preview-card">
-            <h3>Overview</h3>
-            <div class="fact-grid" id="workspace-overview-summary"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Runtime Budget</h3>
-            <div class="fact-grid" id="workspace-runtime-summary"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Latest Loop</h3>
-            <div class="fact-grid" id="workspace-latest-loop"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Loop History</h3>
-            <div class="rule-list" id="workspace-loop-history"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Fleet History</h3>
-            <div class="rule-list" id="workspace-fleet-history"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Daemon</h3>
-            <div class="fact-grid" id="workspace-daemon-state"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Sessions</h3>
-            <div class="rule-list" id="workspace-session-table"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Provider Runtime</h3>
-            <div class="rule-list" id="workspace-provider-runtime"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Provider Health</h3>
-            <div class="rule-list" id="workspace-provider-health"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Worker Pool</h3>
-            <div class="rule-list" id="workspace-worker-pool"></div>
+            <div class="chip-row" id="project-preview-chips"></div>
+            <div style="height: 12px"></div>
+            <div class="preview-grid">
+              <section class="preview-card">
+                <h3>Overview</h3>
+                <div class="fact-grid" id="project-preview-overview"></div>
+              </section>
+              <section class="preview-card">
+                <h3>Focus Task</h3>
+                <div class="fact-grid" id="project-preview-focus"></div>
+              </section>
+              <section class="preview-card">
+                <h3>Supervisor</h3>
+                <div class="fact-grid" id="project-preview-supervisor"></div>
+              </section>
+              <section class="preview-card">
+                <h3>Lean Analysis</h3>
+                <div class="fact-grid" id="project-preview-analysis"></div>
+              </section>
+              <section class="preview-card">
+                <h3>Workflow Rules</h3>
+                <div class="rule-list" id="project-preview-rules"></div>
+              </section>
+            </div>
+            <details class="drawer">
+              <summary>Task Graph And Raw Preview</summary>
+              <div style="height: 10px"></div>
+              <div class="rule-list" id="project-preview-graph"></div>
+              <div style="height: 10px"></div>
+              <pre id="project-preview-json">{{}}</pre>
+            </details>
           </section>
         </div>
       </section>
 
-      <section class="panel" id="project-preview-section" style="margin-top: 18px;">
-        <div class="section-head">
-          <h2 id="heading-current-preview">当前预览</h2>
-          <div class="meta" id="project-preview-meta">
-            Inspect the live supervisor/workflow prediction before launching the next run.
-          </div>
-        </div>
-        <div class="chip-row" id="project-preview-chips"></div>
-        <div style="height: 12px"></div>
-        <div class="preview-grid">
-          <section class="preview-card">
-            <h3>Overview</h3>
-            <div class="fact-grid" id="project-preview-overview"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Focus Task</h3>
-            <div class="fact-grid" id="project-preview-focus"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Supervisor</h3>
-            <div class="fact-grid" id="project-preview-supervisor"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Lean Analysis</h3>
-            <div class="fact-grid" id="project-preview-analysis"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Latest Run Loop</h3>
-            <div class="fact-grid" id="project-latest-run-loop"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Run Loop History</h3>
-            <div class="rule-list" id="project-run-loop-history"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Workflow Rules</h3>
-            <div class="rule-list" id="project-preview-rules"></div>
-          </section>
-          <section class="preview-card">
-            <h3>Task Graph</h3>
-            <div class="rule-list" id="project-preview-graph"></div>
-          </section>
-        </div>
-        <details class="drawer">
-          <summary>Raw Preview JSON</summary>
-          <div style="height: 10px"></div>
-          <pre id="project-preview-json">{{}}</pre>
-        </details>
-      </section>
-
-      <section class="panel" id="benchmark-lab-section" style="margin-top: 18px;">
-        <div class="section-head">
-          <div>
-            <h2 id="heading-benchmark-lab">基准实验室</h2>
-            <div class="meta">
-              Browse recorded benchmark runs, then load ledgers, compare theorem-level changes,
-              and replay specific outcomes.
+      <section
+        class="tab-panel"
+        id="tab-loop-panel"
+        data-tab-panel="loop"
+        role="tabpanel"
+        aria-hidden="true"
+      >
+        <section class="panel" id="workspace-operations-section">
+          <div class="section-head">
+            <div>
+              <h2 id="heading-workspace-overview">工作区总览</h2>
+              <div class="meta" id="workspace-overview-meta">
+                Aggregate sessions, queue pressure, and worker health across the workspace.
+              </div>
+              <div class="meta">Tag filter: comma-separated AND match for enqueue/resume.</div>
+            </div>
+            <div class="compact-controls">
+              <input
+                id="workspace-tag-input"
+                type="text"
+                placeholder="geometry,batch"
+                aria-label="Workspace tag filter"
+              />
+              <button class="secondary" id="workspace-enqueue-button">Enqueue Workspace</button>
+              <button class="secondary" id="workspace-resume-button">Resume Sessions</button>
             </div>
           </div>
+          <div class="preview-grid">
+            <section class="preview-card">
+              <h3>Overview</h3>
+              <div class="fact-grid" id="workspace-overview-summary"></div>
+            </section>
+            <section class="preview-card">
+              <h3>Runtime Budget</h3>
+              <div class="fact-grid" id="workspace-runtime-summary"></div>
+            </section>
+            <section class="preview-card">
+              <h3>Daemon</h3>
+              <div class="fact-grid" id="workspace-daemon-state"></div>
+            </section>
+            <section class="preview-card">
+              <h3>Sessions</h3>
+              <div class="rule-list" id="workspace-session-table"></div>
+            </section>
+            <section class="preview-card">
+              <h3>Provider Health</h3>
+              <div class="rule-list" id="workspace-provider-health"></div>
+            </section>
+            <section class="preview-card">
+              <h3>Worker Pool</h3>
+              <div class="rule-list" id="workspace-worker-pool"></div>
+            </section>
+          </div>
+          <details class="drawer">
+            <summary>Loop History And Provider Runtime</summary>
+            <div style="height: 10px"></div>
+            <div class="preview-grid">
+              <section class="preview-card">
+                <h3>Latest Loop</h3>
+                <div class="fact-grid" id="workspace-latest-loop"></div>
+              </section>
+              <section class="preview-card">
+                <h3>Loop History</h3>
+                <div class="rule-list" id="workspace-loop-history"></div>
+              </section>
+              <section class="preview-card">
+                <h3>Fleet History</h3>
+                <div class="rule-list" id="workspace-fleet-history"></div>
+              </section>
+              <section class="preview-card">
+                <h3>Provider Runtime</h3>
+                <div class="rule-list" id="workspace-provider-runtime"></div>
+              </section>
+            </div>
+          </details>
+        </section>
+
+        <div class="grid" id="queue-operations-section">
+          <aside class="panel">
+            <h2 id="heading-queue-ops">队列操作</h2>
+            <div class="controls">
+              <button class="secondary" id="queue-run-button">Run Pending Queue</button>
+              <button class="secondary" id="queue-fleet-button">Run Auto-Slot Fleet</button>
+              <button class="secondary" id="worker-sweep-button">Sweep Stale Workers</button>
+            </div>
+            <div style="height: 12px"></div>
+            <div class="summary-grid" id="queue-summary"></div>
+            <div style="height: 16px"></div>
+            <div class="section-head">
+              <h2>Fleet Plan</h2>
+              <div class="meta" id="fleet-plan-meta">
+                Recommended dedicated worker pools for the active queue.
+              </div>
+            </div>
+            <div class="summary-grid" id="fleet-plan-summary"></div>
+            <div style="height: 12px"></div>
+            <div class="rule-list" id="fleet-plan-list"></div>
+            <div style="height: 16px"></div>
+            <h2>Workers</h2>
+            <div class="list" id="workers-list"></div>
+          </aside>
+
+          <section class="panel">
+            <div class="section-head">
+              <h2 id="heading-queue-board">队列看板</h2>
+              <div class="chip-row" id="queue-counts"></div>
+            </div>
+            <div class="board-grid">
+              <section>
+                <div class="board" id="queue-board"></div>
+              </section>
+              <aside>
+                <h2>Job Detail</h2>
+                <div class="meta" id="queue-detail-meta">
+                  Select a queue card to inspect and operate on it.
+                </div>
+                <div class="compact-controls">
+                  <button class="secondary" id="job-requeue-button" disabled>
+                    Requeue Selected Job
+                  </button>
+                  <button class="secondary" id="job-cancel-button" disabled>
+                    Cancel Selected Job
+                  </button>
+                </div>
+                <pre id="queue-detail-json">{{}}</pre>
+              </aside>
+            </div>
+          </section>
         </div>
-        <div class="preview-grid">
+      </section>
+
+      <section
+        class="tab-panel"
+        id="tab-finish-panel"
+        data-tab-panel="finish"
+        role="tabpanel"
+        aria-hidden="true"
+      >
+        <div class="grid">
+          <section class="panel">
+            <h2 id="heading-finish-runs">Recent Runs</h2>
+            <div class="list" id="runs-list"></div>
+            <div style="height: 16px"></div>
+            <h2 id="heading-finish-run-detail">Run Detail</h2>
+            <div class="meta" id="detail-meta">Select a run to inspect its summary and events.</div>
+            <div style="height: 10px"></div>
+            <pre id="detail-json">{{}}</pre>
+          </section>
+
+          <section class="panel">
+            <h2 id="heading-finish-loops">Loop Outcomes</h2>
+            <div class="preview-grid">
+              <section class="preview-card">
+                <h3>Latest Run Loop</h3>
+                <div class="fact-grid" id="project-latest-run-loop"></div>
+              </section>
+              <section class="preview-card">
+                <h3>Run Loop History</h3>
+                <div class="rule-list" id="project-run-loop-history"></div>
+              </section>
+            </div>
+            <details class="drawer">
+              <summary id="heading-benchmark-lab">Advanced Experiment And Replay</summary>
+              <div style="height: 12px"></div>
+              <section class="panel" id="benchmark-lab-section" style="margin-top: 0;">
+                <div class="section-head">
+                  <div>
+                    <div class="meta">
+                      Benchmark and replay remain available for regression analysis,
+                      but are no longer part of the default operator flow.
+                    </div>
+                  </div>
+                </div>
+                <div class="preview-grid">
           <section class="preview-card">
             <h3>Run Index</h3>
             <label>
@@ -1849,6 +1940,10 @@ uv run archonlab benchmark run-detail
             <div class="rule-list" id="benchmark-replay-detail"></div>
           </section>
         </div>
+              </section>
+            </details>
+          </section>
+        </div>
       </section>
     </div>
 
@@ -1862,16 +1957,22 @@ uv run archonlab benchmark run-detail
             "在同一界面里观察运行、检查结构化产物、暂停或恢复项目、注入提示，"
             + "不需要再回到原始文件手工排查。这个 dashboard 直接运行在现有 "
             + "control plane 之上，共享同一个 event store。",
-          missionControl: "值守总指南",
-          bringUpWorkspace: "启动工作区",
-          operateLoop: "操作自治循环",
-          benchmarkReplay: "基准与回放",
+          missionControl: "值守总览",
+          missionSummary:
+            "Plan 看当前计划与下一步，Loop 看自治循环健康度与队列压力，"
+            + "Finish 看最近运行与高级回放。",
+          planTab: "计划",
+          loopTab: "循环",
+          finishTab: "完成",
           projectControl: "项目控制",
           queueOps: "队列操作",
           queueBoard: "队列看板",
           workspaceOverview: "工作区总览",
           currentPreview: "当前预览",
-          benchmarkLab: "基准实验室",
+          benchmarkLab: "高级实验与回放",
+          finishRuns: "最近运行",
+          finishRunDetail: "运行详情",
+          finishLoops: "循环结果",
           toggleLabel: "English",
         }},
         en: {{
@@ -1882,34 +1983,48 @@ uv run archonlab benchmark run-detail
             + "and inject hints without dropping back to raw files. This dashboard "
             + "sits directly on top of the existing control plane and shares the "
             + "same event store.",
-          missionControl: "Mission Control Guide",
-          bringUpWorkspace: "Bring Up A Workspace",
-          operateLoop: "Operate The Loop",
-          benchmarkReplay: "Benchmark And Replay",
+          missionControl: "Mission Console",
+          missionSummary:
+            "Plan explains the next action, Loop shows autonomous health and queue pressure, "
+            + "Finish collects recent outcomes and advanced replay tools.",
+          planTab: "Plan",
+          loopTab: "Loop",
+          finishTab: "Finish",
           projectControl: "Project Control",
           queueOps: "Queue Ops",
           queueBoard: "Queue Board",
           workspaceOverview: "Workspace Overview",
           currentPreview: "Current Preview",
-          benchmarkLab: "Benchmark Lab",
+          benchmarkLab: "Advanced Experiment And Replay",
+          finishRuns: "Recent Runs",
+          finishRunDetail: "Run Detail",
+          finishLoops: "Loop Outcomes",
           toggleLabel: "中文",
         }},
       }};
       let currentLanguage = localStorage.getItem("archonlab.dashboard.lang") || "zh";
+      const DASHBOARD_TAB_KEY = "archonlab.dashboard.tab";
+      const knownTabs = new Set(["plan", "loop", "finish"]);
       let currentProjectId = defaultProjectId;
       const languageToggleButton = document.getElementById("language-toggle-button");
       const heroEyebrow = document.getElementById("hero-eyebrow");
       const heroSubtitle = document.getElementById("hero-subtitle");
       const headingMissionControl = document.getElementById("heading-mission-control");
-      const headingBringUpWorkspace = document.getElementById("heading-bring-up-workspace");
-      const headingOperateLoop = document.getElementById("heading-operate-loop");
-      const headingBenchmarkReplay = document.getElementById("heading-benchmark-replay");
+      const missionSummaryCopy = document.getElementById("mission-summary-copy");
+      const tabPlanButton = document.getElementById("tab-plan-button");
+      const tabLoopButton = document.getElementById("tab-loop-button");
+      const tabFinishButton = document.getElementById("tab-finish-button");
+      const tabButtons = [tabPlanButton, tabLoopButton, tabFinishButton];
+      const tabPanels = Array.from(document.querySelectorAll("[data-tab-panel]"));
       const headingProjectControl = document.getElementById("heading-project-control");
       const headingQueueOps = document.getElementById("heading-queue-ops");
       const headingQueueBoard = document.getElementById("heading-queue-board");
       const headingWorkspaceOverview = document.getElementById("heading-workspace-overview");
       const headingCurrentPreview = document.getElementById("heading-current-preview");
       const headingBenchmarkLab = document.getElementById("heading-benchmark-lab");
+      const headingFinishRuns = document.getElementById("heading-finish-runs");
+      const headingFinishRunDetail = document.getElementById("heading-finish-run-detail");
+      const headingFinishLoops = document.getElementById("heading-finish-loops");
       const projectSelector = document.getElementById("project-selector");
       const controlStatus = document.getElementById("control-status");
       const runsList = document.getElementById("runs-list");
@@ -1982,6 +2097,22 @@ uv run archonlab benchmark run-detail
       let latestJobs = [];
       let selectedQueueJobId = null;
 
+      function setActiveTab(tabName) {{
+        const resolvedTab = knownTabs.has(tabName) ? tabName : "plan";
+        localStorage.setItem(DASHBOARD_TAB_KEY, resolvedTab);
+        for (const button of tabButtons) {{
+          const isActive = button.dataset.tabTarget === resolvedTab;
+          button.classList.toggle("active", isActive);
+          button.classList.toggle("secondary", !isActive);
+          button.setAttribute("aria-pressed", isActive ? "true" : "false");
+        }}
+        for (const panel of tabPanels) {{
+          const isActive = panel.dataset.tabPanel === resolvedTab;
+          panel.classList.toggle("active", isActive);
+          panel.setAttribute("aria-hidden", isActive ? "false" : "true");
+        }}
+      }}
+
       function applyLanguage() {{
         const copy = DASHBOARD_I18N[currentLanguage] || DASHBOARD_I18N.zh;
         document.documentElement.lang = currentLanguage === "zh" ? "zh-CN" : "en";
@@ -1989,15 +2120,19 @@ uv run archonlab benchmark run-detail
         heroEyebrow.textContent = copy.heroEyebrow;
         heroSubtitle.textContent = copy.heroSubtitle;
         headingMissionControl.textContent = copy.missionControl;
-        headingBringUpWorkspace.textContent = copy.bringUpWorkspace;
-        headingOperateLoop.textContent = copy.operateLoop;
-        headingBenchmarkReplay.textContent = copy.benchmarkReplay;
+        missionSummaryCopy.textContent = copy.missionSummary;
+        tabPlanButton.textContent = copy.planTab;
+        tabLoopButton.textContent = copy.loopTab;
+        tabFinishButton.textContent = copy.finishTab;
         headingProjectControl.textContent = copy.projectControl;
         headingQueueOps.textContent = copy.queueOps;
         headingQueueBoard.textContent = copy.queueBoard;
         headingWorkspaceOverview.textContent = copy.workspaceOverview;
         headingCurrentPreview.textContent = copy.currentPreview;
         headingBenchmarkLab.textContent = copy.benchmarkLab;
+        headingFinishRuns.textContent = copy.finishRuns;
+        headingFinishRunDetail.textContent = copy.finishRunDetail;
+        headingFinishLoops.textContent = copy.finishLoops;
         languageToggleButton.textContent = copy.toggleLabel;
       }}
 
@@ -3229,7 +3364,14 @@ uv run archonlab benchmark run-detail
         applyLanguage();
       }});
 
+      for (const button of tabButtons) {{
+        button.addEventListener("click", () => {{
+          setActiveTab(button.dataset.tabTarget || "plan");
+        }});
+      }}
+
       applyLanguage();
+      setActiveTab(localStorage.getItem(DASHBOARD_TAB_KEY) || "plan");
       refresh().catch((error) => {{
         detailMeta.textContent = "Dashboard failed to load.";
         detailJson.textContent = error.message;

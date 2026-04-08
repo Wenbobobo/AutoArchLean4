@@ -6,26 +6,31 @@
 - 先看哪里
 - 什么时候该点 `enqueue/resume`
 - 什么时候应该停下来查 blocked reason
-- benchmark / replay 应该怎么接到日常自治 loop
+- 高级 benchmark / replay 应该怎么接到日常自治 loop
 
 如果你已经完成环境配置，建议和 [第一次运行](./first-run.md) 配合阅读。
 
 ## 1. 心智模型
 
-ArchonLab 现在有三层操作面：
+先记住一句话：
 
-1. `workspace daemon`
-   负责无人值守地反复触发 workspace loop。
-2. `dashboard`
-   负责实时观察 session、queue、worker、provider、benchmark 结果。
-3. `benchmark lab`
-   负责比较不同策略的 theorem-level 结果，并回放单个 theorem。
+- `Archon` 是证明后端引擎
+- `ArchonLab` 是压在它上面的 control plane
+
+你日常真正操作的是 ArchonLab 的 Mission Console，也就是 dashboard 的三段主视图：
+
+1. `Plan`
+   看当前项目为什么会走到下一步，必要时暂停、恢复、注入 hint、切 workflow。
+2. `Loop`
+   看 workspace/session/queue/worker/provider/fleet 的整体健康度。
+3. `Finish`
+   看最近运行结果、loop outcome，以及高级 experiment / replay 抽屉。
 
 最重要的原则：
 
 - daemon 负责“持续跑”
 - queue/fleet 负责“怎么调度”
-- dashboard 负责“为什么现在这样跑”
+- Mission Console 负责“为什么现在这样跑、现在卡在哪、最近产出了什么”
 
 ## 2. 推荐操作顺序
 
@@ -120,12 +125,11 @@ uv run archonlab dashboard serve --config workspace.toml --port 8000
 uv run archonlab workspace daemon run --config workspace.toml
 ```
 
-4. 打开 dashboard，优先看：
+4. 打开 dashboard，按这个顺序看：
 
-- `Workspace Overview`
-- `Provider Health`
-- `Queue Board`
-- `Current Preview`
+- `Plan`
+- `Loop`
+- `Finish`
 
 ### 只想人工推进一轮
 
@@ -141,9 +145,23 @@ uv run archonlab queue fleet --config workspace.toml --workers 2
 
 ## 3. 打开 Dashboard 后先看什么
 
-### Workspace Overview
+### 先看 `Plan`
 
-这是最重要的总览。
+这里回答的是：“系统下一步为什么要这么做”。
+
+优先关注：
+
+- `Current Preview`
+- `Focus Task`
+- `Supervisor`
+- `Workflow Rules`
+- `Lean Analysis`
+
+如果 `Current Preview` 和你的预期差很多，先改 workflow / task policy，再继续扩 worker。
+
+### 再看 `Loop`
+
+这里回答的是：“自治循环现在健康不健康”。
 
 优先关注：
 
@@ -152,6 +170,7 @@ uv run archonlab queue fleet --config workspace.toml --workers 2
 - `provider health`
 - `daemon status`
 - `latest loop / fleet stop reason`
+- `queue board` 里的 phase / reason / focus / priority
 
 常见 blocked reason：
 
@@ -166,39 +185,22 @@ uv run archonlab queue fleet --config workspace.toml --workers 2
 
 如果你看到 blocked session，先判断它属于哪一种，再决定是否人工 resume。
 
-### Queue Board
-
-这里回答两个问题：
-
-- 现在系统到底在排什么
-- 为什么某个 job 会被这些 worker 处理
-
-重点看：
-
-- `phase`
-- `reason`
-- `focus task / theorem`
-- `priority`
-- `executor/provider/model/cost`
-
 如果 queue 很满但没什么 progress，通常问题不是“没在跑”，而是：
 
 - worker capability 不匹配
 - provider 不健康
 - session 被 cooldown / budget 挡住
 
-### Current Preview
+### 最后看 `Finish`
 
-这里用来确认“下一步为什么会做这件事”。
+这里回答的是：“最近到底产出了什么，有没有真实进展”。
 
-重点看：
+默认先看：
 
-- `Focus Task`
-- `Supervisor`
-- `Workflow Rules`
-- `Lean Analysis`
+- `Recent Runs`
+- `Loop Outcomes`
 
-如果 `Current Preview` 和你的预期差很多，先改 workflow / task policy，再继续扩 worker。
+只有当你已经确认 loop 本身健康，才进入高级 experiment / replay 抽屉做 theorem-level 对比。
 
 ## 4. 什么时候用 Enqueue / Resume
 
@@ -243,7 +245,7 @@ daemon 不是 worker。
 
 当前版本里，daemon 遇到 `failure_cooldown_active` 时会按最早 cooldown 结束时间回退，而不是固定频率空转。
 
-## 6. Benchmark Lab 怎么用
+## 6. Finish 里的 Advanced Experiment And Replay 怎么用
 
 建议顺序：
 
@@ -271,32 +273,31 @@ daemon 不是 worker。
 - blocked session 数量有没有上升
 - provider health 是否 degraded / quarantined
 - queue 是否长期堆积但 worker 没处理
-- benchmark compare 是否出现 theorem regression
+- recent runs / loop outcomes 是否开始反复无进展
 
 ### 出现停滞时
 
 优先顺序：
 
-1. 看 `Workspace Overview` 的 blocked reason
-2. 看 `Provider Health`
-3. 看 `Current Preview` 的 supervisor reason
+1. 看 `Loop` 里的 blocked reason 和 provider health
+2. 看 `Plan` 里的 supervisor reason / focus task
 4. 再决定是否：
    - 调 workflow
    - 调 provider / execution policy
    - 手工 resume
-   - 做 benchmark replay
+   - 做 experiment replay
 
 ## 8. 当前最适合的使用方式
 
 如果你是研究平台 operator，而不是单次跑 demo，推荐：
 
 1. `workspace daemon run`
-2. dashboard 常开
-3. 用 benchmark lab 比较策略版本
-4. 用 replay 研究 theorem regression
+2. dashboard 常开，并按 `Plan -> Loop -> Finish` 巡检
+3. 先用 `Loop` 保证自治主链路健康
+4. 再用 `Finish` 里的 experiment / replay 做 theorem-level 对比
 
 一句话总结：
 
-先看 workspace 总览判断“为什么系统现在停/慢/卡”，
-再看 preview 判断“下一步为什么会这么做”，
-最后才去 benchmark lab 判断“这套策略到底有没有带来 theorem 级进展”。
+先看 `Plan` 判断“下一步为什么会这么做”，
+再看 `Loop` 判断“系统为什么停/慢/卡”，
+最后才去 `Finish` 判断“这套策略到底有没有带来 theorem 级进展”。

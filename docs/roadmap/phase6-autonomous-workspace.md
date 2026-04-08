@@ -113,7 +113,7 @@ Phase 1-5 已经把这些基线打通：
 ### Workstream E: Operator Console and Experiment Ledger
 
 目标：
-- 把当前 dashboard 从单项目 control deck 升级成 workspace operator console
+- 在已落地的 workspace operator console 之上继续强化 Mission Console
 - 把 benchmark 从 snapshot 分数升级成 theorem-level 实验账本
 
 实施顺序：
@@ -125,6 +125,7 @@ Phase 1-5 已经把这些基线打通：
 验收：
 - 能查看多项目 session backlog、worker 健康和失败趋势
 - 能比较两次策略运行的 theorem-level 差异
+- `Plan / Loop / Finish` 能承载日常 operator 值守，而 experiment/replay 退居高级工具层
 
 ## 推荐执行顺序
 

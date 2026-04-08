@@ -40,13 +40,50 @@ def test_run_service_uses_history_to_reroute_repeated_no_progress(
     first = service.start(dry_run=True)
     second = service.start(dry_run=True)
     third = service.start(dry_run=True)
+    fourth = service.start(dry_run=True)
 
     assert first.action.reason == "bootstrap_first_iteration"
     assert second.action.reason == "bootstrap_first_iteration"
-    assert third.action.reason == "supervisor_repeated_no_progress"
+    assert third.action.reason == "bootstrap_first_iteration"
+    assert fourth.action.reason == "supervisor_repeated_no_progress"
 
-    summary = json.loads((third.artifact_dir / "supervisor.json").read_text(encoding="utf-8"))
+    summary = json.loads((fourth.artifact_dir / "supervisor.json").read_text(encoding="utf-8"))
     assert summary["reason"] == "repeated_no_progress"
+
+
+def test_run_service_prefers_prover_for_pure_sorry_blocker_with_review_history(
+    tmp_path: Path,
+    fake_archon_project: Path,
+    fake_archon_root: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    config_path = tmp_path / "archonlab.toml"
+    (fake_archon_project / "Core.lean").write_text(
+        "theorem foo : True := by\n"
+        "  sorry\n",
+        encoding="utf-8",
+    )
+    (fake_archon_project / ".archon" / "proof-journal" / "sessions" / "session-1").mkdir(
+        parents=True
+    )
+    config_path.write_text(
+        "[project]\n"
+        'name = "demo"\n'
+        f'project_path = "{fake_archon_project}"\n'
+        f'archon_path = "{fake_archon_root}"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n",
+        encoding="utf-8",
+    )
+
+    preview = RunService(load_config(config_path)).preview()
+
+    assert preview.supervisor.action.name.lower() == "continue"
+    assert preview.supervisor.reason.name.lower() == "healthy"
+    assert preview.action.phase == "prover"
+    assert preview.action.reason == "task_graph_focus"
 
 
 def test_run_service_respects_control_workflow_override_and_cleared_spec(
