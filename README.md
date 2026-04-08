@@ -197,6 +197,11 @@ endpoint_path = "/v1/responses"
 
 如果你想走 OpenAI-compatible HTTP，通常把 `kind = "openai_compatible"` 并填好 `[provider]` 即可。
 如果你想让本地 agent 真正接管工作树，优先用 `codex_exec`。
+如果你要接 DeepSeek 这类 OpenAI-compatible `chat/completions` 端点，把
+`endpoint_path = "/chat/completions"` 即可。
+
+更具体的 `Codex + DeepSeek` 工作区配置见
+[codex-deepseek-workspace.md](/home/niracler/Gary/Math/archonlab/docs/onboarding/codex-deepseek-workspace.md)。
 
 ## Phase Policy
 

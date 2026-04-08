@@ -1,0 +1,81 @@
+[benchmark]
+name = "fate-m-codex-deepseek"
+description = "FATE-M benchmark with Codex for prover/review and DeepSeek for plan."
+artifact_root = "artifacts/benchmarks/fate-m-codex-deepseek"
+worker_slots = 4
+
+[executor]
+kind = "codex_exec"
+command = "codex"
+auto_approve = true
+timeout_seconds = 900
+
+[provider]
+kind = "openai_compatible"
+pool = "research"
+member_name = "codex-main"
+model = "gpt-5.2-codex"
+cost_tier = "premium"
+endpoint_class = "codex-exec"
+api_key_env = "OPENAI_API_KEY"
+endpoint_path = "/v1/responses"
+
+[provider_pool.research]
+strategy = "ordered_failover"
+max_consecutive_failures = 2
+quarantine_seconds = 300
+
+[[provider_pool.research.members]]
+name = "codex-main"
+model = "gpt-5.2-codex"
+cost_tier = "premium"
+endpoint_class = "codex-exec"
+
+[[provider_pool.research.members]]
+name = "deepseek-plan"
+model = "deepseek-chat"
+cost_tier = "cheap"
+endpoint_class = "deepseek-chat"
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+endpoint_path = "/chat/completions"
+
+[phase_executor.plan]
+kind = "openai_compatible"
+
+[phase_provider.plan]
+pool = "research"
+member_name = "deepseek-plan"
+model = "deepseek-chat"
+cost_tier = "cheap"
+endpoint_class = "deepseek-chat"
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+endpoint_path = "/chat/completions"
+
+[phase_executor.prover]
+kind = "codex_exec"
+
+[phase_provider.prover]
+pool = "research"
+member_name = "codex-main"
+model = "gpt-5.2-codex"
+cost_tier = "premium"
+endpoint_class = "codex-exec"
+
+[phase_executor.review]
+kind = "codex_exec"
+
+[phase_provider.review]
+pool = "research"
+member_name = "codex-main"
+model = "gpt-5.2-codex"
+cost_tier = "premium"
+endpoint_class = "codex-exec"
+
+[[projects]]
+id = "fate-m"
+path = "../path/to/FATE/FATE-M"
+archon_path = "../Archon"
+budget_minutes = 60
+workflow = "adaptive_loop"

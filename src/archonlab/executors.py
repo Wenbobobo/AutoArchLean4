@@ -253,10 +253,12 @@ class OpenAICompatibleHttpExecutor:
         if self.provider_config.model is None:
             raise ValueError("provider.model is required for openai-compatible execution")
 
-        payload = {
-            "model": self.provider_config.model,
-            "input": _build_openai_input(prompt=prompt, system_prompt=system_prompt),
-        }
+        payload = _build_openai_payload(
+            endpoint_path=self.endpoint_path,
+            model=self.provider_config.model,
+            prompt=prompt,
+            system_prompt=system_prompt,
+        )
         request_path = None
         response_path = None
         output_path = None
@@ -645,6 +647,30 @@ def _build_openai_input(*, prompt: str, system_prompt: str | None) -> list[dict[
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
     return messages
+
+
+def _build_openai_payload(
+    *,
+    endpoint_path: str,
+    model: str,
+    prompt: str,
+    system_prompt: str | None,
+) -> dict[str, object]:
+    messages = _build_openai_input(prompt=prompt, system_prompt=system_prompt)
+    if _uses_chat_completions_api(endpoint_path):
+        return {
+            "model": model,
+            "messages": messages,
+        }
+    return {
+        "model": model,
+        "input": messages,
+    }
+
+
+def _uses_chat_completions_api(endpoint_path: str) -> bool:
+    normalized = endpoint_path.strip().rstrip("/").lower()
+    return normalized.endswith("/chat/completions")
 
 
 def _extract_openai_text(payload: dict[str, object]) -> str:

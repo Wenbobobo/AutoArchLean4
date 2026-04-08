@@ -118,6 +118,83 @@ def test_openai_compatible_http_executor_posts_to_responses_endpoint_and_parses_
         thread.join(timeout=2)
 
 
+def test_openai_compatible_http_executor_posts_chat_completions_payload_when_configured() -> None:
+    captured: dict[str, object] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["path"] = self.path
+            captured["auth"] = self.headers.get("Authorization")
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length).decode("utf-8")
+            captured["body"] = json.loads(body)
+
+            payload = {
+                "id": "chatcmpl-1",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "hello from chat completions",
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 30,
+                    "total_tokens": 150,
+                },
+            }
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        executor = OpenAICompatibleHttpExecutor(
+            api_key="test-key",
+            endpoint_path="/v1/chat/completions",
+            provider_config=ProviderConfig(
+                model="deepseek-chat",
+                base_url=base_url,
+                endpoint_path="/v1/chat/completions",
+                api_key_env="DEEPSEEK_API_KEY",
+            ),
+        )
+
+        result = executor.execute("prove foo", system_prompt="plan")
+
+        assert captured["path"] == "/v1/chat/completions"
+        assert captured["auth"] == "Bearer test-key"
+        assert captured["body"] == {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": "plan"},
+                {"role": "user", "content": "prove foo"},
+            ],
+        }
+        assert result.text == "hello from chat completions"
+        assert result.status is ExecutionStatus.COMPLETED
+        assert result.telemetry is not None
+        assert result.telemetry.usage is not None
+        assert result.telemetry.usage.input_tokens == 120
+        assert result.telemetry.usage.output_tokens == 30
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_codex_exec_executor_streams_prompt_to_stdin_and_returns_stdout(
     tmp_path: Path,
 ) -> None:
@@ -970,4 +1047,3 @@ def test_provider_pool_executor_returns_failed_result_for_unavailable_pinned_mem
         primary_thread.join(timeout=2)
         backup_thread.join(timeout=2)
         reset_provider_pool_health()
-
