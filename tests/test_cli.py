@@ -103,6 +103,12 @@ def test_project_init_command_writes_config(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert (tmp_path / "archonlab.toml").exists()
+    assert (tmp_path / "LeanProject" / ".archon" / "PROGRESS.md").exists()
+    assert (tmp_path / "LeanProject" / ".archon" / "CLAUDE.md").exists()
+    assert (tmp_path / "LeanProject" / ".archon" / "prompts" / "plan.md").exists()
+    assert (tmp_path / "LeanProject" / ".archon" / "prompts" / "prover-prover.md").exists()
+    assert (tmp_path / "LeanProject" / ".archon" / "prompts" / "review.md").exists()
+    assert (tmp_path / "LeanProject" / ".archon" / "USER_HINTS.md").exists()
 
 
 def test_workspace_init_command_writes_config(tmp_path: Path) -> None:
@@ -126,6 +132,62 @@ def test_workspace_init_command_writes_config(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert (tmp_path / "workspace.toml").exists()
+    assert (tmp_path / "LeanProject" / ".archon" / "PROGRESS.md").exists()
+    assert (tmp_path / "LeanProject" / ".archon" / "CLAUDE.md").exists()
+    assert (tmp_path / "LeanProject" / ".archon" / "prompts" / "plan.md").exists()
+
+
+def test_workspace_daemon_run_bootstraps_missing_archon_state(tmp_path: Path) -> None:
+    project_path = tmp_path / "LeanProject"
+    archon_path = tmp_path / "Archon"
+    project_path.mkdir()
+    archon_path.mkdir()
+    (project_path / "lakefile.lean").write_text("import Lake\n", encoding="utf-8")
+    (project_path / "Core.lean").write_text(
+        "theorem demo : True := by\n"
+        "  trivial\n",
+        encoding="utf-8",
+    )
+    (archon_path / "archon-loop.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+
+    init_result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "init",
+            "--name",
+            "demo-workspace",
+            "--project-id",
+            "alpha",
+            "--project-path",
+            str(project_path),
+            "--archon-path",
+            str(archon_path),
+            "--config-path",
+            str(tmp_path / "workspace.toml"),
+            "--force",
+        ],
+    )
+    daemon_result = runner.invoke(
+        app,
+        [
+            "workspace",
+            "daemon",
+            "run",
+            "--config",
+            str(tmp_path / "workspace.toml"),
+            "--max-ticks",
+            "1",
+            "--poll-seconds",
+            "0",
+        ],
+    )
+
+    assert init_result.exit_code == 0
+    assert daemon_result.exit_code == 0
+    assert "Status: idle" in daemon_result.output
+    assert (project_path / ".archon" / "PROGRESS.md").exists()
+    assert (project_path / ".archon" / "prompts" / "prover-prover.md").exists()
 
 
 def test_doctor_command_reports_failed_command_lean_analyzer(

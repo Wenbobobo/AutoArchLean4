@@ -198,6 +198,8 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
 
     index_response = client.get("/")
     assert index_response.status_code == 200
+    assert 'id="language-toggle-button"' in index_response.text
+    assert "控制台总览" in index_response.text
     assert 'id="project-selector"' in index_response.text
     assert 'value="DemoProject"' in index_response.text
     assert 'id="project-preview-overview"' in index_response.text
@@ -470,6 +472,48 @@ def test_dashboard_api_lists_runs_and_supports_control_actions(
     assert persisted_fleet.total_processed_jobs == 1
 
 
+def test_dashboard_workspace_overview_real_sqlite_threading_regression(tmp_path: Path) -> None:
+    project_path = _make_project(tmp_path, "AlphaProject")
+    archon_path = _make_archon(tmp_path)
+    artifact_root = tmp_path / "artifacts"
+    workspace_config_path = tmp_path / "workspace.toml"
+    workspace_config_path.write_text(
+        "[workspace]\n"
+        'name = "demo-workspace"\n\n'
+        "[run]\n"
+        'workflow = "adaptive_loop"\n'
+        f'artifact_root = "{artifact_root}"\n'
+        "dry_run = true\n"
+        "max_iterations = 6\n\n"
+        "[[projects]]\n"
+        'id = "alpha"\n'
+        f'project_path = "{project_path}"\n'
+        f'archon_path = "{archon_path}"\n',
+        encoding="utf-8",
+    )
+    store = EventStore(artifact_root / "archonlab.db")
+    store.register_session(
+        ProjectSession(
+            session_id="session-alpha-1",
+            workspace_id="demo-workspace",
+            project_id="alpha",
+            status=SessionStatus.RUNNING,
+            workflow=WorkflowMode.ADAPTIVE_LOOP,
+            dry_run=True,
+            max_iterations=6,
+            completed_iterations=1,
+        )
+    )
+
+    client = TestClient(create_dashboard_app(workspace_config_path))
+    response = client.get("/api/workspace/overview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["workspace"] == "demo-workspace"
+    assert payload["session_count"] == 1
+
+
 def test_dashboard_workspace_overview_and_project_switching(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -671,6 +715,8 @@ def test_dashboard_workspace_overview_and_project_switching(
 
     index_response = client.get("/")
     assert index_response.status_code == 200
+    assert 'id="language-toggle-button"' in index_response.text
+    assert "控制台总览" in index_response.text
     assert 'id="project-selector"' in index_response.text
     assert 'value="alpha"' in index_response.text
     assert 'value="beta"' in index_response.text

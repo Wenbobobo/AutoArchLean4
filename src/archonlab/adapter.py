@@ -6,6 +6,63 @@ from pathlib import Path
 from .models import AdapterAction, ChecklistItem, ProgressSnapshot, ProjectConfig, WorkflowMode
 
 
+def bootstrap_archon_project_state(project_path: Path) -> Path:
+    resolved_project_path = project_path.resolve()
+    state_dir = resolved_project_path / ".archon"
+    prompts_dir = state_dir / "prompts"
+    task_results_dir = state_dir / "task_results"
+    proof_journal_dir = state_dir / "proof-journal" / "sessions"
+    resolved_project_path.mkdir(parents=True, exist_ok=True)
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    task_results_dir.mkdir(parents=True, exist_ok=True)
+    proof_journal_dir.mkdir(parents=True, exist_ok=True)
+
+    lean_files = sorted(resolved_project_path.glob("*.lean"))
+    objective_target = lean_files[0].name if lean_files else "Core.lean"
+
+    default_files: dict[Path, str] = {
+        state_dir / "CLAUDE.md": (
+            "# Archon Project Role\n\n"
+            "Follow the phase-specific prompt files under `.archon/prompts/`.\n"
+            "Keep project state in `.archon/` and treat `PROGRESS.md` as the source of truth.\n"
+        ),
+        state_dir / "PROGRESS.md": (
+            "# Project Progress\n\n"
+            "## Current Stage\n"
+            "prover\n\n"
+            "## Stages\n"
+            "- [x] init\n"
+            "- [ ] prover\n"
+            "- [ ] review\n\n"
+            "## Current Objectives\n\n"
+            f"1. Inspect `{objective_target}` and choose the next theorem bottleneck.\n"
+        ),
+        state_dir / "USER_HINTS.md": (
+            "# User Hints\n\n"
+            "Record operator hints here when they are injected from the control plane.\n"
+        ),
+        prompts_dir / "plan.md": (
+            "# Planning Prompt\n\n"
+            "Review the current Lean declarations, blockers, and objectives.\n"
+            "Choose the next focused proving step and record why it is highest leverage.\n"
+        ),
+        prompts_dir / "prover-prover.md": (
+            "# Prover Prompt\n\n"
+            "Focus on the selected theorem or declaration.\n"
+            "Prefer sound proof steps and avoid introducing axioms unless explicitly requested.\n"
+        ),
+        prompts_dir / "review.md": (
+            "# Review Prompt\n\n"
+            "Review the latest task result, proof changes, and failure modes.\n"
+            "Summarize regressions, remaining blockers, and next corrective action.\n"
+        ),
+    }
+    for path, content in default_files.items():
+        if not path.exists():
+            path.write_text(content, encoding="utf-8")
+    return state_dir
+
+
 class ArchonAdapter:
     def __init__(self, project: ProjectConfig) -> None:
         self.project = project
@@ -25,6 +82,7 @@ class ArchonAdapter:
         return issues
 
     def ensure_valid(self) -> None:
+        bootstrap_archon_project_state(self.project.project_path)
         issues = self.validate()
         if issues:
             raise FileNotFoundError("; ".join(issues))

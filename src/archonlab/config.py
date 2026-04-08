@@ -3,6 +3,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from .adapter import bootstrap_archon_project_state
 from .execution_policy import build_execution_policy
 from .models import (
     AppConfig,
@@ -527,6 +528,7 @@ def init_config(
     if config_path.exists() and not force:
         raise FileExistsError(f"Config already exists at {config_path}")
 
+    bootstrap_archon_project_state(project_path)
     content = render_config(
         project_name=project_path.name,
         project_path=project_path,
@@ -561,6 +563,7 @@ def init_workspace_config(
     if config_path.exists() and not force:
         raise FileExistsError(f"Config already exists at {config_path}")
 
+    bootstrap_archon_project_state(project_path)
     content = render_workspace_config(
         workspace_name=workspace_name,
         projects=[

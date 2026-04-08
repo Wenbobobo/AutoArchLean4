@@ -1028,11 +1028,11 @@ def render_dashboard_html(
         for project_id in available_project_ids
     )
     return f"""<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ArchonLab Control Deck</title>
+    <title>ArchonLab 控制台</title>
     <style>
       :root {{
         --bg: #f5efe1;
@@ -1069,11 +1069,20 @@ def render_dashboard_html(
         background: linear-gradient(135deg, rgba(255,255,255,0.72), rgba(255,248,238,0.84));
         box-shadow: var(--shadow);
       }}
+      .hero-head {{
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 12px;
+      }}
       .eyebrow {{
         letter-spacing: 0.18em;
         text-transform: uppercase;
         font-size: 12px;
         color: var(--accent);
+      }}
+      .language-toggle {{
+        min-width: 96px;
       }}
       h1 {{
         margin: 0;
@@ -1451,18 +1460,21 @@ def render_dashboard_html(
   <body>
     <div class="shell">
       <section class="hero">
-        <div class="eyebrow">ArchonLab Control Deck</div>
+        <div class="hero-head">
+          <div class="eyebrow" id="hero-eyebrow">控制台总览</div>
+          <button class="secondary language-toggle" id="language-toggle-button">English</button>
+        </div>
         <h1>{title}</h1>
-        <div class="subtitle">
-          Watch runs, inspect structured artifacts, pause the project, resume it, or inject a hint
-          without dropping back to raw files. This dashboard sits directly on top of the existing
-          control plane and uses the same event store.
+        <div class="subtitle" id="hero-subtitle">
+          在同一界面里观察运行、检查结构化产物、暂停或恢复项目、注入提示，
+          不需要再回到原始文件手工排查。这个 dashboard 直接运行在现有 control plane 之上，
+          共享同一个 event store。
         </div>
       </section>
 
       <section class="playbook" id="mission-control-guide">
         <article class="playbook-card">
-          <h2>Mission Control Guide</h2>
+          <h2 id="heading-mission-control">值守总指南</h2>
           <p>
             第一次进入时先看 workspace 的 blocked sessions、provider health、daemon 状态，
             再决定是 enqueue/resume、调整 workflow，还是转去 benchmark 回放。
@@ -1475,7 +1487,7 @@ def render_dashboard_html(
           </div>
         </article>
         <article class="playbook-card">
-          <h2>Bring Up A Workspace</h2>
+          <h2 id="heading-bring-up-workspace">启动工作区</h2>
           <ol>
             <li>先用 doctor 和 workspace status 检查 Lean、provider、配置文件。</li>
             <li>需要持续自治时优先跑 workspace daemon，而不是手工反复触发。</li>
@@ -1486,7 +1498,7 @@ uv run archonlab workspace status --config workspace.toml
 uv run archonlab workspace daemon run --config workspace.toml</div>
         </article>
         <article class="playbook-card">
-          <h2>Operate The Loop</h2>
+          <h2 id="heading-operate-loop">操作自治循环</h2>
           <ol>
             <li>Queue Board 看 backlog、worker health、job reason 和 capability 匹配。</li>
             <li>Project Preview 看下一个 focus theorem、workflow rule 和 supervisor reason。</li>
@@ -1497,7 +1509,7 @@ uv run archonlab workspace resume --config workspace.toml
 uv run archonlab queue session-status --config workspace.toml</div>
         </article>
         <article class="playbook-card">
-          <h2>Benchmark And Replay</h2>
+          <h2 id="heading-benchmark-replay">基准与回放</h2>
           <ol>
             <li>Run Index 先选一轮 benchmark，再自动填入 ledger / summary。</li>
             <li>Compare 优先看 theorem-level improved / regressed，而不是只看总分。</li>
@@ -1512,7 +1524,7 @@ uv run archonlab benchmark run-detail
 
       <div class="grid" id="queue-operations-section">
         <aside class="panel">
-          <h2>Project Control</h2>
+          <h2 id="heading-project-control">项目控制</h2>
           <div class="status" id="control-status"></div>
           <div class="controls">
             <label>
@@ -1569,7 +1581,7 @@ uv run archonlab benchmark run-detail
         </section>
 
         <aside class="panel">
-          <h2>Queue Ops</h2>
+          <h2 id="heading-queue-ops">队列操作</h2>
           <div class="controls">
             <button class="secondary" id="queue-run-button">Run Pending Queue</button>
             <button class="secondary" id="queue-fleet-button">Run Auto-Slot Fleet</button>
@@ -1596,7 +1608,7 @@ uv run archonlab benchmark run-detail
       <div class="board-grid">
         <section class="panel">
           <div class="section-head">
-            <h2>Queue Board</h2>
+            <h2 id="heading-queue-board">队列看板</h2>
             <div class="chip-row" id="queue-counts"></div>
           </div>
           <div class="board" id="queue-board"></div>
@@ -1618,7 +1630,7 @@ uv run archonlab benchmark run-detail
       <section class="panel" id="workspace-operations-section" style="margin-top: 18px;">
         <div class="section-head">
           <div>
-            <h2>Workspace Overview</h2>
+            <h2 id="heading-workspace-overview">工作区总览</h2>
             <div class="meta" id="workspace-overview-meta">
               Aggregate sessions, queue pressure, and worker health across the workspace.
             </div>
@@ -1681,7 +1693,7 @@ uv run archonlab benchmark run-detail
 
       <section class="panel" id="project-preview-section" style="margin-top: 18px;">
         <div class="section-head">
-          <h2>Current Preview</h2>
+          <h2 id="heading-current-preview">当前预览</h2>
           <div class="meta" id="project-preview-meta">
             Inspect the live supervisor/workflow prediction before launching the next run.
           </div>
@@ -1732,7 +1744,7 @@ uv run archonlab benchmark run-detail
       <section class="panel" id="benchmark-lab-section" style="margin-top: 18px;">
         <div class="section-head">
           <div>
-            <h2>Benchmark Lab</h2>
+            <h2 id="heading-benchmark-lab">基准实验室</h2>
             <div class="meta">
               Browse recorded benchmark runs, then load ledgers, compare theorem-level changes,
               and replay specific outcomes.
@@ -1842,7 +1854,62 @@ uv run archonlab benchmark run-detail
 
     <script>
       const defaultProjectId = {json.dumps(default_project_id)};
+      const DASHBOARD_I18N = {{
+        zh: {{
+          title: "ArchonLab 控制台",
+          heroEyebrow: "控制台总览",
+          heroSubtitle:
+            "在同一界面里观察运行、检查结构化产物、暂停或恢复项目、注入提示，"
+            + "不需要再回到原始文件手工排查。这个 dashboard 直接运行在现有 "
+            + "control plane 之上，共享同一个 event store。",
+          missionControl: "值守总指南",
+          bringUpWorkspace: "启动工作区",
+          operateLoop: "操作自治循环",
+          benchmarkReplay: "基准与回放",
+          projectControl: "项目控制",
+          queueOps: "队列操作",
+          queueBoard: "队列看板",
+          workspaceOverview: "工作区总览",
+          currentPreview: "当前预览",
+          benchmarkLab: "基准实验室",
+          toggleLabel: "English",
+        }},
+        en: {{
+          title: "ArchonLab Control Deck",
+          heroEyebrow: "Control Deck",
+          heroSubtitle:
+            "Watch runs, inspect structured artifacts, pause or resume the project, "
+            + "and inject hints without dropping back to raw files. This dashboard "
+            + "sits directly on top of the existing control plane and shares the "
+            + "same event store.",
+          missionControl: "Mission Control Guide",
+          bringUpWorkspace: "Bring Up A Workspace",
+          operateLoop: "Operate The Loop",
+          benchmarkReplay: "Benchmark And Replay",
+          projectControl: "Project Control",
+          queueOps: "Queue Ops",
+          queueBoard: "Queue Board",
+          workspaceOverview: "Workspace Overview",
+          currentPreview: "Current Preview",
+          benchmarkLab: "Benchmark Lab",
+          toggleLabel: "中文",
+        }},
+      }};
+      let currentLanguage = localStorage.getItem("archonlab.dashboard.lang") || "zh";
       let currentProjectId = defaultProjectId;
+      const languageToggleButton = document.getElementById("language-toggle-button");
+      const heroEyebrow = document.getElementById("hero-eyebrow");
+      const heroSubtitle = document.getElementById("hero-subtitle");
+      const headingMissionControl = document.getElementById("heading-mission-control");
+      const headingBringUpWorkspace = document.getElementById("heading-bring-up-workspace");
+      const headingOperateLoop = document.getElementById("heading-operate-loop");
+      const headingBenchmarkReplay = document.getElementById("heading-benchmark-replay");
+      const headingProjectControl = document.getElementById("heading-project-control");
+      const headingQueueOps = document.getElementById("heading-queue-ops");
+      const headingQueueBoard = document.getElementById("heading-queue-board");
+      const headingWorkspaceOverview = document.getElementById("heading-workspace-overview");
+      const headingCurrentPreview = document.getElementById("heading-current-preview");
+      const headingBenchmarkLab = document.getElementById("heading-benchmark-lab");
       const projectSelector = document.getElementById("project-selector");
       const controlStatus = document.getElementById("control-status");
       const runsList = document.getElementById("runs-list");
@@ -1914,6 +1981,25 @@ uv run archonlab benchmark run-detail
       const benchmarkReplayDetail = document.getElementById("benchmark-replay-detail");
       let latestJobs = [];
       let selectedQueueJobId = null;
+
+      function applyLanguage() {{
+        const copy = DASHBOARD_I18N[currentLanguage] || DASHBOARD_I18N.zh;
+        document.documentElement.lang = currentLanguage === "zh" ? "zh-CN" : "en";
+        document.title = copy.title;
+        heroEyebrow.textContent = copy.heroEyebrow;
+        heroSubtitle.textContent = copy.heroSubtitle;
+        headingMissionControl.textContent = copy.missionControl;
+        headingBringUpWorkspace.textContent = copy.bringUpWorkspace;
+        headingOperateLoop.textContent = copy.operateLoop;
+        headingBenchmarkReplay.textContent = copy.benchmarkReplay;
+        headingProjectControl.textContent = copy.projectControl;
+        headingQueueOps.textContent = copy.queueOps;
+        headingQueueBoard.textContent = copy.queueBoard;
+        headingWorkspaceOverview.textContent = copy.workspaceOverview;
+        headingCurrentPreview.textContent = copy.currentPreview;
+        headingBenchmarkLab.textContent = copy.benchmarkLab;
+        languageToggleButton.textContent = copy.toggleLabel;
+      }}
 
       async function fetchJson(url, options) {{
         const response = await fetch(url, options);
@@ -3137,6 +3223,13 @@ uv run archonlab benchmark run-detail
         }}
       }});
 
+      languageToggleButton.addEventListener("click", () => {{
+        currentLanguage = currentLanguage === "zh" ? "en" : "zh";
+        localStorage.setItem("archonlab.dashboard.lang", currentLanguage);
+        applyLanguage();
+      }});
+
+      applyLanguage();
       refresh().catch((error) => {{
         detailMeta.textContent = "Dashboard failed to load.";
         detailJson.textContent = error.message;
