@@ -43,6 +43,10 @@ PY
 
 - `-c model_reasoning_effort="xhigh"`
 
+当前推荐把 DeepSeek 的 `api_key/base_url/endpoint_path` 只写在
+`[phase_provider.plan]`，不要在 `provider_pool.research.members.deepseek-plan`
+里重复一遍。pool member 负责“选路和标记”，phase provider 负责“真正的 HTTP 配置”。
+
 这要求 `openai_compatible` 执行器支持两种 payload：
 
 - OpenAI `Responses API`

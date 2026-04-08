@@ -118,6 +118,44 @@ def test_openai_compatible_http_executor_posts_to_responses_endpoint_and_parses_
         thread.join(timeout=2)
 
 
+def test_openai_compatible_http_executor_accepts_literal_api_key_in_api_key_env_field() -> None:
+    captured: dict[str, object] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            captured["auth"] = self.headers.get("Authorization")
+            encoded = json.dumps({"output_text": "ok"}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            del format, args
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        executor = OpenAICompatibleHttpExecutor(
+            provider_config=ProviderConfig(
+                model="deepseek-reasoner",
+                base_url=f"http://127.0.0.1:{server.server_port}",
+                api_key_env="sk-literal-deepseek-key",
+            ),
+        )
+
+        result = executor.execute("prove foo", system_prompt="plan")
+
+        assert result.status is ExecutionStatus.COMPLETED
+        assert captured["auth"] == "Bearer sk-literal-deepseek-key"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_openai_compatible_http_executor_posts_chat_completions_payload_when_configured() -> None:
     captured: dict[str, object] = {}
 

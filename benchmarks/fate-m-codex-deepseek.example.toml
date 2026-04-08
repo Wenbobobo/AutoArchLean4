@@ -18,7 +18,6 @@ member_name = "codex-main"
 model = "gpt-5.4"
 cost_tier = "premium"
 endpoint_class = "codex-exec"
-api_key_env = "DEEPSEEK_API_KEY"
 endpoint_path = "/v1/responses"
 
 [provider_pool.research]
@@ -38,7 +37,6 @@ model = "deepseek-reasoner"
 cost_tier = "reasoning"
 endpoint_class = "deepseek-reasoner"
 base_url = "https://api.deepseek.com"
-api_key_env = "DEEPSEEK_API_KEY"
 endpoint_path = "/chat/completions"
 
 [phase_executor.plan]

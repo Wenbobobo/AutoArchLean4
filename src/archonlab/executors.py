@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import threading
@@ -277,7 +278,7 @@ class OpenAICompatibleHttpExecutor:
             "Content-Type": "application/json",
             **self.provider_config.headers,
         }
-        api_key = self.api_key or os.environ.get(self.provider_config.api_key_env)
+        api_key = self.api_key or _resolve_provider_api_key(self.provider_config)
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
@@ -671,6 +672,20 @@ def _build_openai_payload(
 def _uses_chat_completions_api(endpoint_path: str) -> bool:
     normalized = endpoint_path.strip().rstrip("/").lower()
     return normalized.endswith("/chat/completions")
+
+
+def _resolve_provider_api_key(provider_config: ProviderConfig) -> str | None:
+    env_name_or_literal = provider_config.api_key_env
+    env_value = os.environ.get(env_name_or_literal)
+    if env_value:
+        return env_value
+    if _looks_like_env_var_name(env_name_or_literal):
+        return None
+    return env_name_or_literal
+
+
+def _looks_like_env_var_name(value: str) -> bool:
+    return re.fullmatch(r"[A-Z_][A-Z0-9_]*", value) is not None
 
 
 def _extract_openai_text(payload: dict[str, object]) -> str:
